@@ -60,6 +60,9 @@ from verl.utils.seqlen_balancing import calculate_workload, get_seqlen_balanced_
 from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
 
+# Import RayPPOTrainer from verl for inheritance
+from verl.trainer.ppo.ray_trainer import RayPPOTrainer
+
 
 @dataclass
 class ResourcePoolManager:
@@ -259,7 +262,7 @@ def compute_advantage(
     return data
 
 
-class RayPPOTrainer:
+class RayOPTSTTPOTrainer(RayPPOTrainer):
     """Distributed PPO trainer using Ray for scalable reinforcement learning.
 
     This trainer orchestrates distributed PPO training across multiple nodes and GPUs,
@@ -551,6 +554,11 @@ class RayPPOTrainer:
             # repeat test batch
             test_batch = test_batch.repeat(
                 repeat_times=self.config.actor_rollout_ref.rollout.val_kwargs.n, interleave=True
+            )
+
+            # add unique response_id for each response (after repeat, so each response gets unique id)
+            test_batch.non_tensor_batch["response_id"] = np.array(
+                [str(uuid.uuid4()) for _ in range(len(test_batch.batch))], dtype=object
             )
 
             # we only do validation on rule-based rm
@@ -1101,6 +1109,11 @@ class RayPPOTrainer:
                     # repeat to align with repeated responses in rollout
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                     batch = batch.union(gen_batch_output)
+
+                    # add unique response_id for each response (after repeat, so each response gets unique id)
+                    batch.non_tensor_batch["response_id"] = np.array(
+                        [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object
+                    )
 
                     if "response_mask" not in batch.batch.keys():
                         batch.batch["response_mask"] = compute_response_mask(batch)
