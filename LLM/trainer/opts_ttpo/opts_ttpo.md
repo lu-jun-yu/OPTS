@@ -86,35 +86,40 @@ for epoch in ...:
     for batch in ...:
 
         1. 数据准备：batch区分全局batch和局部batch
-            - 全局batch：保存每一轮的局部batch，同时用于生成下一轮的局部batch；最后更新策略和价值模型使用的是全局batch
-            - 局部batch：每一轮采样都动态变化，由全局batch截取部分"prompt+部分已采样结果"构建，然后重复 self.config.actor_rollout_ref.rollout.n 遍得到。初始时是来自原始的batch，第一次采样后的局部batch才开始由"prompt+部分已采样结果"构建
-
+            - if opts_ttpo:
+                - 全局batch：保存每一轮的局部batch，同时用于生成下一轮的局部batch；最后更新策略和价值模型使用的是全局batch
+                - 局部batch：每一轮采样都动态变化，由全局batch截取部分"prompt+部分已采样结果"构建，然后重复 self.config.actor_rollout_ref.rollout.n 遍得到。初始时是来自原始的batch，第一次采样后的局部batch才开始由"prompt+部分已采样结果"构建
+            - else (PPO模式):
+                - 无全局/局部batch区分，直接使用原始batch
+                - self.config.actor_rollout_ref.rollout.g = 1
         2. 采样：for i in range(self.config.actor_rollout_ref.rollout.g):
             a. 前向：
                 - (局部batch) 重复样本
-                - (局部batch)(新行) 生成rid，设置pid、uid及其他信息
-                    - 所有response都有rid、uid，但第一轮的response没有pid
-                - (全局batch)(新行) 父轨迹上插入新的cid键值
                 - (局部batch) 生成序列
-                - (局部batch)(新行) 初始化state_branches为 全1，初始化subtree_branches为 全1
                 - (局部batch) 计算奖励
-                - (局部batch)(新函数) 前向计算
-                    - gamma_t：
-                        - 若无父轨迹，则从gamma_t = 1(对应response第一个token)开始，每前进一步乘一次gamma
-                        - 若有父轨迹，取父轨迹所选状态的gamma_t，每前进一步乘一次gamma
-                    - lam_t：
-                        - 若无父轨迹，则从lam_t = 1(对应response第一个token)开始，每前进一步乘一次lam
-                        - 若有父轨迹，取父轨迹所选状态的lam_t，每前进一步乘一次lam
-                    - trajectory_reward：上一步的trajectory_reward + gamma_t * 当前步的reward
-                        - 若无父轨迹，则从trajectory_reward = token_level_rewards[0](对应response第一个token)开始
-                        - 若有父轨迹，取父轨迹所选状态的trajectory_reward作为上一步的trajectory_reward
-                    - 父轨迹所选状态：根据pid找到父轨迹，根据当前轨迹的prompt_len，确定父轨迹所选状态的sentence长度及对应最后一个token的位置
                 - (局部batch) 计算旧策略log概率
                 - (局部batch) 计算参考策略log概率
                 - (局部batch) 计算values
-                - (新行) 局部batch添加至全局batch
+                - if opts_ttpo:
+                    - (局部batch)(新函数：set_opts_ttpo_info)
+                        - 生成rid，设置pid、uid及其他信息
+                            - 所有response都有rid、uid，但第一轮的response没有pid
+                        - 父轨迹上插入新的cid键值
+                    - (局部batch)(新行) 初始化state_branches为 全1，初始化subtree_branches为 全1
+                    - (局部batch)(新函数：compute_forward_values)
+                        - gamma_t：
+                            - 若无父轨迹，则从gamma_t = 1(对应response第一个token)开始，每前进一步乘一次gamma
+                            - 若有父轨迹，取父轨迹所选状态的gamma_t，每前进一步乘一次gamma
+                        - lam_t：
+                            - 若无父轨迹，则从lam_t = 1(对应response第一个token)开始，每前进一步乘一次lam
+                            - 若有父轨迹，取父轨迹所选状态的lam_t，每前进一步乘一次lam
+                        - trajectory_reward：上一步的trajectory_reward + gamma_t * 当前步的reward
+                            - 若无父轨迹，则从trajectory_reward = token_level_rewards[0](对应response第一个token)开始
+                            - 若有父轨迹，取父轨迹所选状态的trajectory_reward作为上一步的trajectory_reward
+                        - 父轨迹所选状态：根据pid找到父轨迹，根据当前轨迹的prompt_len，确定父轨迹所选状态的sentence长度及对应最后一个token的位置
+                    - (新行) 局部batch添加至全局batch
             b. 反向：
-                - (全局batch)(新函数：compute_treegae_advantage_return) 更新advantages & 保存advantages_mean：
+                - if opts_ttpo: (全局batch)(新函数：compute_treegae_advantage_return) 更新advantages & 保存advantages_mean：
                     - 反向更新：若存在父轨迹(pid)，则继续传播到父轨迹上
                     - if 当前位置不在cid.keys():
                         - 常规的GAE更新方式：lastgaelam_ = delta + gamma * lam * lastgaelam
@@ -122,10 +127,11 @@ for epoch in ...:
                         - lastgaelam_mean = (sum(advantages[cid.values()][0]) + lastgaelam) / state_branches
                         - lastgaelam_ = delta + gamma * lam * lastgaelam_mean
                     - advantages 和 advantages_mean 都保存
-            c. 选择(全局batch)(新函数)：
+                - elif 其他情况
+            c. if opts_ttpo: 选择(全局batch)(新函数：select_next_states)：
                 - 计算 gve = values[1:] + lam * advantages_mean[1:]
                 - 计算 expected_trajectory_reward = trajectory_reward[:-1] + gamma_t[:-1] * gve
-                - 计算 partree_branches （上游分支节点的分支总数）：
+                - (新函数：compute_partree_branches) （上游分支节点的分支总数）：
                     - 初始化：与subtree_branches形状一样的全零Tensor
                     - if cid不存在：partree_branches[:] = 父轨迹所选状态对应的最后一个token位置的subtree_branches if pid存在 else (i + 1) * self.config.actor_rollout_ref.rollout.n
                     - elif cid存在：范围赋值（是否有更简洁的赋值函数或方法？）：
@@ -146,14 +152,15 @@ for epoch in ...:
                     - subtree_branches += self.config.actor_rollout_ref.rollout.n
 
         3. 更新：
-            - (新函数) 深度优先遍历（从无pid的样本出发，通过cid遍历所有response）：
+            - if opts_ttpo: (新函数：compute_branch_weight_factors) 深度优先遍历（从无pid的样本出发，通过cid遍历所有response）：
                 - 对于response第一个token：branch_weight_factor = 1
                 - 对于后续token：branch_weight_factor = 上一步的branch_weight_factor * 上一步的state_branches
             - 更新critic：Critic Loss计算与先前保持一致
             - 更新actor：
-                - Policy Loss 新函数：(新增一行) weighted_pg_losses = pg_losses / branch_weight_factor
-                - agg_loss 函数：新增"weighted-token-mean"的分支，当使用opts_ttpo算法时，必须使用"weighted-token-mean"：
-                    - loss = masked_sum(weighted_pg_losses) / masked_sum(1 / branch_weight_factor) * dp_size
+                - if opts_ttpo: Policy Loss：
+                    - (新增一行) weighted_pg_losses = pg_losses / branch_weight_factor
+                    - (新增"weighted-token-mean"的分支) agg_loss 函数：当使用opts_ttpo算法时，必须使用"weighted-token-mean"：
+                        - loss = masked_sum(weighted_pg_losses) / masked_sum(1 / branch_weight_factor) * dp_size
 
 
 注：

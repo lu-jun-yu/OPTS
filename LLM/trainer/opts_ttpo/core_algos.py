@@ -829,6 +829,7 @@ def agg_loss(
     batch_num_tokens: Optional[int] = None,
     global_batch_size: Optional[int] = None,
     loss_scale_factor: Optional[int] = None,
+    branch_weight_factor: Optional[torch.Tensor] = None,
 ):
     """
     Aggregate the loss across global batch to ensure the loss is invariant to fsdp/megatron parallelism.
@@ -873,6 +874,11 @@ def agg_loss(
         if loss_scale_factor is None:
             loss_scale_factor = loss_mask.shape[-1]
         loss = torch.sum(seq_losses) / loss_scale_factor
+    elif loss_agg_mode == "weighted-token-mean":
+        if branch_weight_factor is None:
+            raise ValueError("branch_weight_factor is required for weighted-token-mean mode")
+        inv_weight = 1.0 / branch_weight_factor
+        loss = verl_F.masked_sum(loss_mat, loss_mask) / verl_F.masked_sum(inv_weight, loss_mask) * dp_size
     else:
         raise ValueError(f"Invalid loss_agg_mode: {loss_agg_mode}")
 
