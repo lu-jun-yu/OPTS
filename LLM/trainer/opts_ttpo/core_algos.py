@@ -847,6 +847,8 @@ def agg_loss(
         global_batch_size: global batch size
         loss_scale_factor: scale factor for "seq-mean-token-sum-norm" mode. If None, uses loss_mask.shape[-1].
             Set this to a constant value to ensure consistent normalization throughout training.
+        branch_weight_factor: weight factor for "weighted-token-mean" mode, shape (bs, response_length).
+            Required when loss_agg_mode is "weighted-token-mean".
 
     Returns:
         loss: `a scalar torch.Tensor`
@@ -970,6 +972,7 @@ def compute_policy_loss_vanilla(
     loss_agg_mode: str = "token-mean",
     config: Optional[ActorConfig] = None,
     rollout_is_weights: torch.Tensor | None = None,
+    branch_weight_factor: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """
     Compute the clipped policy objective and related metrics for PPO.
@@ -990,8 +993,11 @@ def compute_policy_loss_vanilla(
             Aggregation mode for `agg_loss`. Defaults to "token-mean".
         config: `(verl.trainer.config.ActorConfig)`:
             config for the actor.
-        rollout_log_probs: `(torch.Tensor)`:
+        rollout_is_weights: `(torch.Tensor)`:
             log probabilities of actions under the rollout policy, shape (batch_size, response_length).
+        branch_weight_factor: `(torch.Tensor)`:
+            Weight factor for TTPO gradient correction, shape (batch_size, response_length).
+            When provided, uses "weighted-token-mean" aggregation mode.
     """
 
     assert config is not None
@@ -1043,9 +1049,20 @@ def compute_policy_loss_vanilla(
     if rollout_is_weights is not None:
         pg_losses = pg_losses * rollout_is_weights
 
-    pg_loss = agg_loss(
-        loss_mat=pg_losses, loss_mask=response_mask, loss_agg_mode=loss_agg_mode, **config.global_batch_info
-    )
+    # Apply branch weight factor for TTPO gradient correction
+    if branch_weight_factor is not None:
+        pg_losses = pg_losses / branch_weight_factor
+        pg_loss = agg_loss(
+            loss_mat=pg_losses,
+            loss_mask=response_mask,
+            loss_agg_mode="weighted-token-mean",
+            branch_weight_factor=branch_weight_factor,
+            **config.global_batch_info,
+        )
+    else:
+        pg_loss = agg_loss(
+            loss_mat=pg_losses, loss_mask=response_mask, loss_agg_mode=loss_agg_mode, **config.global_batch_info
+        )
 
     pg_metrics = {
         "actor/pg_clipfrac": pg_clipfrac.detach().item(),
