@@ -210,15 +210,29 @@ def get_kl_controller(kl_ctrl):
         raise NotImplementedError
 
 
-@register_adv_est(AdvantageEstimator.TreeGAE)  # or simply: @register_adv_est("gae")
+@register_adv_est(AdvantageEstimator.TreeGAE)
 def compute_treegae_advantage_return(
     token_level_rewards: torch.Tensor,
     values: torch.Tensor,
     response_mask: torch.Tensor,
-    gamma: torch.Tensor,
-    lam: torch.Tensor,
+    gamma: float,
+    lam: float,
+    rid: Optional[np.ndarray] = None,
+    pid: Optional[np.ndarray] = None,
+    cid: Optional[list] = None,
+    state_branches: Optional[torch.Tensor] = None,
+    new_sample_indices: Optional[np.ndarray] = None,
+    advantages: Optional[torch.Tensor] = None,
+    advantages_mean: Optional[torch.Tensor] = None,
 ):
-    """Adapted from https://github.com/huggingface/trl/blob/main/trl/trainer/ppo_trainer.py
+    """Compute TreeGAE advantage for tree-structured trajectories.
+
+    TreeGAE extends standard GAE to handle tree structures where trajectories can branch.
+    At branch nodes, the advantage is computed as the mean of all branch advantages.
+
+    Note: For existing trajectories, advantages are already computed. This function only
+    updates the advantages for new samples and the affected parts of ancestor trajectories
+    (from branch point to the beginning).
 
     Args:
         token_level_rewards: `(torch.Tensor)`
@@ -227,37 +241,169 @@ def compute_treegae_advantage_return(
             shape is (bs, response_length)
         response_mask: `(torch.Tensor)`
             shape is (bs, response_length). [EOS] mask. The token after [EOS] have mask zero.
-        gamma is `(float)`
+        gamma: `(float)`
             discounted factor used in RL
         lam: `(float)`
-            lambda value when computing Generalized Advantage Estimation (https://arxiv.org/abs/1506.02438)
+            lambda value when computing Generalized Advantage Estimation
+        rid: `(np.ndarray)`
+            shape is (bs,). Response ID for each trajectory.
+        pid: `(np.ndarray)`
+            shape is (bs,). Parent response ID for each trajectory (None for root trajectories).
+        cid: `(list)`
+            list of OrderedDict. Children mapping {branch_position: [child_rid_list]} for each trajectory.
+        state_branches: `(torch.Tensor)`
+            shape is (bs, response_length). Number of branches at each state.
+        new_sample_indices: `(np.ndarray)`
+            Indices of newly sampled trajectories in current round.
+        advantages: `(torch.Tensor)`
+            shape is (bs, response_length). Pre-allocated advantages tensor to update in-place.
+            For existing trajectories, this already contains computed advantages.
+        advantages_mean: `(torch.Tensor)`
+            shape is (bs, response_length - 1). Pre-allocated advantages_mean tensor to update in-place.
+            advantages_mean[t] stores the mean advantage at position t+1 (shifted by one).
+            For existing trajectories, this already contains computed advantages_mean.
 
     Returns:
         advantages: `(torch.Tensor)`
             shape: (bs, response_length)
-        Returns: `(torch.Tensor)`
+        returns: `(torch.Tensor)`
             shape: (bs, response_length)
 
     """
     with torch.no_grad():
-        nextvalues = 0
-        lastgaelam = 0
+        bs, gen_len = token_level_rewards.shape
+        device = token_level_rewards.device
+
+        # advantages and advantages_mean must be provided (pre-allocated)
+        assert advantages is not None, "advantages tensor must be provided"
+        assert advantages_mean is not None, "advantages_mean tensor must be provided"
+
+        # Build rid to index mapping
+        rid2idx = {r: i for i, r in enumerate(rid)}
+
+        # ========== First loop: Standard GAE for new samples ==========
+        new_indices = new_sample_indices
+        n_new = len(new_indices)
+
+        # Extract tensors for new samples
+        new_rewards = token_level_rewards[new_indices]
+        new_values = values[new_indices]
+        new_mask = response_mask[new_indices]
+
+        # Standard GAE computation (vectorized)
+        nextvalues = torch.zeros(n_new, device=device)
+        lastgaelam = torch.zeros(n_new, device=device)
         advantages_reversed = []
-        gen_len = token_level_rewards.shape[-1]
 
         for t in reversed(range(gen_len)):
-            delta = token_level_rewards[:, t] + gamma * nextvalues - values[:, t]
+            delta = new_rewards[:, t] + gamma * nextvalues - new_values[:, t]
             lastgaelam_ = delta + gamma * lam * lastgaelam
 
-            # skip values and TD-error on observation tokens
-            nextvalues = values[:, t] * response_mask[:, t] + (1 - response_mask[:, t]) * nextvalues
-            lastgaelam = lastgaelam_ * response_mask[:, t] + (1 - response_mask[:, t]) * lastgaelam
+            nextvalues = new_values[:, t] * new_mask[:, t] + (1 - new_mask[:, t]) * nextvalues
+            lastgaelam = lastgaelam_ * new_mask[:, t] + (1 - new_mask[:, t]) * lastgaelam
 
-            advantages_reversed.append(lastgaelam)
-        advantages = torch.stack(advantages_reversed[::-1], dim=1)
+            advantages_reversed.append(lastgaelam.clone())
+
+        new_advantages = torch.stack(advantages_reversed[::-1], dim=1)
+        advantages[new_indices] = new_advantages
+        # advantages_mean[t] = advantages[t+1], i.e., shifted by one position
+        # Shape: (n_new, gen_len-1)
+        advantages_mean[new_indices] = new_advantages[:, 1:].clone()
+
+        # ========== Second loop: Propagate to ancestors ==========
+        # Find new samples that have parents
+        parent_indices = []
+        branch_positions = []
+
+        for idx in new_indices:
+            parent_rid = pid[idx]
+            if parent_rid is not None and parent_rid in rid2idx:
+                parent_idx = rid2idx[parent_rid]
+                # Find branch position from parent's cid
+                parent_cid = cid[parent_idx]
+                current_rid = rid[idx]
+                for pos, child_rids in parent_cid.items():
+                    if current_rid in child_rids:
+                        parent_indices.append(parent_idx)
+                        branch_positions.append(pos)
+                        break
+
+        # Process ancestors iteratively until no more parents
+        while parent_indices:
+            # Group by parent index for parallel processing
+            parent_to_branch_pos = {}
+            for p_idx, b_pos in zip(parent_indices, branch_positions):
+                # Keep the maximum branch position if multiple children point to same parent
+                if p_idx not in parent_to_branch_pos or b_pos > parent_to_branch_pos[p_idx]:
+                    parent_to_branch_pos[p_idx] = b_pos
+
+            next_parent_indices = []
+            next_branch_positions = []
+
+            for p_idx, branch_pos in parent_to_branch_pos.items():
+                # Get cid positions for this parent
+                parent_cid = cid[p_idx]
+                cid_positions = set(parent_cid.keys())
+
+                # Get the next state's advantage for starting the backward propagation
+                # This is the advantage at position branch_pos + 1 (already computed)
+                if branch_pos + 1 < gen_len:
+                    lastgaelam = advantages[p_idx, branch_pos + 1]
+                else:
+                    lastgaelam = torch.tensor(0.0, device=device)
+
+                # Backward propagation from branch_pos to 0
+                for t in reversed(range(branch_pos + 1)):
+                    if t in cid_positions:
+                        # Branch node: compute mean of all children's first advantages
+                        child_rids = parent_cid[t]
+                        child_advs = []
+                        for c_rid in child_rids:
+                            if c_rid in rid2idx:
+                                c_idx = rid2idx[c_rid]
+                                child_advs.append(advantages[c_idx, 0])
+
+                        # Mean of children advantages and next state advantage
+                        n_branches = state_branches[p_idx, t].item()
+                        lastgaelam_mean = (sum(child_advs) + lastgaelam) / n_branches
+                        # Only set advantages_mean for valid indices (0 to gen_len-2)
+                        if t < gen_len - 1:
+                            advantages_mean[p_idx, t] = lastgaelam_mean
+
+                        nextval = values[p_idx, t + 1] if t + 1 < gen_len else 0
+                        delta = token_level_rewards[p_idx, t] + gamma * nextval - values[p_idx, t]
+                        lastgaelam_ = delta + gamma * lam * lastgaelam_mean
+                    else:
+                        # Non-branch node: standard GAE
+                        # Only set advantages_mean for valid indices (0 to gen_len-2)
+                        if t < gen_len - 1:
+                            advantages_mean[p_idx, t] = lastgaelam
+
+                        nextval = values[p_idx, t + 1] if t + 1 < gen_len else 0
+                        delta = token_level_rewards[p_idx, t] + gamma * nextval - values[p_idx, t]
+                        lastgaelam_ = delta + gamma * lam * lastgaelam
+
+                    lastgaelam = lastgaelam_ * response_mask[p_idx, t] + (1 - response_mask[p_idx, t]) * lastgaelam
+                    advantages[p_idx, t] = lastgaelam
+
+                # Check if this parent has a grandparent
+                grandparent_rid = pid[p_idx]
+                if grandparent_rid is not None and grandparent_rid in rid2idx:
+                    grandparent_idx = rid2idx[grandparent_rid]
+                    grandparent_cid = cid[grandparent_idx]
+                    current_rid = rid[p_idx]
+                    for pos, child_rids in grandparent_cid.items():
+                        if current_rid in child_rids:
+                            next_parent_indices.append(grandparent_idx)
+                            next_branch_positions.append(pos)
+                            break
+
+            parent_indices = next_parent_indices
+            branch_positions = next_branch_positions
 
         returns = advantages + values
         advantages = verl_F.masked_whiten(advantages, response_mask)
+
     return advantages, returns
 
 

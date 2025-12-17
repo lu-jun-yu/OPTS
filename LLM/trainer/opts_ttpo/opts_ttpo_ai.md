@@ -75,7 +75,7 @@ algorithm:
 **OPTS_TTPO 新增键：**
 | 键名 | 形状 | 说明 |
 |------|------|------|
-| advantages_mean | (bs, response_len) | 分支节点处所有动作的平均优势 |
+| advantages_mean | (bs, response_len-1) | 分支节点处所有动作的平均优势 |
 | gamma_t | (bs, response_len) | gamma 的累乘：γ^t |
 | lam_t | (bs, response_len) | lambda 的累乘：λ^t |
 | trajectory_reward | (bs, response_len) | 累计折扣奖励 |
@@ -184,7 +184,7 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 #### 3.2.4 价值估计相关
 
 **gve[t]**：广义状态价值估计 (Generalized Value Estimate)
-- 公式：gve[t] = values[t+1] + lam * advantages_mean[t+1]
+- 公式：gve[t] = values[t+1] + lam * advantages_mean[t]
 - 维度：(bs, response_len - 1)，对应位置 0 到 response_len-2
 - 用于估计从状态 t 出发的期望价值
 
@@ -194,7 +194,7 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 - 用于 TUCT 的利用项
 
 **advantages_mean[t]**：分支节点处的平均优势
-- 非分支节点：advantages_mean[t] = advantages[t]
+- 非分支节点：advantages_mean[t] = advantages[t+1]
 - 分支节点：所有分支第一个 token 的 advantage 的平均值
 - 用于 TreeGAE 计算
 
@@ -311,7 +311,7 @@ for epoch in ...:
                 - (全局batch) select_next_states【新函数】：
 
                     1) 计算各状态的评估值：
-                       - gve = values[1:] + lam * advantages_mean[1:]
+                       - gve = values[1:] + lam * advantages_mean[:]
                        - expected_trajectory_reward = trajectory_reward[:-1] + gamma_t[:-1] * gve
 
                     2) 计算partree_branches【新函数：compute_partree_branches】：
