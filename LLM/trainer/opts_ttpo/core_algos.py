@@ -20,9 +20,9 @@ implement PPO-like algorithms.
 
 __all__ = ["register_adv_est", "get_adv_estimator_fn", "AdvantageEstimator"]
 
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from enum import Enum
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -222,6 +222,7 @@ def compute_treegae_advantage_return(
     cid: Optional[list] = None,
     state_branches: Optional[torch.Tensor] = None,
     new_sample_indices: Optional[np.ndarray] = None,
+    next_states: Optional[dict] = None,
     advantages: Optional[torch.Tensor] = None,
     advantages_mean: Optional[torch.Tensor] = None,
 ):
@@ -255,6 +256,9 @@ def compute_treegae_advantage_return(
             shape is (bs, response_length). Number of branches at each state.
         new_sample_indices: `(np.ndarray)`
             Indices of newly sampled trajectories in current round.
+        next_states: `(dict)`
+            Dict[str, Tuple[int, int]]. Mapping from parent rid to (parent_index, branch_pos).
+            Used to identify which parent trajectories need advantage propagation.
         advantages: `(torch.Tensor)`
             shape is (bs, response_length). Pre-allocated advantages tensor to update in-place.
             For existing trajectories, this already contains computed advantages.
@@ -271,29 +275,17 @@ def compute_treegae_advantage_return(
 
     """
     with torch.no_grad():
-        bs, gen_len = token_level_rewards.shape
-        device = token_level_rewards.device
-
-        # advantages and advantages_mean must be provided (pre-allocated)
-        assert advantages is not None, "advantages tensor must be provided"
-        assert advantages_mean is not None, "advantages_mean tensor must be provided"
-
-        # Build rid to index mapping
         rid2idx = {r: i for i, r in enumerate(rid)}
 
         # ========== First loop: Standard GAE for new samples ==========
-        new_indices = new_sample_indices
-        n_new = len(new_indices)
+        new_rewards = token_level_rewards[new_sample_indices]
+        new_values = values[new_sample_indices]
+        new_mask = response_mask[new_sample_indices]
 
-        # Extract tensors for new samples
-        new_rewards = token_level_rewards[new_indices]
-        new_values = values[new_indices]
-        new_mask = response_mask[new_indices]
-
-        # Standard GAE computation (vectorized)
-        nextvalues = torch.zeros(n_new, device=device)
-        lastgaelam = torch.zeros(n_new, device=device)
+        nextvalues = 0
+        lastgaelam = 0
         advantages_reversed = []
+        gen_len = token_level_rewards.shape[-1]
 
         for t in reversed(range(gen_len)):
             delta = new_rewards[:, t] + gamma * nextvalues - new_values[:, t]
@@ -302,85 +294,50 @@ def compute_treegae_advantage_return(
             nextvalues = new_values[:, t] * new_mask[:, t] + (1 - new_mask[:, t]) * nextvalues
             lastgaelam = lastgaelam_ * new_mask[:, t] + (1 - new_mask[:, t]) * lastgaelam
 
-            advantages_reversed.append(lastgaelam.clone())
+            advantages_reversed.append(lastgaelam)
 
         new_advantages = torch.stack(advantages_reversed[::-1], dim=1)
-        advantages[new_indices] = new_advantages
-        # advantages_mean[t] = advantages[t+1], i.e., shifted by one position
-        # Shape: (n_new, gen_len-1)
-        advantages_mean[new_indices] = new_advantages[:, 1:].clone()
+        advantages[new_sample_indices] = new_advantages
+        advantages_mean[new_sample_indices] = new_advantages[:, 1:].clone() # Shape: (n_new, gen_len-1)
 
-        # ========== Second loop: Propagate to ancestors ==========
-        # Find new samples that have parents
-        parent_indices = []
-        branch_positions = []
+        # ========== Second loop: Propagate to ancestors using next_states ==========
+        if next_states is None or len(next_states) == 0:
+            # No parent trajectories to update
+            returns = advantages + values
+            advantages = verl_F.masked_whiten(advantages, response_mask)
+            return advantages, returns
 
-        for idx in new_indices:
-            parent_rid = pid[idx]
-            if parent_rid is not None and parent_rid in rid2idx:
-                parent_idx = rid2idx[parent_rid]
-                # Find branch position from parent's cid
-                parent_cid = cid[parent_idx]
-                current_rid = rid[idx]
-                for pos, child_rids in parent_cid.items():
-                    if current_rid in child_rids:
-                        parent_indices.append(parent_idx)
-                        branch_positions.append(pos)
-                        break
+        # Initialize with parent trajectories from next_states
+        # next_states: {pid: (parent_index, branch_pos)} - already deduplicated
+        current_level = [(parent_idx, branch_pos) for pid_rid, (parent_idx, branch_pos) in next_states.items()]
 
-        # Process ancestors iteratively until no more parents
-        while parent_indices:
-            # Group by parent index for parallel processing
-            parent_to_branch_pos = {}
-            for p_idx, b_pos in zip(parent_indices, branch_positions):
-                # Keep the maximum branch position if multiple children point to same parent
-                if p_idx not in parent_to_branch_pos or b_pos > parent_to_branch_pos[p_idx]:
-                    parent_to_branch_pos[p_idx] = b_pos
+        while current_level:
+            next_level = []
 
-            next_parent_indices = []
-            next_branch_positions = []
-
-            for p_idx, branch_pos in parent_to_branch_pos.items():
-                # Get cid positions for this parent
+            for p_idx, branch_pos in current_level:
                 parent_cid = cid[p_idx]
                 cid_positions = set(parent_cid.keys())
 
-                # Get the next state's advantage for starting the backward propagation
-                # This is the advantage at position branch_pos + 1 (already computed)
-                if branch_pos + 1 < gen_len:
-                    lastgaelam = advantages[p_idx, branch_pos + 1]
-                else:
-                    lastgaelam = torch.tensor(0.0, device=device)
+                # Step 1: Process branch_pos (always a branch node)
+                child_indices = [rid2idx[c_rid] for c_rid in parent_cid[branch_pos]]
+                lastgaelam_mean = (advantages[child_indices, 0].sum() + advantages[p_idx, branch_pos + 1]) / state_branches[p_idx, branch_pos]
+                advantages_mean[p_idx, branch_pos] = lastgaelam_mean
 
-                # Backward propagation from branch_pos to 0
-                for t in reversed(range(branch_pos + 1)):
+                delta = token_level_rewards[p_idx, branch_pos] + gamma * values[p_idx, branch_pos + 1] - values[p_idx, branch_pos]
+                lastgaelam = (delta + gamma * lam * lastgaelam_mean) * response_mask[p_idx, branch_pos]
+                advantages[p_idx, branch_pos] = lastgaelam
+
+                # Step 2: Backward propagation from branch_pos - 1 to 0
+                for t in reversed(range(branch_pos)):
                     if t in cid_positions:
-                        # Branch node: compute mean of all children's first advantages
-                        child_rids = parent_cid[t]
-                        child_advs = []
-                        for c_rid in child_rids:
-                            if c_rid in rid2idx:
-                                c_idx = rid2idx[c_rid]
-                                child_advs.append(advantages[c_idx, 0])
-
-                        # Mean of children advantages and next state advantage
-                        n_branches = state_branches[p_idx, t].item()
-                        lastgaelam_mean = (sum(child_advs) + lastgaelam) / n_branches
-                        # Only set advantages_mean for valid indices (0 to gen_len-2)
-                        if t < gen_len - 1:
-                            advantages_mean[p_idx, t] = lastgaelam_mean
-
-                        nextval = values[p_idx, t + 1] if t + 1 < gen_len else 0
-                        delta = token_level_rewards[p_idx, t] + gamma * nextval - values[p_idx, t]
+                        child_indices = [rid2idx[c_rid] for c_rid in parent_cid[t]]
+                        lastgaelam_mean = (advantages[child_indices, 0].sum() + lastgaelam) / state_branches[p_idx, t]
+                        advantages_mean[p_idx, t] = lastgaelam_mean
+                        delta = token_level_rewards[p_idx, t] + gamma * values[p_idx, t + 1] - values[p_idx, t]
                         lastgaelam_ = delta + gamma * lam * lastgaelam_mean
                     else:
-                        # Non-branch node: standard GAE
-                        # Only set advantages_mean for valid indices (0 to gen_len-2)
-                        if t < gen_len - 1:
-                            advantages_mean[p_idx, t] = lastgaelam
-
-                        nextval = values[p_idx, t + 1] if t + 1 < gen_len else 0
-                        delta = token_level_rewards[p_idx, t] + gamma * nextval - values[p_idx, t]
+                        advantages_mean[p_idx, t] = lastgaelam
+                        delta = token_level_rewards[p_idx, t] + gamma * values[p_idx, t + 1] - values[p_idx, t]
                         lastgaelam_ = delta + gamma * lam * lastgaelam
 
                     lastgaelam = lastgaelam_ * response_mask[p_idx, t] + (1 - response_mask[p_idx, t]) * lastgaelam
@@ -388,23 +345,23 @@ def compute_treegae_advantage_return(
 
                 # Check if this parent has a grandparent
                 grandparent_rid = pid[p_idx]
-                if grandparent_rid is not None and grandparent_rid in rid2idx:
+                if grandparent_rid is not None:
                     grandparent_idx = rid2idx[grandparent_rid]
                     grandparent_cid = cid[grandparent_idx]
                     current_rid = rid[p_idx]
                     for pos, child_rids in grandparent_cid.items():
                         if current_rid in child_rids:
-                            next_parent_indices.append(grandparent_idx)
-                            next_branch_positions.append(pos)
+                            next_level.append((grandparent_idx, pos))
                             break
 
-            parent_indices = next_parent_indices
-            branch_positions = next_branch_positions
+            current_level = next_level
 
         returns = advantages + values
-        advantages = verl_F.masked_whiten(advantages, response_mask)
+        # Note: Do NOT whiten advantages here. In OPTS_TTPO, advantages from previous
+        # rounds are used in subsequent TreeGAE calculations. Whitening should be done
+        # after all g rounds complete, before policy update.
 
-    return advantages, returns
+    return advantages, returns, advantages_mean
 
 
 @register_adv_est(AdvantageEstimator.GAE)  # or simply: @register_adv_est("gae")
@@ -980,15 +937,21 @@ def agg_loss(
     """
     Aggregate the loss across global batch to ensure the loss is invariant to fsdp/megatron parallelism.
 
+    NOTE: ``dp_size``, ``batch_num_tokens``, and ``global_batch_size`` are only compatible with the new model engine
+        for now, while the legacy model engines conduct the aggregation outside ``agg_loss``.
+
     NOTE: The returned loss has different behaviors for different backend:
     - FSDP: the loss is directly used for backward.
     - Megatron: the loss should be scaled by `num_microbatches` and `cp_size` for pp schedule.
+
+    # TODO: Consider the numerical stability?
 
     Args:
         loss_mat: micro batch loss matrix, (bs, response_length)
         loss_mask: micro batch loss mask, (bs, response_length)
         loss_agg_mode: method to aggregate the loss matrix into a scalar
-        dp_size: data parallel size
+        dp_size: data parallel size. When appling manual aggregation,
+            scaling up the ``loss`` by ``dp_size`` can cancel out FSDP averaging.
         batch_num_tokens: number of valid tokens in global batch
         global_batch_size: global batch size
         loss_scale_factor: scale factor for "seq-mean-token-sum-norm" mode. If None, uses loss_mask.shape[-1].
@@ -1000,35 +963,44 @@ def agg_loss(
         loss: `a scalar torch.Tensor`
             aggregated loss
     """
+    # NOTE: `masked_sum` is more robust than multiplying the `mask`.
     if loss_agg_mode == "token-mean":
         if batch_num_tokens is None:
             batch_num_tokens = loss_mask.sum()
         loss = verl_F.masked_sum(loss_mat, loss_mask) / batch_num_tokens * dp_size
-    elif loss_agg_mode == "seq-mean-token-sum":
-        seq_losses = torch.sum(loss_mat * loss_mask, dim=-1)  # token-sum
-        seq_mask = (torch.sum(loss_mask, dim=-1) > 0).float()  # exclude fully masked sequences
-        if global_batch_size is None:
-            global_batch_size = seq_mask.sum()
-        loss = verl_F.masked_sum(seq_losses, seq_mask) / global_batch_size * dp_size  # seq-mean
-    elif loss_agg_mode == "seq-mean-token-mean":
-        seq_mask = torch.sum(loss_mask, dim=-1)  # per-sequence token count
-        seq_losses = torch.sum(loss_mat * loss_mask, dim=-1) / (seq_mask + 1e-8)  # token-mean
-        seq_mask = (seq_mask > 0).float()  # exclude fully masked sequences
-        if global_batch_size is None:
-            global_batch_size = seq_mask.sum()
-        loss = verl_F.masked_sum(seq_losses, seq_mask) / global_batch_size * dp_size  # seq-mean
-    elif loss_agg_mode == "seq-mean-token-sum-norm":
-        seq_losses = torch.sum(loss_mat * loss_mask, dim=-1)
-        if loss_scale_factor is None:
-            loss_scale_factor = loss_mask.shape[-1]
-        loss = torch.sum(seq_losses) / loss_scale_factor
     elif loss_agg_mode == "weighted-token-mean":
         if branch_weight_factor is None:
             raise ValueError("branch_weight_factor is required for weighted-token-mean mode")
         inv_weight = 1.0 / branch_weight_factor
         loss = verl_F.masked_sum(loss_mat, loss_mask) / verl_F.masked_sum(inv_weight, loss_mask) * dp_size
+    elif loss_agg_mode.startswith("seq-mean"):
+        # TODO: Correct and unify the denominator logic.
+        if global_batch_size is not None:
+            seq_denominator = global_batch_size * dp_size
+        else:  # The default logic which is only correct when the batch sizes are even.
+            local_bsz = loss_mat.shape[0]
+            seq_denominator = local_bsz
+
+        if loss_agg_mode.startswith("seq-mean-token-sum"):
+            seq_losses = verl_F.masked_sum(loss_mat, loss_mask, axis=-1)  # token-sum per sequence
+
+            if loss_agg_mode == "seq-mean-token-sum":
+                pass  # TODO: Add assertation.
+            elif loss_agg_mode == "seq-mean-token-sum-norm":
+                if loss_scale_factor is None:
+                    loss_scale_factor = loss_mask.shape[-1]
+                seq_losses = seq_losses / loss_scale_factor
+            else:
+                raise ValueError(f"Invalid {loss_agg_mode=}")
+        elif loss_agg_mode == "seq-mean-token-mean":
+            token_counts = torch.sum(loss_mask, dim=-1)  # per-sequence token count
+            # token-mean per sequence
+            seq_losses = verl_F.masked_sum(loss_mat, loss_mask, axis=-1) / (token_counts + 1e-8)
+        else:
+            raise ValueError(f"Invalid {loss_agg_mode=}")
+        loss = torch.sum(seq_losses) / seq_denominator  # seq-mean
     else:
-        raise ValueError(f"Invalid loss_agg_mode: {loss_agg_mode}")
+        raise ValueError(f"Invalid {loss_agg_mode=}")
 
     return loss
 
@@ -1139,7 +1111,7 @@ def compute_policy_loss_vanilla(
             Aggregation mode for `agg_loss`. Defaults to "token-mean".
         config: `(verl.trainer.config.ActorConfig)`:
             config for the actor.
-        rollout_is_weights: `(torch.Tensor)`:
+        rollout_log_probs: `(torch.Tensor)`:
             log probabilities of actions under the rollout policy, shape (batch_size, response_length).
         branch_weight_factor: `(torch.Tensor)`:
             Weight factor for TTPO gradient correction, shape (batch_size, response_length).
@@ -1803,92 +1775,179 @@ def compute_pf_ppo_reweight_data(
     return resampled_data
 
 
-def compute_policy_loss_with_rollout_correction(
-    rollout_log_prob,
-    log_prob,
-    advantages,
-    eos_mask,
-    loss_agg_mode="seq-mean-token-sum",
+def compute_policy_loss_reinforce(
+    rollout_log_prob: torch.Tensor,
+    log_prob: torch.Tensor,
+    advantages: torch.Tensor,
+    response_mask: torch.Tensor,
+    loss_agg_mode: str = "seq-mean-token-sum",
     config: Optional[ActorConfig] = None,
-    loss_scale_factor=1.0,
-    rollout_is: Optional[str] = None,
-    rollout_is_threshold: float = 2.0,
-    rollout_rs: Optional[str] = None,
-    rollout_rs_threshold: Optional[float] = None,
-    rollout_rs_threshold_lower: Optional[float] = None,
-    rollout_token_veto_threshold: Optional[float] = None,
-    rollout_is_batch_normalize: bool = False,
-):
-    """Compute policy loss with pure rollout correction (no PPO clipping).
+    rollout_is_weights: Optional[torch.Tensor] = None,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    """Compute REINFORCE-style policy gradient loss with optional IS correction.
 
-    This function implements policy gradient with importance sampling correction
-    for rollout-training policy mismatch, without PPO's clipping mechanism.
+    This function implements policy gradient (REINFORCE) with optional importance
+    sampling correction for rollout-training policy mismatch.
 
     Mathematical formulation:
-        Without IS (rollout_is=None):
+        Without IS (rollout_is_weights=None):
             L = -E[log π(a|s) * A(s,a)]
             Gradient: ∇_θ L = -E[∇log π(a|s) * A] (standard REINFORCE)
 
-        With IS (rollout_is enabled):
+        With IS (rollout_is_weights provided):
             L = -E_π_rollout[w * log π(a|s) * A(s,a)]
             where w = π_current / π_rollout (truncated IS weight)
             Gradient: ∇_θ L = -E[w * ∇log π(a|s) * A] (IS-corrected policy gradient)
 
     Args:
         rollout_log_prob: Log probabilities from rollout policy (e.g., vLLM BF16).
-            Shape: (batch_size, seq_length)
+            Shape: (batch_size, seq_length). Used for KL computation.
         log_prob: Log probabilities from current training policy.
             Shape: (batch_size, seq_length)
         advantages: Advantage estimates for each token.
             Shape: (batch_size, seq_length)
-        eos_mask: Mask indicating valid tokens (1 for valid, 0 for padding).
-            Shape: (batch_size, seq_length)
+        response_mask: Mask indicating valid tokens (1 for valid, 0 for padding).
+            Shape: (batch_size, seq_length). Should already include rejection sampling.
         loss_agg_mode: Loss aggregation strategy (see agg_loss for details).
-        loss_scale_factor: Multiplicative scaling factor applied to final loss.
-        rollout_is: IS aggregation level ("token", "sequence", or None).
-        rollout_is_threshold: Upper threshold for truncating IS weights.
-        rollout_rs: Rejection sampling aggregation level (or None to disable).
-        rollout_rs_threshold: Upper threshold for rejection sampling.
-        rollout_rs_threshold_lower: Lower threshold for rejection sampling.
-        rollout_token_veto_threshold: Per-token veto threshold for catastrophic outliers.
-        rollout_is_batch_normalize: Whether to normalize IS weights to have mean=1.0 per batch.
+        config: Actor config (required for global_batch_info).
+        rollout_is_weights: Pre-computed IS weights (π_current / π_rollout).
+            Shape: (batch_size, seq_length). None to disable IS correction.
+
+    Returns:
+        Tuple of (loss, metrics):
+            loss: Scalar policy gradient loss
+            metrics: Dictionary with "actor/ppo_kl"
 
     Note:
-        Unlike compute_policy_loss (PPO), this function:
-        - Does NOT use PPO clipping (no old_log_prob needed)
-        - Directly applies IS correction computed from current vs rollout
-        - Computes IS/RS on-the-fly during training
-
-    Usage:
-        This function is called by the actor when:
-        - bypass_mode=True (trainer uses rollout_log_prob as old_log_prob)
-        - use_policy_gradient=True (actor uses this function instead of compute_policy_loss)
-
-    Example config:
-        algorithm:
-          rollout_correction:
-            bypass_mode: true
-            use_policy_gradient: true
-            rollout_is: "token"
-            rollout_is_threshold: 2.0
-            rollout_rs: "token"
-            rollout_rs_threshold: 2.0
-            rollout_rs_threshold_lower: 0.5
-
+        Unlike PPO (compute_policy_loss_vanilla), this function:
+        - Does NOT use PPO clipping
+        - Uses log π(a|s) directly (not ratio)
+        - IS weights are applied as multiplicative factor
     """
-    # Import rollout correction helper
+    assert config is not None, "ActorConfig must be provided for REINFORCE loss"
+
+    # Compute pure policy gradient loss with optional IS correction
+    # Standard REINFORCE: L = -E[log π(a|s) * A]
+    # With IS: L = -E[w * log π(a|s) * A] where w = π_current / π_rollout
+    if rollout_is_weights is not None:
+        # IS-corrected policy gradient: L = -E[stopgrad(w) · log π · A]
+        pg_losses = -advantages * log_prob * rollout_is_weights
+    else:
+        # Standard REINFORCE: L = -E[log π · A]
+        pg_losses = -advantages * log_prob
+
+    # Aggregate loss
+    pg_loss = agg_loss(
+        loss_mat=pg_losses,
+        loss_mask=response_mask,
+        loss_agg_mode=loss_agg_mode,
+        **config.global_batch_info,
+    )
+
+    # Compute KL divergence between current and rollout policy
+    negative_approx_kl = log_prob - rollout_log_prob
+    kl_divergence = verl_F.masked_mean(-negative_approx_kl, response_mask)
+
+    pg_metrics = {
+        "actor/ppo_kl": kl_divergence.detach().item(),
+    }
+
+    return pg_loss, pg_metrics
+
+
+@register_policy_loss("bypass_mode")
+def compute_policy_loss_bypass_mode(
+    old_log_prob: torch.Tensor,
+    log_prob: torch.Tensor,
+    advantages: torch.Tensor,
+    response_mask: torch.Tensor,
+    loss_agg_mode: str = "token-mean",
+    config: Optional[ActorConfig] = None,
+    rollout_is_weights: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    """Bypass mode policy loss supporting both REINFORCE and PPO-clip.
+
+    This function is the entry point for bypass mode, where old_log_prob = rollout_log_prob.
+    It computes IS weights and rejection masks, then dispatches to either REINFORCE or
+    PPO-clip loss based on the loss_type configuration.
+
+    IMPORTANT - Bypass mode semantics:
+        In bypass mode, the trainer sets old_log_prob = rollout_log_prob.
+        This means:
+        - For REINFORCE: We use IS weights w = π_current / π_rollout explicitly
+        - For PPO-clip: The PPO ratio π_current / π_old = π_current / π_rollout
+          already incorporates the IS correction through clipping, so we do NOT
+          apply additional IS weights (would be double-counting)
+
+    Loss types:
+        - "ppo_clip" (default): PPO clipped objective (compute_policy_loss_vanilla)
+            L = -E[min(r*A, clip(r)*A)] where r = π_current / π_rollout
+            Note: IS weights are NOT applied (clipping handles the ratio)
+        - "reinforce": REINFORCE-style policy gradient with IS correction
+            L = -E[w * log π(a|s) * A] where w = π_current / π_rollout
+
+    Args:
+        old_log_prob: In bypass mode, this is actually rollout_log_prob.
+            Shape: (batch_size, seq_length)
+        log_prob: Current policy log probabilities.
+            Shape: (batch_size, seq_length)
+        advantages: Advantage estimates.
+            Shape: (batch_size, seq_length)
+        response_mask: Valid token mask (1=valid, 0=padding).
+            Shape: (batch_size, seq_length)
+        loss_agg_mode: Loss aggregation mode (passed to underlying loss function).
+        config: Actor config containing rollout_correction settings in policy_loss.
+        rollout_is_weights: Pre-computed IS weights (ignored, computed internally).
+
+    Config options (in config.policy_loss.rollout_correction):
+        loss_type: "ppo_clip" (default) or "reinforce"
+        rollout_is: IS aggregation level ("token", "sequence", or None)
+        rollout_is_threshold: Upper threshold for truncating IS weights (default: 2.0)
+        rollout_rs: Rejection sampling level ("token", "sequence", "geometric", or None)
+        rollout_rs_threshold: Upper threshold for rejection sampling
+        rollout_rs_threshold_lower: Lower threshold for rejection sampling
+        rollout_token_veto_threshold: Per-token veto threshold for catastrophic outliers
+        rollout_is_batch_normalize: Whether to normalize IS weights to mean=1.0
+
+    Returns:
+        Tuple of (loss, metrics):
+            loss: Scalar policy loss
+            metrics: Dictionary with rollout correction metrics and actor/ppo_kl
+    """
     from verl.trainer.ppo.rollout_corr_helper import compute_rollout_correction_and_rejection_mask
 
-    assert config is not None, "ActorConfig must be provided for rollout correction"
+    assert config is not None, "config is required for bypass_mode loss"
 
-    # Compute IS weights and rejection mask on-the-fly
-    # Use no_grad since weights are detached inside and metrics don't need gradients
+    # Extract rollout_correction config from policy_loss
+    rollout_corr_config = config.policy_loss.get("rollout_correction", None) if hasattr(config, "policy_loss") else None
+
+    if rollout_corr_config is None:
+        raise ValueError(
+            "rollout_correction config not found in policy_loss. "
+            "When using loss_mode='bypass_mode', ensure rollout_correction config is passed."
+        )
+
+    # Extract parameters
+    loss_type = rollout_corr_config.get("loss_type", "ppo_clip")
+    rollout_is = rollout_corr_config.get("rollout_is", None)
+    rollout_is_threshold = rollout_corr_config.get("rollout_is_threshold", 2.0)
+    rollout_rs = rollout_corr_config.get("rollout_rs", None)
+    rollout_rs_threshold = rollout_corr_config.get("rollout_rs_threshold", None)
+    rollout_rs_threshold_lower = rollout_corr_config.get("rollout_rs_threshold_lower", None)
+    rollout_token_veto_threshold = rollout_corr_config.get("rollout_token_veto_threshold", None)
+    rollout_is_batch_normalize = rollout_corr_config.get("rollout_is_batch_normalize", False)
+
+    # In bypass mode: old_log_prob IS rollout_log_prob
+    rollout_log_prob = old_log_prob
+
+    # Compute IS weights and rejection mask
+    # Note: For PPO-clip, we still compute IS weights for metrics, but don't apply them
     with torch.no_grad():
         rollout_is_weights_proto, modified_response_mask, rollout_metrics = (
             compute_rollout_correction_and_rejection_mask(
-                old_log_prob=log_prob,  # Current policy
+                old_log_prob=log_prob,  # Current policy (for IS ratio: π_current / π_rollout)
                 rollout_log_prob=rollout_log_prob,  # Rollout policy
-                response_mask=eos_mask,
+                response_mask=response_mask,
                 rollout_is=rollout_is,
                 rollout_is_threshold=rollout_is_threshold,
                 rollout_rs=rollout_rs,
@@ -1899,112 +1958,450 @@ def compute_policy_loss_with_rollout_correction(
             )
         )
 
-    # Extract weights tensor from DataProto (or None if disabled)
-    rollout_is_weights = rollout_is_weights_proto.batch["rollout_is_weights"] if rollout_is_weights_proto else None
+    # Extract IS weights tensor (or None if disabled)
+    computed_is_weights = rollout_is_weights_proto.batch["rollout_is_weights"] if rollout_is_weights_proto else None
 
-    # Apply rejection mask (if RS is enabled)
-    effective_mask = modified_response_mask if rollout_rs is not None else eos_mask
+    # Apply rejection mask (RS + veto)
+    effective_mask = modified_response_mask
 
-    # Compute pure policy gradient loss with IS correction
-    # Standard REINFORCE: L = -E[log π(a|s) * A]
-    # With IS: L = -E[w * log π(a|s) * A] where w = π_current / π_rollout
-    #
-    # Note: rollout_is_weights already contains w = π_current / π_rollout
-    # So we apply it to the standard log-prob trick formula
-
-    if rollout_is_weights is not None:
-        # IS-corrected policy gradient: L = -E[stopgrad(w) · log π · A]
-        pg_losses = -advantages * log_prob * rollout_is_weights
-    else:
-        # Standard REINFORCE: L = -E[log π · A]
-        pg_losses = -advantages * log_prob
-
-    # Aggregate loss (apply scale factor manually)
-    pg_loss = (
-        agg_loss(
-            loss_mat=pg_losses,
-            loss_mask=effective_mask,
+    # Dispatch to appropriate loss function based on loss_type
+    if loss_type == "reinforce":
+        # REINFORCE: Apply IS weights explicitly
+        pg_loss, pg_metrics = compute_policy_loss_reinforce(
+            rollout_log_prob=rollout_log_prob,
+            log_prob=log_prob,
+            advantages=advantages,
+            response_mask=effective_mask,
             loss_agg_mode=loss_agg_mode,
-            **config.global_batch_info,
+            config=config,
+            rollout_is_weights=computed_is_weights,
         )
-        * loss_scale_factor
-    )
 
-    # Compute KL divergence between current and rollout policy
-    negative_approx_kl = log_prob - rollout_log_prob
-    kl_divergence = verl_F.masked_mean(-negative_approx_kl, effective_mask)
+    elif loss_type == "ppo_clip":
+        # PPO-clip: The ratio π_current/π_old = π_current/π_rollout already handles IS
+        # DO NOT apply IS weights - would be double-counting!
+        # The clipping mechanism constrains the effective IS ratio
+        pg_loss, pg_metrics = compute_policy_loss_vanilla(  # type: ignore[call-arg]
+            old_log_prob=rollout_log_prob,  # = old_log_prob in bypass mode
+            log_prob=log_prob,
+            advantages=advantages,
+            response_mask=effective_mask,
+            loss_agg_mode=loss_agg_mode,
+            config=config,
+            rollout_is_weights=None,  # Explicitly None - no IS weights for PPO-clip
+        )
 
-    pg_metrics = rollout_metrics
-    pg_metrics.update(
-        {
-            "actor/ppo_kl": kl_divergence.detach().item(),
-        }
-    )
+    else:
+        raise ValueError(f"Invalid loss_type: {loss_type}. Must be 'reinforce' or 'ppo_clip'.")
+
+    # Merge rollout correction metrics
+    pg_metrics.update(rollout_metrics)
 
     return pg_loss, pg_metrics
 
 
-@register_policy_loss("rollout_correction")
-def compute_policy_loss_rollout_correction_wrapper(
-    old_log_prob: torch.Tensor,
-    log_prob: torch.Tensor,
-    advantages: torch.Tensor,
-    response_mask: torch.Tensor,
-    loss_agg_mode: str = "token-mean",
-    config: Optional[ActorConfig] = None,
-    rollout_is_weights: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, dict[str, Any]]:
-    """Wrapper for compute_policy_loss_with_rollout_correction to match PolicyLossFn interface.
+# ============================================================================
+# OPTS_TTPO Specific Functions
+# ============================================================================
 
-    This function is used when algorithm.rollout_correction.use_policy_gradient=True.
-    In this mode, the trainer has already set old_log_prob=rollout_log_prob (bypass mode).
+
+def set_opts_ttpo_info(
+    batch_size: int,
+    uid: np.ndarray,
+    parent_rid: Optional[List[str]],
+    parent_branch_pos: Optional[List[int]],
+    global_rid: Optional[List[str]] = None,
+    global_pid: Optional[List[Optional[str]]] = None,
+    global_cid: Optional[List[OrderedDict]] = None,
+) -> Tuple[np.ndarray, np.ndarray, List[OrderedDict]]:
+    """Set OPTS_TTPO tree structure information for new samples.
+
+    This function generates unique response IDs (rid) for new samples, sets their
+    parent IDs (pid), and updates the parent trajectories' children IDs (cid).
 
     Args:
-        old_log_prob: In bypass mode, this is actually rollout_log_prob
-        log_prob: Current policy log probabilities
-        advantages: Advantage estimates
-        response_mask: Valid token mask
-        loss_agg_mode: Loss aggregation mode
-        config: Actor config containing rollout_correction settings
-        rollout_is_weights: Pre-computed IS weights (ignored, computed internally)
+        batch_size: Number of new samples in this round.
+        uid: Unique prompt IDs for each sample, shape (batch_size,).
+        parent_rid: List of parent trajectory rids for each new sample.
+            None for first round samples (no parent).
+        parent_branch_pos: List of branch positions in parent trajectories.
+            None for first round samples.
+        global_rid: List of all existing rids in the global batch.
+            Used to update cid of parent trajectories.
+        global_pid: List of all existing pids in the global batch.
+        global_cid: List of all existing cids in the global batch.
+            Will be modified in-place to add new children.
+
+    Returns:
+        Tuple of:
+            - rid: np.ndarray of shape (batch_size,), unique response IDs for new samples
+            - pid: np.ndarray of shape (batch_size,), parent IDs (None for first round)
+            - cid: List of OrderedDict for each new sample (initially empty)
     """
-    assert config is not None, "config is required for rollout_correction loss mode"
+    import uuid
 
-    # Extract rollout_correction config
-    # In ray_trainer, when use_policy_gradient=True, the rollout_correction config
-    # is embedded in actor config's policy_loss field
-    rollout_corr_config = config.policy_loss.get("rollout_correction", None) if hasattr(config, "policy_loss") else None
+    # Generate unique rid for each new sample
+    rid = np.array([str(uuid.uuid4()) for _ in range(batch_size)], dtype=object)
 
-    if rollout_corr_config is None:
-        raise ValueError(
-            "rollout_correction config not found in policy_loss. "
-            "When using loss_mode='rollout_correction', ensure rollout_correction config is passed."
-        )
+    # Set pid for each new sample
+    if parent_rid is None:
+        # First round: no parent
+        pid = np.array([None] * batch_size, dtype=object)
+    else:
+        pid = np.array(parent_rid, dtype=object)
 
-    # Extract parameters
-    rollout_is = rollout_corr_config.get("rollout_is", None)
-    rollout_is_threshold = rollout_corr_config.get("rollout_is_threshold", 2.0)
-    rollout_rs = rollout_corr_config.get("rollout_rs", None)
-    rollout_rs_threshold = rollout_corr_config.get("rollout_rs_threshold", None)
-    rollout_rs_threshold_lower = rollout_corr_config.get("rollout_rs_threshold_lower", None)
-    rollout_token_veto_threshold = rollout_corr_config.get("rollout_token_veto_threshold", None)
-    rollout_is_batch_normalize = rollout_corr_config.get("rollout_is_batch_normalize", False)
+    # Initialize empty cid for each new sample
+    cid = [OrderedDict() for _ in range(batch_size)]
 
-    # Call the actual implementation
-    # In bypass mode, old_log_prob IS rollout_log_prob
-    return compute_policy_loss_with_rollout_correction(
-        rollout_log_prob=old_log_prob,  # This is rollout_log_prob in bypass mode
-        log_prob=log_prob,
-        advantages=advantages,
-        eos_mask=response_mask,
-        loss_agg_mode=loss_agg_mode,
-        config=config,
-        loss_scale_factor=1.0,
-        rollout_is=rollout_is,
-        rollout_is_threshold=rollout_is_threshold,
-        rollout_rs=rollout_rs,
-        rollout_rs_threshold=rollout_rs_threshold,
-        rollout_rs_threshold_lower=rollout_rs_threshold_lower,
-        rollout_token_veto_threshold=rollout_token_veto_threshold,
-        rollout_is_batch_normalize=rollout_is_batch_normalize,
+    # Update parent trajectories' cid if this is not the first round
+    if parent_rid is not None and global_rid is not None and global_cid is not None:
+        # Build rid to index mapping for global batch
+        rid2idx = {r: i for i, r in enumerate(global_rid)}
+
+        for i, (p_rid, bp) in enumerate(zip(parent_rid, parent_branch_pos)):
+            if p_rid is not None and p_rid in rid2idx:
+                p_idx = rid2idx[p_rid]
+                # Add new child rid to parent's cid at the branch position
+                if bp not in global_cid[p_idx]:
+                    global_cid[p_idx][bp] = []
+                global_cid[p_idx][bp].append(rid[i])
+
+    return rid, pid, cid
+
+
+def compute_forward_values(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    gamma: float,
+    lam: float,
+    pid: np.ndarray,
+    parent_branch_pos: Optional[List[int]] = None,
+    parent_gamma_t: Optional[torch.Tensor] = None,
+    parent_lam_t: Optional[torch.Tensor] = None,
+    parent_trajectory_reward: Optional[torch.Tensor] = None,
+    rid2idx: Optional[Dict[str, int]] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute forward values for OPTS_TTPO: gamma_t, lam_t, trajectory_reward.
+
+    Args:
+        token_level_rewards: Token-level rewards, shape (batch_size, response_len).
+        response_mask: Response mask, shape (batch_size, response_len).
+        gamma: Discount factor.
+        lam: Lambda for GAE.
+        pid: Parent IDs for each sample, shape (batch_size,).
+        parent_branch_pos: Branch positions in parent trajectories for each sample.
+        parent_gamma_t: gamma_t values from parent trajectories (global batch).
+        parent_lam_t: lam_t values from parent trajectories (global batch).
+        parent_trajectory_reward: trajectory_reward values from parent trajectories (global batch).
+        rid2idx: Mapping from rid to index in parent tensors.
+
+    Returns:
+        Tuple of:
+            - gamma_t: γ^t values, shape (batch_size, response_len)
+            - lam_t: λ^t values, shape (batch_size, response_len)
+            - trajectory_reward: Cumulative discounted rewards, shape (batch_size, response_len)
+    """
+    batch_size, response_len = token_level_rewards.shape
+    device = token_level_rewards.device
+
+    gamma_t = torch.zeros(batch_size, response_len, device=device)
+    lam_t = torch.zeros(batch_size, response_len, device=device)
+    trajectory_reward = torch.zeros(batch_size, response_len, device=device)
+
+    for i in range(batch_size):
+        # Determine initial values based on whether there's a parent
+        p_rid = pid[i] if pid is not None else None
+
+        if p_rid is not None and rid2idx is not None and p_rid in rid2idx:
+            # Has parent: inherit from parent's branch position
+            p_idx = rid2idx[p_rid]
+            branch_pos = parent_branch_pos[i] if parent_branch_pos is not None else 0
+
+            # Initial gamma_t: parent's gamma_t at branch_pos * gamma (for first step)
+            init_gamma = parent_gamma_t[p_idx, branch_pos].item() if parent_gamma_t is not None else 1.0
+            init_lam = parent_lam_t[p_idx, branch_pos].item() if parent_lam_t is not None else 1.0
+            init_traj_reward = parent_trajectory_reward[p_idx, branch_pos].item() if parent_trajectory_reward is not None else 0.0
+        else:
+            # No parent: start from initial values
+            init_gamma = 1.0
+            init_lam = 1.0
+            init_traj_reward = 0.0
+
+        # Compute gamma_t: cumulative product of gamma
+        # gamma_t[0] = init_gamma * gamma (first token after branch point)
+        current_gamma = init_gamma
+        current_lam = init_lam
+        current_traj_reward = init_traj_reward
+
+        for t in range(response_len):
+            if response_mask[i, t] > 0:
+                current_gamma = current_gamma * gamma
+                current_lam = current_lam * lam
+                current_traj_reward = current_traj_reward + current_gamma * token_level_rewards[i, t].item()
+
+                gamma_t[i, t] = current_gamma
+                lam_t[i, t] = current_lam
+                trajectory_reward[i, t] = current_traj_reward
+
+    return gamma_t, lam_t, trajectory_reward
+
+
+def compute_partree_branches(
+    cid: List[OrderedDict],
+    pid: np.ndarray,
+    subtree_branches: torch.Tensor,
+    response_len: int,
+    round_idx: int,
+    n_samples_per_round: int,
+    rid2idx: Optional[Dict[str, int]] = None,
+    parent_branch_pos: Optional[List[int]] = None,
+    parent_subtree_branches: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Compute partree_branches for each state.
+
+    partree_branches[t] is the subtree_branches of the parent branch point of state t.
+    The parent branch point is the nearest upstream branch node of state t.
+
+    Args:
+        cid: Children ID mapping for each trajectory.
+        pid: Parent IDs for each trajectory.
+        subtree_branches: subtree_branches values, shape (batch_size, response_len).
+        response_len: Length of response.
+        round_idx: Current round index (0-based).
+        n_samples_per_round: Number of samples per round (n).
+        rid2idx: Mapping from rid to index.
+        parent_branch_pos: Branch positions in parent trajectories.
+        parent_subtree_branches: subtree_branches from parent trajectories.
+
+    Returns:
+        partree_branches: shape (batch_size, response_len)
+    """
+    batch_size = len(cid)
+    device = subtree_branches.device
+    partree_branches = torch.zeros(batch_size, response_len, device=device)
+
+    for i in range(batch_size):
+        trajectory_cid = cid[i]
+        p_rid = pid[i] if pid is not None else None
+
+        # Get branch positions sorted
+        branch_positions = sorted(trajectory_cid.keys()) if trajectory_cid else []
+
+        # Determine the default value (from parent or root)
+        if p_rid is not None and rid2idx is not None and p_rid in rid2idx:
+            # Has parent: use parent's subtree_branches at the branch position
+            p_idx = rid2idx[p_rid]
+            branch_pos = parent_branch_pos[i] if parent_branch_pos is not None else 0
+            default_value = parent_subtree_branches[p_idx, branch_pos].item() if parent_subtree_branches is not None else (round_idx + 1) * n_samples_per_round
+        else:
+            # No parent: use root subtree_branches
+            default_value = (round_idx + 1) * n_samples_per_round
+
+        if not branch_positions:
+            # No branch points in this trajectory: all positions use default
+            partree_branches[i, :] = default_value
+        else:
+            # Has branch points
+            # Positions before first branch point: use default
+            first_branch = branch_positions[0]
+            partree_branches[i, :first_branch + 1] = default_value
+
+            # Positions between branch points
+            for j in range(len(branch_positions) - 1):
+                curr_branch = branch_positions[j]
+                next_branch = branch_positions[j + 1]
+                partree_branches[i, curr_branch + 1:next_branch + 1] = subtree_branches[i, curr_branch]
+
+            # Positions after last branch point
+            last_branch = branch_positions[-1]
+            if last_branch + 1 < response_len:
+                partree_branches[i, last_branch + 1:] = subtree_branches[i, last_branch]
+
+    return partree_branches
+
+
+def select_next_states(
+    values: torch.Tensor,
+    advantages_mean: torch.Tensor,
+    trajectory_reward: torch.Tensor,
+    gamma_t: torch.Tensor,
+    lam_t: torch.Tensor,
+    subtree_branches: torch.Tensor,
+    response_mask: torch.Tensor,
+    uid: np.ndarray,
+    rid: np.ndarray,
+    pid: np.ndarray,
+    cid: List[OrderedDict],
+    lam: float,
+    c: float,
+    round_idx: int,
+    n_samples_per_round: int,
+    parent_branch_pos: Optional[List[int]] = None,
+) -> Tuple[List[Tuple[str, int]], torch.Tensor]:
+    """Select next states for expansion using TUCT.
+
+    This function computes TUCT values for all states and selects the best state
+    for each unique prompt (uid) to expand in the next round.
+
+    Args:
+        values: Value estimates, shape (batch_size, response_len).
+        advantages_mean: Mean advantages, shape (batch_size, response_len - 1).
+        trajectory_reward: Cumulative rewards, shape (batch_size, response_len).
+        gamma_t: gamma^t values, shape (batch_size, response_len).
+        lam_t: lambda^t values, shape (batch_size, response_len).
+        subtree_branches: Subtree branch counts, shape (batch_size, response_len).
+        response_mask: Valid token mask, shape (batch_size, response_len).
+        uid: Unique prompt IDs, shape (batch_size,).
+        rid: Response IDs, shape (batch_size,).
+        pid: Parent IDs, shape (batch_size,).
+        cid: Children ID mappings.
+        lam: Lambda value for GAE.
+        c: Exploration constant for TUCT.
+        round_idx: Current round index (0-based).
+        n_samples_per_round: Number of samples per round.
+        parent_branch_pos: Branch positions in parent trajectories.
+
+    Returns:
+        Tuple of:
+            - selected_states: List of (rid, token_position) tuples for each uid
+            - updated_subtree_branches: Updated subtree_branches tensor
+    """
+    batch_size, response_len = values.shape
+    device = values.device
+
+    # Build rid to index mapping
+    rid2idx = {r: i for i, r in enumerate(rid)}
+
+    # Compute GVE: gve[t] = values[t+1] + lam * advantages_mean[t]
+    # Shape: (batch_size, response_len - 1)
+    gve = values[:, 1:] + lam * advantages_mean
+
+    # Compute expected_trajectory_reward: trajectory_reward[:-1] + gamma_t[:-1] * gve
+    # Shape: (batch_size, response_len - 1)
+    expected_traj_reward = trajectory_reward[:, :-1] + gamma_t[:, :-1] * gve
+
+    # Compute partree_branches
+    partree_branches = compute_partree_branches(
+        cid=cid,
+        pid=pid,
+        subtree_branches=subtree_branches,
+        response_len=response_len,
+        round_idx=round_idx,
+        n_samples_per_round=n_samples_per_round,
+        rid2idx=rid2idx,
+        parent_branch_pos=parent_branch_pos,
+        parent_subtree_branches=subtree_branches,
     )
+
+    # Compute TUCT: expected_traj_reward * lam_t[1:] + c * sqrt(log(partree_branches)) / subtree_branches[:-1]
+    # Shape: (batch_size, response_len - 1)
+    exploration_term = c * torch.sqrt(torch.log(partree_branches[:, :-1] + 1)) / (subtree_branches[:, :-1] + 1e-8)
+    tuct = expected_traj_reward * lam_t[:, 1:] + exploration_term
+
+    # Mask invalid positions
+    tuct_mask = response_mask[:, :-1]  # Valid positions for selection
+    tuct = tuct * tuct_mask + (-float('inf')) * (1 - tuct_mask)
+
+    # Group by uid and select best state for each
+    unique_uids = np.unique(uid)
+    selected_states = []
+
+    for u in unique_uids:
+        # Find indices with this uid
+        uid_mask = uid == u
+        uid_indices = np.where(uid_mask)[0]
+
+        # Find best TUCT among all states for this uid
+        best_tuct = -float('inf')
+        best_rid = None
+        best_pos = None
+
+        for idx in uid_indices:
+            # Find best position in this trajectory
+            valid_tuct = tuct[idx]
+            if valid_tuct.max().item() > best_tuct:
+                best_tuct = valid_tuct.max().item()
+                best_pos = valid_tuct.argmax().item()
+                best_rid = rid[idx]
+
+        # Also consider root state for first-round trajectories
+        # Root TUCT: gve at position 0 + exploration bonus
+        root_candidates = [i for i in uid_indices if pid[i] is None]
+        if root_candidates:
+            # Compute root gve as mean of first advantages
+            first_advs = [advantages_mean[i, 0].item() for i in root_candidates if advantages_mean.shape[1] > 0]
+            if first_advs:
+                root_adv_mean = sum(first_advs) / len(first_advs)
+                root_gve = values[root_candidates[0], 0].item() + lam * root_adv_mean
+                root_exploration = c * 1.0  # sqrt(log(1)) = 0, but add exploration bonus
+                root_tuct = root_gve + root_exploration
+
+                if root_tuct > best_tuct:
+                    best_tuct = root_tuct
+                    best_rid = None  # Indicates root selection
+                    best_pos = -1  # Special marker for root
+
+        if best_rid is not None:
+            selected_states.append((best_rid, best_pos))
+        else:
+            # Root selected: use first trajectory's rid with position -1
+            selected_states.append((rid[root_candidates[0]] if root_candidates else rid[uid_indices[0]], -1))
+
+    # Update subtree_branches for selected states
+    updated_subtree_branches = subtree_branches.clone()
+    for sel_rid, sel_pos in selected_states:
+        if sel_pos >= 0 and sel_rid in rid2idx:
+            idx = rid2idx[sel_rid]
+            # Update state_branches at selected position (done in caller)
+            # Here we update subtree_branches: propagate n upward
+            current_rid = sel_rid
+            while current_rid is not None and current_rid in rid2idx:
+                current_idx = rid2idx[current_rid]
+                updated_subtree_branches[current_idx, :] += n_samples_per_round
+                current_rid = pid[current_idx] if pid[current_idx] is not None else None
+
+    return selected_states, updated_subtree_branches
+
+
+def compute_branch_weight_factors(
+    state_branches: torch.Tensor,
+    pid: np.ndarray,
+    rid: np.ndarray,
+    branch_pos: np.ndarray,
+) -> torch.Tensor:
+    """Compute branch weight factors for TTPO gradient correction.
+
+    branch_weight_factor[t] = product of all ancestor state_branches up to position t.
+    Used to correct policy gradient for unbiased estimation on tree structures.
+
+    Args:
+        state_branches: shape (batch_size, response_len)
+        pid: Parent IDs for each trajectory
+        rid: Response IDs for each trajectory
+        branch_pos: Branch position in parent trajectory (-1 if no parent)
+
+    Returns:
+        branch_weight_factor: shape (batch_size, response_len)
+    """
+    batch_size, response_len = state_branches.shape
+    device = state_branches.device
+    rid2idx = {r: i for i, r in enumerate(rid)}
+
+    # Step 1: Compute initial weight for each sample (ancestor chain product)
+    init_weights = torch.ones(batch_size, device=device, dtype=state_branches.dtype)
+    for i in range(batch_size):
+        current_idx, current_bp = i, branch_pos[i]
+        while pid[current_idx] is not None and pid[current_idx] in rid2idx:
+            parent_idx = rid2idx[pid[current_idx]]
+            init_weights[i] *= state_branches[parent_idx, :current_bp + 1].prod()
+            current_idx, current_bp = parent_idx, branch_pos[parent_idx]
+
+    # Step 2: Forward cumulative product using cumprod
+    # Prepend 1 to state_branches for correct alignment, then cumprod
+    padded = torch.cat([torch.ones(batch_size, 1, device=device), state_branches[:, :-1]], dim=1)
+    cumulative = torch.cumprod(padded, dim=1)
+
+    # Multiply by initial weights
+    branch_weight_factor = init_weights.unsqueeze(1) * cumulative
+
+    return branch_weight_factor

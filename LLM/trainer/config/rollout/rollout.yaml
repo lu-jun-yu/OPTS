@@ -1,5 +1,3 @@
-# OPTS-TTPO Rollout Configuration
-
 # Target class for this configuration
 _target_: verl.workers.config.RolloutConfig
 
@@ -105,6 +103,9 @@ n: 1
 
 # This controls the third loop inside fit() for TTPO algorithm
 g: 1
+
+# Search algorithm: null for standard PPO, "opts" for OPTS
+search: null
 
 # The over_sample_rate parameter controls the early termination threshold for training rollouts,
 # where the system will abort remaining requests when (1 - over_sample_rate) * total_requests completions are reached.
