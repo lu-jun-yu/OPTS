@@ -25,7 +25,7 @@ from collections import defaultdict, OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pprint import pprint
-from typing import Optional, List, Tuple, Dict
+from typing import Any, Optional, List, Tuple, Dict
 
 import numpy as np
 import ray
@@ -65,7 +65,6 @@ from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 
 # Import OPTS_TTPO specific functions from local core_algos
 from core_algos import (
-    set_opts_ttpo_info,
     compute_forward_values,
     compute_partree_branches,
     select_next_states,
@@ -1156,22 +1155,23 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
         metrics.update(global_balance_stats)
 
     def _merge_batches(self, batch1: DataProto, batch2: DataProto) -> DataProto:
-        """Merge two DataProto batches along the batch dimension."""
-        merged_batch = {}
-        for key in batch1.batch.keys():
-            if key in batch2.batch:
-                merged_batch[key] = torch.cat([batch1.batch[key], batch2.batch[key]], dim=0)
+        """Merge two DataProto batches along batch dimension."""
+        # Merge tensor batch
+        merged_batch = {k: torch.cat([batch1.batch[k], batch2.batch[k]], dim=0)
+                        for k in batch1.batch if k in batch2.batch}
 
+        # Merge non-tensor batch
         merged_non_tensor = {}
-        for key in batch1.non_tensor_batch.keys():
-            if key in batch2.non_tensor_batch:
-                val1, val2 = batch1.non_tensor_batch[key], batch2.non_tensor_batch[key]
-                if isinstance(val1, np.ndarray):
-                    merged_non_tensor[key] = np.concatenate([val1, val2], axis=0)
-                elif isinstance(val1, list):
-                    merged_non_tensor[key] = val1 + val2
-                else:
-                    merged_non_tensor[key] = np.array(list(val1) + list(val2), dtype=object)
+        for k in batch1.non_tensor_batch:
+            if k not in batch2.non_tensor_batch:
+                continue
+            v1, v2 = batch1.non_tensor_batch[k], batch2.non_tensor_batch[k]
+            if isinstance(v1, np.ndarray):
+                merged_non_tensor[k] = np.concatenate([v1, v2], axis=0)
+            elif isinstance(v1, list):
+                merged_non_tensor[k] = v1 + v2
+            else:
+                merged_non_tensor[k] = np.array(list(v1) + list(v2), dtype=object)
 
         result = DataProto.from_single_dict(merged_batch)
         result.non_tensor_batch = merged_non_tensor
@@ -1183,55 +1183,155 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
         original_batch: DataProto,
         global_batch: DataProto,
         selected_states: List[Tuple[str, int]],
-        n: int,
     ) -> DataProto:
-        """Prepare input batch for next round based on selected states."""
-        rid2idx = {r: i for i, r in enumerate(global_batch.non_tensor_batch["rid"])}
+        """Prepare input batch for next round based on selected states.
 
-        new_input_ids_list, new_attention_mask_list, new_position_ids_list, new_uid_list = [], [], [], []
+        Sets uid, input_ids, attention_mask, position_ids, and inherits
+        data_source, reward_model, extra_info from original_batch to align with initial batch.
+        Tree structure info (rid, pid, branch_pos, cid) will be set by _set_opts_ttpo_info.
+
+        Args:
+            original_batch: Original batch with prompts.
+            global_batch: Current global batch.
+            selected_states: List of (rid, pos) for selected states.
+
+        Returns:
+            New batch for next round, aligned with original_batch structure.
+        """
+        rid2idx = {r: i for i, r in enumerate(global_batch.non_tensor_batch["rid"])}
+        prompt_len = original_batch.batch["input_ids"].shape[1] - original_batch.batch["responses"].shape[1] \
+            if "responses" in original_batch.batch else original_batch.batch["input_ids"].shape[1]
+
+        # Build uid to original_batch index mapping for inheriting non_tensor data
+        orig_uid2idx = {u: i for i, u in enumerate(original_batch.non_tensor_batch["uid"])}
+
+        new_input_ids, new_attention_mask, new_position_ids, new_uid = [], [], [], []
+        # Lists for inherited non_tensor data
+        new_data_source, new_reward_model, new_extra_info = [], [], []
 
         for sel_rid, sel_pos in selected_states:
+            idx = rid2idx[sel_rid]
+            uid = global_batch.non_tensor_batch["uid"][idx]
+
             if sel_pos < 0:
-                # Root selection: use original prompt
-                idx = rid2idx[sel_rid]
-                uid = global_batch.non_tensor_batch["uid"][idx]
+                # Root: use original prompt
                 uid_mask = original_batch.non_tensor_batch["uid"] == uid
-                original_idx = np.where(uid_mask)[0][0]
-                input_ids = original_batch.batch["input_ids"][original_idx]
-                attention_mask = original_batch.batch["attention_mask"][original_idx]
-                position_ids = original_batch.batch["position_ids"][original_idx]
+                orig_idx = np.where(uid_mask)[0][0]
+                input_ids = original_batch.batch["input_ids"][orig_idx, :prompt_len]
+                attn_mask = original_batch.batch["attention_mask"][orig_idx, :prompt_len]
+                pos_ids = original_batch.batch["position_ids"][orig_idx, :prompt_len]
             else:
-                # Non-root: use prompt + partial response up to sel_pos
-                idx = rid2idx[sel_rid]
-                input_ids = global_batch.batch["input_ids"][idx]
-                attention_mask = global_batch.batch["attention_mask"][idx]
-                position_ids = global_batch.batch["position_ids"][idx]
-                prompt_len = global_batch.batch["prompts"].shape[1] if "prompts" in global_batch.batch else 0
+                # Non-root: prompt + response[:sel_pos+1]
                 total_len = prompt_len + sel_pos + 1
-                input_ids, attention_mask, position_ids = input_ids[:total_len], attention_mask[:total_len], position_ids[:total_len]
+                input_ids = global_batch.batch["input_ids"][idx, :total_len]
+                attn_mask = global_batch.batch["attention_mask"][idx, :total_len]
+                pos_ids = global_batch.batch["position_ids"][idx, :total_len]
 
-            new_input_ids_list.append(input_ids)
-            new_attention_mask_list.append(attention_mask)
-            new_position_ids_list.append(position_ids)
-            new_uid_list.append(global_batch.non_tensor_batch["uid"][rid2idx[sel_rid]])
+            new_input_ids.append(input_ids)
+            new_attention_mask.append(attn_mask)
+            new_position_ids.append(pos_ids)
+            new_uid.append(uid)
 
-        # Pad sequences
-        max_len = max(ids.shape[0] for ids in new_input_ids_list)
-        device = new_input_ids_list[0].device
-        padded_input_ids = torch.zeros(len(new_input_ids_list), max_len, dtype=torch.long, device=device)
-        padded_attention_mask = torch.zeros(len(new_input_ids_list), max_len, dtype=torch.long, device=device)
-        padded_position_ids = torch.zeros(len(new_input_ids_list), max_len, dtype=torch.long, device=device)
+            # Inherit non_tensor data from original_batch based on uid
+            orig_idx = orig_uid2idx.get(uid, 0)
+            if "data_source" in original_batch.non_tensor_batch:
+                new_data_source.append(original_batch.non_tensor_batch["data_source"][orig_idx])
+            if "reward_model" in original_batch.non_tensor_batch:
+                new_reward_model.append(original_batch.non_tensor_batch["reward_model"][orig_idx])
+            if "extra_info" in original_batch.non_tensor_batch:
+                new_extra_info.append(original_batch.non_tensor_batch["extra_info"][orig_idx])
 
-        for i, (ids, mask, pos) in enumerate(zip(new_input_ids_list, new_attention_mask_list, new_position_ids_list)):
+        # Pad to same length
+        max_len = max(ids.shape[0] for ids in new_input_ids)
+        device = new_input_ids[0].device
+        bs = len(new_input_ids)
+
+        padded_ids = torch.zeros(bs, max_len, dtype=torch.long, device=device)
+        padded_mask = torch.zeros(bs, max_len, dtype=torch.long, device=device)
+        padded_pos = torch.zeros(bs, max_len, dtype=torch.long, device=device)
+
+        for i, (ids, mask, pos) in enumerate(zip(new_input_ids, new_attention_mask, new_position_ids)):
             seq_len = ids.shape[0]
-            padded_input_ids[i, :seq_len], padded_attention_mask[i, :seq_len], padded_position_ids[i, :seq_len] = ids, mask, pos
+            padded_ids[i, :seq_len] = ids
+            padded_mask[i, :seq_len] = mask
+            padded_pos[i, :seq_len] = pos
 
         new_batch = DataProto.from_single_dict({
-            "input_ids": padded_input_ids, "attention_mask": padded_attention_mask, "position_ids": padded_position_ids
+            "input_ids": padded_ids, "attention_mask": padded_mask, "position_ids": padded_pos
         })
-        new_batch.non_tensor_batch["uid"] = np.array(new_uid_list, dtype=object)
+        new_batch.non_tensor_batch["uid"] = np.array(new_uid, dtype=object)
+
+        # Set inherited non_tensor data
+        if new_data_source:
+            new_batch.non_tensor_batch["data_source"] = np.array(new_data_source, dtype=object)
+        if new_reward_model:
+            new_batch.non_tensor_batch["reward_model"] = np.array(new_reward_model, dtype=object)
+        if new_extra_info:
+            new_batch.non_tensor_batch["extra_info"] = np.array(new_extra_info, dtype=object)
+
         new_batch.meta_info = original_batch.meta_info.copy()
-        return new_batch.repeat(repeat_times=n, interleave=True)
+        return new_batch
+
+    def _set_opts_ttpo_info(
+        self,
+        local_batch: DataProto,
+        global_batch: Optional[DataProto],
+        next_states: Dict[str, Tuple[int, int]],
+        round_idx: int,
+    ) -> np.ndarray:
+        """Set OPTS_TTPO tree structure info: rid, pid, branch_pos, cid.
+
+        Args:
+            local_batch: Current round's local batch.
+            global_batch: Accumulated global batch (None for first round).
+            next_states: Dict {uid: (parent_idx, branch_pos)}.
+            round_idx: Current round index (0-based).
+
+        Returns:
+            new_sample_indices: Indices for new samples in global batch after merge.
+        """
+        batch_size = local_batch.batch['responses'].shape[0]
+        uid = local_batch.non_tensor_batch['uid']
+
+        # Generate rid
+        rid = np.array([f"r{round_idx}_{i}" for i in range(batch_size)], dtype=object)
+
+        # Set pid and branch_pos
+        if round_idx == 0 or not next_states:
+            pid = np.array([None] * batch_size, dtype=object)
+            branch_pos = np.full(batch_size, -1, dtype=np.int32)
+        else:
+            # next_states format: {uid: (parent_idx, branch_pos)}
+            # Get parent_rid from parent_idx
+            global_rid = global_batch.non_tensor_batch['rid']
+
+            pid = np.array([global_rid[next_states[u][0]] if u in next_states else None for u in uid], dtype=object)
+            branch_pos = np.array([next_states[u][1] if u in next_states else -1 for u in uid], dtype=np.int32)
+
+        # Initialize cid as empty OrderedDict for each sample
+        cid = np.array([OrderedDict() for _ in range(batch_size)], dtype=object)
+
+        # Update global_batch's cid with new children
+        if round_idx > 0 and global_batch is not None and next_states:
+            global_cid = global_batch.non_tensor_batch['cid']
+            rid2idx = {r: i for i, r in enumerate(global_batch.non_tensor_batch['rid'])}
+
+            for i in range(batch_size):
+                if pid[i] is not None and pid[i] in rid2idx:
+                    p_idx, bp = rid2idx[pid[i]], int(branch_pos[i])
+                    if bp not in global_cid[p_idx]:
+                        global_cid[p_idx][bp] = []
+                    global_cid[p_idx][bp].append(rid[i])
+
+        # Update local_batch
+        local_batch.non_tensor_batch['rid'] = rid
+        local_batch.non_tensor_batch['pid'] = pid
+        local_batch.non_tensor_batch['branch_pos'] = branch_pos
+        local_batch.non_tensor_batch['cid'] = cid
+
+        # Compute new_sample_indices
+        global_size = len(global_batch.non_tensor_batch['rid']) if global_batch is not None else 0
+        return np.arange(global_size, global_size + batch_size)
 
     def _compute_values(self, batch: DataProto) -> DataProto:
         if self.use_legacy_worker_impl == "disable":
@@ -1438,217 +1538,304 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                     [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object
                 )
 
-                gen_batch = self._get_gen_batch(batch)
-
-                # pass global_steps to trace
-                gen_batch.meta_info["global_steps"] = self.global_steps
-                gen_batch_output = gen_batch.repeat(
-                    repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True
-                )
-
-                is_last_step = self.global_steps >= self.total_training_steps
-
                 # OPTS_TTPO setup: get parameters and initialize global batch
                 opts_ttpo_mode = self.config.actor_rollout_ref.rollout.get("search") == "opts"
-                g = self.config.actor_rollout_ref.rollout.get("g", 1) if opts_ttpo_mode else 1
-                n = self.config.actor_rollout_ref.rollout.n
-                c = self.config.algorithm.get("c", 1.0) if opts_ttpo_mode else 1.0
                 global_batch = None
-                selected_states = None
-                original_batch = batch  # Keep original for OPTS_TTPO
+                next_states = {}
+                original_batch = batch  # Keep reference to original batch for _prepare_next_round_input
 
                 with marked_timer("step", timing_raw):
-                    # generate a batch
-                    with marked_timer("gen", timing_raw, color="red"):
-                        if not self.async_rollout_mode:
-                            gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch_output)
-                        else:
-                            gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch_output)
+                    for round_idx in range(self.config.actor_rollout_ref.rollout.g):
+                        gen_batch = self._get_gen_batch(batch)
 
-                        timing_raw.update(gen_batch_output.meta_info["timing"])
-                        gen_batch_output.meta_info.pop("timing", None)
+                        # pass global_steps to trace
+                        gen_batch.meta_info["global_steps"] = self.global_steps
+                        gen_batch_output = gen_batch.repeat(
+                            repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True
+                        )
 
-                    if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
-                        if self.reward_fn is None:
-                            raise ValueError("A reward_fn is required for REMAX advantage estimation.")
+                        is_last_step = self.global_steps >= self.total_training_steps
 
-                        with marked_timer("gen_max", timing_raw, color="purple"):
-                            gen_baseline_batch = deepcopy(gen_batch)
-                            gen_baseline_batch.meta_info["do_sample"] = False
+                        # generate a batch
+                        with marked_timer("gen", timing_raw, color="red"):
                             if not self.async_rollout_mode:
-                                gen_baseline_output = self.actor_rollout_wg.generate_sequences(gen_baseline_batch)
+                                gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch_output)
                             else:
-                                gen_baseline_output = self.async_rollout_manager.generate_sequences(gen_baseline_batch)
-                            batch = batch.union(gen_baseline_output)
-                            # compute reward model score on batch
-                            rm_scores = None
+                                gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch_output)
+
+                            timing_raw.update(gen_batch_output.meta_info["timing"])
+                            gen_batch_output.meta_info.pop("timing", None)
+
+                        if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
+                            if self.reward_fn is None:
+                                raise ValueError("A reward_fn is required for REMAX advantage estimation.")
+
+                            with marked_timer("gen_max", timing_raw, color="purple"):
+                                gen_baseline_batch = deepcopy(gen_batch)
+                                gen_baseline_batch.meta_info["do_sample"] = False
+                                if not self.async_rollout_mode:
+                                    gen_baseline_output = self.actor_rollout_wg.generate_sequences(gen_baseline_batch)
+                                else:
+                                    gen_baseline_output = self.async_rollout_manager.generate_sequences(gen_baseline_batch)
+                                batch = batch.union(gen_baseline_output)
+                                # compute reward model score on batch
+                                rm_scores = None
+                                if self.use_rm and "rm_scores" not in batch.batch.keys():
+                                    if not self.use_reward_loop:
+                                        rm_scores = self.rm_wg.compute_rm_score(batch)
+                                    else:
+                                        assert self.reward_loop_manager is not None, "RewardLoopManager is None"
+                                        rm_scores = self.reward_loop_manager.compute_rm_score(batch)
+                                    batch = batch.union(rm_scores)
+
+                                # Compute or extract reward for REMAX baseline
+                                reward_baseline_tensor = self._compute_or_extract_reward(
+                                    batch, reward_fn=self.reward_fn, sum_reward=True
+                                )
+
+                                keys_to_pop = set(gen_baseline_output.batch.keys())
+                                if rm_scores is not None:
+                                    keys_to_pop.update(rm_scores.batch.keys())
+                                batch.pop(batch_keys=list(keys_to_pop))
+
+                                batch.batch["reward_baselines"] = reward_baseline_tensor
+
+                                del rm_scores, gen_baseline_batch, gen_baseline_output
+                        # repeat to align with repeated responses in rollout
+                        batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                        batch = batch.union(gen_batch_output)
+
+                        if "response_mask" not in batch.batch.keys():
+                            batch.batch["response_mask"] = compute_response_mask(batch)
+                        # Balance the number of valid tokens across DP ranks.
+                        # NOTE: This usually changes the order of data in the `batch`,
+                        # which won't affect the advantage calculation (since it's based on uid),
+                        # but might affect the loss calculation (due to the change of mini-batching).
+                        if self.config.trainer.balance_batch:
+                            self._balance_batch(batch, metrics=metrics)
+
+                        # compute global_valid tokens
+                        batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
+
+                        with marked_timer("reward", timing_raw, color="yellow"):
+                            # compute reward model score
                             if self.use_rm and "rm_scores" not in batch.batch.keys():
                                 if not self.use_reward_loop:
-                                    rm_scores = self.rm_wg.compute_rm_score(batch)
+                                    reward_tensor = self.rm_wg.compute_rm_score(batch)
                                 else:
                                     assert self.reward_loop_manager is not None, "RewardLoopManager is None"
-                                    rm_scores = self.reward_loop_manager.compute_rm_score(batch)
-                                batch = batch.union(rm_scores)
+                                    reward_tensor = self.reward_loop_manager.compute_rm_score(batch)
+                                batch = batch.union(reward_tensor)
 
-                            # Compute or extract reward for REMAX baseline
-                            reward_baseline_tensor = self._compute_or_extract_reward(
-                                batch, reward_fn=self.reward_fn, sum_reward=True
-                            )
-
-                            keys_to_pop = set(gen_baseline_output.batch.keys())
-                            if rm_scores is not None:
-                                keys_to_pop.update(rm_scores.batch.keys())
-                            batch.pop(batch_keys=list(keys_to_pop))
-
-                            batch.batch["reward_baselines"] = reward_baseline_tensor
-
-                            del rm_scores, gen_baseline_batch, gen_baseline_output
-                    # repeat to align with repeated responses in rollout
-                    batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
-                    batch = batch.union(gen_batch_output)
-
-                    # add unique response_id for each response (after repeat, so each response gets unique id)
-                    batch.non_tensor_batch["response_id"] = np.array(
-                        [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object
-                    )
-
-                    if "response_mask" not in batch.batch.keys():
-                        batch.batch["response_mask"] = compute_response_mask(batch)
-                    # Balance the number of valid tokens across DP ranks.
-                    # NOTE: This usually changes the order of data in the `batch`,
-                    # which won't affect the advantage calculation (since it's based on uid),
-                    # but might affect the loss calculation (due to the change of mini-batching).
-                    if self.config.trainer.balance_batch:
-                        self._balance_batch(batch, metrics=metrics)
-
-                    # compute global_valid tokens
-                    batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
-
-                    with marked_timer("reward", timing_raw, color="yellow"):
-                        # compute reward model score
-                        if self.use_rm and "rm_scores" not in batch.batch.keys():
-                            if not self.use_reward_loop:
-                                reward_tensor = self.rm_wg.compute_rm_score(batch)
+                            # Compute or extract reward for training
+                            if self.config.reward_model.launch_reward_fn_async:
+                                future_reward = compute_reward_async.remote(
+                                    data=batch, config=self.config, tokenizer=self.tokenizer
+                                )
                             else:
-                                assert self.reward_loop_manager is not None, "RewardLoopManager is None"
-                                reward_tensor = self.reward_loop_manager.compute_rm_score(batch)
-                            batch = batch.union(reward_tensor)
+                                reward_tensor, reward_extra_infos_dict = self._compute_or_extract_reward(
+                                    batch, reward_fn=self.reward_fn, return_dict=False
+                                )
 
-                        # Compute or extract reward for training
-                        if self.config.reward_model.launch_reward_fn_async:
-                            future_reward = compute_reward_async.remote(
-                                data=batch, config=self.config, tokenizer=self.tokenizer
+                        # Operating Mode Selection:
+                        # - Bypass mode: Sets old_log_probs = rollout_log_probs (2 policies: π_rollout, π_θ)
+                        # - Decoupled mode: Recomputes old_log_probs as proximal anchor (3 policies: π_rollout, π_old, π_θ)
+                        #   Note: π_old computed once per data batch, serves as stable reference during mini-batch updates
+                        rollout_corr_config = self.config.algorithm.get("rollout_correction", None)
+                        bypass_recomputing_logprobs = rollout_corr_config and rollout_corr_config.get("bypass_mode", False)
+                        if bypass_recomputing_logprobs:  # Use `rollout_log_probs`
+                            from verl.trainer.ppo.rollout_corr_helper import apply_bypass_mode
+
+                            apply_bypass_mode(
+                                batch=batch,
+                                rollout_corr_config=rollout_corr_config,
+                                policy_loss_config=self.config.actor_rollout_ref.actor.policy_loss,
                             )
-                        else:
-                            reward_tensor, reward_extra_infos_dict = self._compute_or_extract_reward(
-                                batch, reward_fn=self.reward_fn, return_dict=False
+                        else:  # Recompute old_log_probs
+                            with marked_timer("old_log_prob", timing_raw, color="blue"):
+                                old_log_prob, old_log_prob_mfu = self._compute_old_log_prob(batch)
+                                entropys = old_log_prob.batch["entropys"]
+                                response_masks = batch.batch["response_mask"]
+                                actor_config = self.config.actor_rollout_ref.actor
+                                entropy_agg = agg_loss(
+                                    loss_mat=entropys,
+                                    loss_mask=response_masks,
+                                    loss_agg_mode=actor_config.loss_agg_mode,
+                                    loss_scale_factor=actor_config.loss_scale_factor,
+                                )
+                                old_log_prob_metrics = {
+                                    "actor/entropy": entropy_agg.detach().item(),
+                                    "perf/mfu/actor_infer": old_log_prob_mfu,
+                                }
+                                metrics.update(old_log_prob_metrics)
+                                old_log_prob.batch.pop("entropys")
+                                batch = batch.union(old_log_prob)
+                                if "rollout_log_probs" in batch.batch.keys():
+                                    # TODO: we may want to add diff of probs too.
+                                    from verl.utils.debug.metrics import calculate_debug_metrics
+
+                                    metrics.update(calculate_debug_metrics(batch))
+
+                        assert "old_log_probs" in batch.batch, f'"old_log_prob" not in {batch.batch.keys()=}'
+
+                        if self.use_reference_policy:
+                            # compute reference log_prob
+                            with marked_timer(str(Role.RefPolicy), timing_raw, color="olive"):
+                                ref_log_prob = self._compute_ref_log_prob(batch)
+                                batch = batch.union(ref_log_prob)
+
+                        # compute values
+                        if self.use_critic:
+                            with marked_timer("values", timing_raw, color="cyan"):
+                                values = self._compute_values(batch)
+                                batch = batch.union(values)
+
+                        with marked_timer("adv", timing_raw, color="brown"):
+                            # we combine with rule-based rm
+                            reward_extra_infos_dict: dict[str, list]
+                            if self.config.reward_model.launch_reward_fn_async:
+                                reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
+                            batch.batch["token_level_scores"] = reward_tensor
+
+                            if reward_extra_infos_dict:
+                                batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
+
+                            # compute rewards. apply_kl_penalty if available
+                            if self.config.algorithm.use_kl_in_reward:
+                                batch, kl_metrics = apply_kl_penalty(
+                                    batch, kl_ctrl=self.kl_ctrl_in_reward, kl_penalty=self.config.algorithm.kl_penalty
+                                )
+                                metrics.update(kl_metrics)
+                            else:
+                                batch.batch["token_level_rewards"] = batch.batch["token_level_scores"]
+
+                            # Compute rollout correction: IS weights, rejection sampling, and metrics
+                            # Only runs in decoupled mode (computes once per batch using stable π_old)
+                            # In bypass mode, this is skipped - actor computes metrics from evolving π_θ vs π_rollout
+                            if (
+                                rollout_corr_config is not None
+                                and "rollout_log_probs" in batch.batch
+                                and not bypass_recomputing_logprobs  # Only in decoupled mode
+                            ):
+                                from verl.trainer.ppo.rollout_corr_helper import compute_rollout_correction_and_add_to_batch
+
+                                # Compute IS weights, apply rejection sampling, compute metrics
+                                batch, is_metrics = compute_rollout_correction_and_add_to_batch(batch, rollout_corr_config)
+                                # IS and off-policy metrics already have rollout_corr/ prefix
+                                metrics.update(is_metrics)
+
+                            # compute advantages, executed on the driver process
+                            norm_adv_by_std_in_grpo = self.config.algorithm.get(
+                                "norm_adv_by_std_in_grpo", True
+                            )  # GRPO adv normalization factor
+
+                            # OPTS_TTPO: set tree structure info before advantage computation
+                            if opts_ttpo_mode:
+                                # Set tree structure info (rid, pid, branch_pos, cid)
+                                new_sample_indices = self._set_opts_ttpo_info(batch, global_batch, next_states, round_idx)
+                                batch.non_tensor_batch["new_sample_indices"] = new_sample_indices
+                                batch.non_tensor_batch["next_states"] = next_states
+
+                                # Initialize state_branches, subtree_branches as all ones
+                                batch_size, response_len = batch.batch["responses"].shape
+                                batch.batch["state_branches"] = torch.ones(batch_size, response_len)
+                                batch.batch["subtree_branches"] = torch.ones(batch_size, response_len)
+
+                                # Initialize advantages, advantages_mean, returns as all zeros
+                                batch.batch["advantages"] = torch.zeros(batch_size, response_len)
+                                batch.batch["advantages_mean"] = torch.zeros(batch_size, response_len - 1)
+                                batch.batch["returns"] = torch.zeros(batch_size, response_len)
+
+                                # Compute forward values (gamma_t, lam_t, trajectory_reward)
+                                rid2idx = {r: i for i, r in enumerate(global_batch.non_tensor_batch["rid"])} if global_batch is not None else {}
+                                parent_branch_pos = [next_states.get(u, (None, 0))[1] if u in next_states else 0 for u in batch.non_tensor_batch["uid"]]
+                                gamma_t, lam_t, trajectory_reward = compute_forward_values(
+                                    token_level_rewards=batch.batch["token_level_rewards"],
+                                    response_mask=batch.batch["response_mask"],
+                                    gamma=self.config.algorithm.gamma,
+                                    lam=self.config.algorithm.lam,
+                                    pid=batch.non_tensor_batch["pid"],
+                                    parent_branch_pos=parent_branch_pos,
+                                    parent_gamma_t=global_batch.batch["gamma_t"] if global_batch is not None else None,
+                                    parent_lam_t=global_batch.batch["lam_t"] if global_batch is not None else None,
+                                    parent_trajectory_reward=global_batch.batch["trajectory_reward"] if global_batch is not None else None,
+                                    rid2idx=rid2idx,
+                                )
+                                batch.batch["gamma_t"] = gamma_t
+                                batch.batch["lam_t"] = lam_t
+                                batch.batch["trajectory_reward"] = trajectory_reward
+
+                                # Merge local_batch to global_batch
+                                if global_batch is None:
+                                    global_batch = batch
+                                else:
+                                    global_batch = self._merge_batches(global_batch, batch)
+
+                            # For OPTS_TTPO, compute advantage on global_batch; otherwise on batch
+                            target_batch = global_batch if opts_ttpo_mode else batch
+                            target_batch = compute_advantage(
+                                target_batch,
+                                adv_estimator=self.config.algorithm.adv_estimator,
+                                gamma=self.config.algorithm.gamma,
+                                lam=self.config.algorithm.lam,
+                                num_repeat=self.config.actor_rollout_ref.rollout.n,
+                                norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
+                                config=self.config.algorithm,
                             )
+                            if opts_ttpo_mode:
+                                global_batch = target_batch
+                            else:
+                                batch = target_batch
 
-                    # Operating Mode Selection:
-                    # - Bypass mode: Sets old_log_probs = rollout_log_probs (2 policies: π_rollout, π_θ)
-                    # - Decoupled mode: Recomputes old_log_probs as proximal anchor (3 policies: π_rollout, π_old, π_θ)
-                    #   Note: π_old computed once per data batch, serves as stable reference during mini-batch updates
-                    rollout_corr_config = self.config.algorithm.get("rollout_correction", None)
-                    bypass_recomputing_logprobs = rollout_corr_config and rollout_corr_config.get("bypass_mode", False)
-                    if bypass_recomputing_logprobs:  # Use `rollout_log_probs`
-                        from verl.trainer.ppo.rollout_corr_helper import apply_bypass_mode
+                        # OPTS_TTPO: select next states and prepare next round input
+                        if opts_ttpo_mode:
+                            # Select next states if not last round
+                            if round_idx < self.config.actor_rollout_ref.rollout.g - 1:
+                                selected_states, updated_subtree_branches = select_next_states(
+                                    values=global_batch.batch["values"],
+                                    advantages_mean=global_batch.batch["advantages_mean"],
+                                    trajectory_reward=global_batch.batch["trajectory_reward"],
+                                    gamma_t=global_batch.batch["gamma_t"],
+                                    lam_t=global_batch.batch["lam_t"],
+                                    subtree_branches=global_batch.batch["subtree_branches"],
+                                    response_mask=global_batch.batch["response_mask"],
+                                    uid=global_batch.non_tensor_batch["uid"],
+                                    rid=global_batch.non_tensor_batch["rid"],
+                                    pid=global_batch.non_tensor_batch["pid"],
+                                    cid=list(global_batch.non_tensor_batch["cid"]),
+                                    lam=self.config.algorithm.lam,
+                                    c=self.config.algorithm.c,
+                                    round_idx=round_idx,
+                                    n_samples_per_round=self.config.actor_rollout_ref.rollout.n,
+                                    parent_branch_pos=global_batch.non_tensor_batch["branch_pos"],
+                                )
+                                global_batch.batch["subtree_branches"] = updated_subtree_branches
 
-                        apply_bypass_mode(
-                            batch=batch,
-                            rollout_corr_config=rollout_corr_config,
-                            policy_loss_config=self.config.actor_rollout_ref.actor.policy_loss,
-                        )
-                    else:  # Recompute old_log_probs
-                        with marked_timer("old_log_prob", timing_raw, color="blue"):
-                            old_log_prob, old_log_prob_mfu = self._compute_old_log_prob(batch)
-                            entropys = old_log_prob.batch["entropys"]
-                            response_masks = batch.batch["response_mask"]
-                            actor_config = self.config.actor_rollout_ref.actor
-                            entropy_agg = agg_loss(
-                                loss_mat=entropys,
-                                loss_mask=response_masks,
-                                loss_agg_mode=actor_config.loss_agg_mode,
-                                loss_scale_factor=actor_config.loss_scale_factor,
-                            )
-                            old_log_prob_metrics = {
-                                "actor/entropy": entropy_agg.detach().item(),
-                                "perf/mfu/actor_infer": old_log_prob_mfu,
-                            }
-                            metrics.update(old_log_prob_metrics)
-                            old_log_prob.batch.pop("entropys")
-                            batch = batch.union(old_log_prob)
-                            if "rollout_log_probs" in batch.batch.keys():
-                                # TODO: we may want to add diff of probs too.
-                                from verl.utils.debug.metrics import calculate_debug_metrics
+                                # Update state_branches for selected states
+                                rid2idx = {r: i for i, r in enumerate(global_batch.non_tensor_batch["rid"])}
+                                for sel_rid, sel_pos in selected_states:
+                                    if sel_rid in rid2idx and sel_pos >= 0:
+                                        idx = rid2idx[sel_rid]
+                                        global_batch.batch["state_branches"][idx, sel_pos] += self.config.actor_rollout_ref.rollout.n
 
-                                metrics.update(calculate_debug_metrics(batch))
+                                # Build next_states dict for next round: {uid: (parent_idx, branch_pos)}
+                                global_uid = global_batch.non_tensor_batch["uid"]
+                                next_states = {global_uid[rid2idx[sel_rid]]: (rid2idx[sel_rid], sel_pos)
+                                               for sel_rid, sel_pos in selected_states if sel_rid in rid2idx}
 
-                    assert "old_log_probs" in batch.batch, f'"old_log_prob" not in {batch.batch.keys()=}'
-
-                    if self.use_reference_policy:
-                        # compute reference log_prob
-                        with marked_timer(str(Role.RefPolicy), timing_raw, color="olive"):
-                            ref_log_prob = self._compute_ref_log_prob(batch)
-                            batch = batch.union(ref_log_prob)
-
-                    # compute values
-                    if self.use_critic:
-                        with marked_timer("values", timing_raw, color="cyan"):
-                            values = self._compute_values(batch)
-                            batch = batch.union(values)
-
-                    with marked_timer("adv", timing_raw, color="brown"):
-                        # we combine with rule-based rm
-                        reward_extra_infos_dict: dict[str, list]
-                        if self.config.reward_model.launch_reward_fn_async:
-                            reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
-                        batch.batch["token_level_scores"] = reward_tensor
-
-                        if reward_extra_infos_dict:
-                            batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
-
-                        # compute rewards. apply_kl_penalty if available
-                        if self.config.algorithm.use_kl_in_reward:
-                            batch, kl_metrics = apply_kl_penalty(
-                                batch, kl_ctrl=self.kl_ctrl_in_reward, kl_penalty=self.config.algorithm.kl_penalty
-                            )
-                            metrics.update(kl_metrics)
-                        else:
-                            batch.batch["token_level_rewards"] = batch.batch["token_level_scores"]
-
-                        # Compute rollout correction: IS weights, rejection sampling, and metrics
-                        # Only runs in decoupled mode (computes once per batch using stable π_old)
-                        # In bypass mode, this is skipped - actor computes metrics from evolving π_θ vs π_rollout
-                        if (
-                            rollout_corr_config is not None
-                            and "rollout_log_probs" in batch.batch
-                            and not bypass_recomputing_logprobs  # Only in decoupled mode
-                        ):
-                            from verl.trainer.ppo.rollout_corr_helper import compute_rollout_correction_and_add_to_batch
-
-                            # Compute IS weights, apply rejection sampling, compute metrics
-                            batch, is_metrics = compute_rollout_correction_and_add_to_batch(batch, rollout_corr_config)
-                            # IS and off-policy metrics already have rollout_corr/ prefix
-                            metrics.update(is_metrics)
-
-                        # compute advantages, executed on the driver process
-                        norm_adv_by_std_in_grpo = self.config.algorithm.get(
-                            "norm_adv_by_std_in_grpo", True
-                        )  # GRPO adv normalization factor
-
-                        batch = compute_advantage(
-                            batch,
-                            adv_estimator=self.config.algorithm.adv_estimator,
-                            gamma=self.config.algorithm.gamma,
-                            lam=self.config.algorithm.lam,
-                            num_repeat=self.config.actor_rollout_ref.rollout.n,
-                            norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
-                            config=self.config.algorithm,
-                        )
+                                # Prepare next round input (assign to batch, not gen_batch)
+                                # batch is used because it needs to align with original_batch
+                                batch = self._prepare_next_round_input(
+                                    original_batch=original_batch,
+                                    global_batch=global_batch,
+                                    selected_states=selected_states,
+                                )
 
                     if opts_ttpo_mode:
                         import verl.utils.torch_functional as verl_F
-                        batch.batch["advantages"] = verl_F.marked_whiten(batch.batch["advantages"], batch.batch["response_mask"])
+                        # Use global_batch for update in OPTS_TTPO mode
+                        batch = global_batch
+                        batch.batch["advantages"] = verl_F.masked_whiten(batch.batch["advantages"], batch.batch["response_mask"])
 
                         # Compute branch_weight_factor for TTPO gradient correction
                         branch_weight_factor = compute_branch_weight_factors(

@@ -20,7 +20,7 @@ implement PPO-like algorithms.
 
 __all__ = ["register_adv_est", "get_adv_estimator_fn", "AdvantageEstimator"]
 
-from collections import defaultdict, OrderedDict
+from collections import defaultdict
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -251,13 +251,13 @@ def compute_treegae_advantage_return(
         pid: `(np.ndarray)`
             shape is (bs,). Parent response ID for each trajectory (None for root trajectories).
         cid: `(list)`
-            list of OrderedDict. Children mapping {branch_position: [child_rid_list]} for each trajectory.
+            list of dict. Children mapping {branch_position: [child_rid_list]} for each trajectory.
         state_branches: `(torch.Tensor)`
             shape is (bs, response_length). Number of branches at each state.
         new_sample_indices: `(np.ndarray)`
             Indices of newly sampled trajectories in current round.
         next_states: `(dict)`
-            Dict[str, Tuple[int, int]]. Mapping from parent rid to (parent_index, branch_pos).
+            Dict[str, Tuple[int, int]]. Mapping from uid to (parent_index, branch_pos).
             Used to identify which parent trajectories need advantage propagation.
         advantages: `(torch.Tensor)`
             shape is (bs, response_length). Pre-allocated advantages tensor to update in-place.
@@ -308,8 +308,8 @@ def compute_treegae_advantage_return(
             return advantages, returns
 
         # Initialize with parent trajectories from next_states
-        # next_states: {pid: (parent_index, branch_pos)} - already deduplicated
-        current_level = [(parent_idx, branch_pos) for pid_rid, (parent_idx, branch_pos) in next_states.items()]
+        # next_states: {uid: (parent_index, branch_pos)} - already deduplicated
+        current_level = list(next_states.values())
 
         while current_level:
             next_level = []
@@ -2004,158 +2004,84 @@ def compute_policy_loss_bypass_mode(
 # OPTS_TTPO Specific Functions
 # ============================================================================
 
-
-def set_opts_ttpo_info(
-    batch_size: int,
-    uid: np.ndarray,
-    parent_rid: Optional[List[str]],
-    parent_branch_pos: Optional[List[int]],
-    global_rid: Optional[List[str]] = None,
-    global_pid: Optional[List[Optional[str]]] = None,
-    global_cid: Optional[List[OrderedDict]] = None,
-) -> Tuple[np.ndarray, np.ndarray, List[OrderedDict]]:
-    """Set OPTS_TTPO tree structure information for new samples.
-
-    This function generates unique response IDs (rid) for new samples, sets their
-    parent IDs (pid), and updates the parent trajectories' children IDs (cid).
-
-    Args:
-        batch_size: Number of new samples in this round.
-        uid: Unique prompt IDs for each sample, shape (batch_size,).
-        parent_rid: List of parent trajectory rids for each new sample.
-            None for first round samples (no parent).
-        parent_branch_pos: List of branch positions in parent trajectories.
-            None for first round samples.
-        global_rid: List of all existing rids in the global batch.
-            Used to update cid of parent trajectories.
-        global_pid: List of all existing pids in the global batch.
-        global_cid: List of all existing cids in the global batch.
-            Will be modified in-place to add new children.
-
-    Returns:
-        Tuple of:
-            - rid: np.ndarray of shape (batch_size,), unique response IDs for new samples
-            - pid: np.ndarray of shape (batch_size,), parent IDs (None for first round)
-            - cid: List of OrderedDict for each new sample (initially empty)
-    """
-    import uuid
-
-    # Generate unique rid for each new sample
-    rid = np.array([str(uuid.uuid4()) for _ in range(batch_size)], dtype=object)
-
-    # Set pid for each new sample
-    if parent_rid is None:
-        # First round: no parent
-        pid = np.array([None] * batch_size, dtype=object)
-    else:
-        pid = np.array(parent_rid, dtype=object)
-
-    # Initialize empty cid for each new sample
-    cid = [OrderedDict() for _ in range(batch_size)]
-
-    # Update parent trajectories' cid if this is not the first round
-    if parent_rid is not None and global_rid is not None and global_cid is not None:
-        # Build rid to index mapping for global batch
-        rid2idx = {r: i for i, r in enumerate(global_rid)}
-
-        for i, (p_rid, bp) in enumerate(zip(parent_rid, parent_branch_pos)):
-            if p_rid is not None and p_rid in rid2idx:
-                p_idx = rid2idx[p_rid]
-                # Add new child rid to parent's cid at the branch position
-                if bp not in global_cid[p_idx]:
-                    global_cid[p_idx][bp] = []
-                global_cid[p_idx][bp].append(rid[i])
-
-    return rid, pid, cid
-
-
 def compute_forward_values(
     token_level_rewards: torch.Tensor,
     response_mask: torch.Tensor,
     gamma: float,
     lam: float,
     pid: np.ndarray,
-    parent_branch_pos: Optional[List[int]] = None,
-    parent_gamma_t: Optional[torch.Tensor] = None,
-    parent_lam_t: Optional[torch.Tensor] = None,
-    parent_trajectory_reward: Optional[torch.Tensor] = None,
-    rid2idx: Optional[Dict[str, int]] = None,
+    parent_branch_pos: List[int],
+    parent_gamma_t: Optional[torch.Tensor],
+    parent_lam_t: Optional[torch.Tensor],
+    parent_trajectory_reward: Optional[torch.Tensor],
+    rid2idx: Dict[str, int],
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Compute forward values for OPTS_TTPO: gamma_t, lam_t, trajectory_reward.
 
+    All computations are vectorized for efficiency.
+
     Args:
-        token_level_rewards: Token-level rewards, shape (batch_size, response_len).
-        response_mask: Response mask, shape (batch_size, response_len).
+        token_level_rewards: shape (batch_size, response_len)
+        response_mask: shape (batch_size, response_len)
         gamma: Discount factor.
         lam: Lambda for GAE.
-        pid: Parent IDs for each sample, shape (batch_size,).
-        parent_branch_pos: Branch positions in parent trajectories for each sample.
-        parent_gamma_t: gamma_t values from parent trajectories (global batch).
-        parent_lam_t: lam_t values from parent trajectories (global batch).
-        parent_trajectory_reward: trajectory_reward values from parent trajectories (global batch).
-        rid2idx: Mapping from rid to index in parent tensors.
+        pid: Parent IDs, shape (batch_size,). None means no parent.
+        parent_branch_pos: Branch positions in parent trajectories, len = batch_size.
+        parent_gamma_t: gamma_t from global_batch, shape (global_size, response_len).
+        parent_lam_t: lam_t from global_batch, shape (global_size, response_len).
+        parent_trajectory_reward: trajectory_reward from global_batch, shape (global_size, response_len).
+        rid2idx: Mapping from rid to index in global_batch.
 
     Returns:
-        Tuple of:
-            - gamma_t: γ^t values, shape (batch_size, response_len)
-            - lam_t: λ^t values, shape (batch_size, response_len)
-            - trajectory_reward: Cumulative discounted rewards, shape (batch_size, response_len)
+        gamma_t: shape (batch_size, response_len)
+        lam_t: shape (batch_size, response_len)
+        trajectory_reward: shape (batch_size, response_len)
     """
     batch_size, response_len = token_level_rewards.shape
-    device = token_level_rewards.device
 
-    gamma_t = torch.zeros(batch_size, response_len, device=device)
-    lam_t = torch.zeros(batch_size, response_len, device=device)
-    trajectory_reward = torch.zeros(batch_size, response_len, device=device)
+    # Build parent indices and mask
+    has_parent = torch.tensor([p is not None and p in rid2idx for p in pid])
+    parent_indices = torch.tensor([rid2idx.get(p, 0) if p is not None else 0 for p in pid], dtype=torch.long)
+    branch_pos = torch.tensor(parent_branch_pos, dtype=torch.long)
 
-    for i in range(batch_size):
-        # Determine initial values based on whether there's a parent
-        p_rid = pid[i] if pid is not None else None
+    # Initialize from parent or default values
+    if parent_gamma_t is not None and has_parent.any():
+        init_gamma = torch.where(has_parent, parent_gamma_t[parent_indices, branch_pos], torch.tensor(1.0 / gamma))
+        init_lam = torch.where(has_parent, parent_lam_t[parent_indices, branch_pos], torch.tensor(1.0 / lam))
+        init_traj_reward = torch.where(has_parent, parent_trajectory_reward[parent_indices, branch_pos], torch.tensor(0.0))
+    else:
+        init_gamma = torch.full((batch_size,), 1.0 / gamma)
+        init_lam = torch.full((batch_size,), 1.0 / lam)
+        init_traj_reward = torch.zeros(batch_size)
 
-        if p_rid is not None and rid2idx is not None and p_rid in rid2idx:
-            # Has parent: inherit from parent's branch position
-            p_idx = rid2idx[p_rid]
-            branch_pos = parent_branch_pos[i] if parent_branch_pos is not None else 0
+    # Forward loop (vectorized over batch, sequential over time)
+    gamma_t_list, lam_t_list, traj_reward_list = [], [], []
+    last_gamma, last_lam, last_traj = init_gamma, init_lam, init_traj_reward
 
-            # Initial gamma_t: parent's gamma_t at branch_pos * gamma (for first step)
-            init_gamma = parent_gamma_t[p_idx, branch_pos].item() if parent_gamma_t is not None else 1.0
-            init_lam = parent_lam_t[p_idx, branch_pos].item() if parent_lam_t is not None else 1.0
-            init_traj_reward = parent_trajectory_reward[p_idx, branch_pos].item() if parent_trajectory_reward is not None else 0.0
-        else:
-            # No parent: start from initial values
-            init_gamma = 1.0
-            init_lam = 1.0
-            init_traj_reward = 0.0
+    for t in range(response_len):
+        last_gamma = last_gamma * gamma
+        last_lam = last_lam * lam
+        last_traj = last_traj + last_gamma * token_level_rewards[:, t]
 
-        # Compute gamma_t: cumulative product of gamma
-        # gamma_t[0] = init_gamma * gamma (first token after branch point)
-        current_gamma = init_gamma
-        current_lam = init_lam
-        current_traj_reward = init_traj_reward
+        gamma_t_list.append(last_gamma)
+        lam_t_list.append(last_lam)
+        traj_reward_list.append(last_traj)
 
-        for t in range(response_len):
-            if response_mask[i, t] > 0:
-                current_gamma = current_gamma * gamma
-                current_lam = current_lam * lam
-                current_traj_reward = current_traj_reward + current_gamma * token_level_rewards[i, t].item()
-
-                gamma_t[i, t] = current_gamma
-                lam_t[i, t] = current_lam
-                trajectory_reward[i, t] = current_traj_reward
+    gamma_t = torch.stack(gamma_t_list, dim=1)
+    lam_t = torch.stack(lam_t_list, dim=1)
+    trajectory_reward = torch.stack(traj_reward_list, dim=1)
 
     return gamma_t, lam_t, trajectory_reward
 
 
 def compute_partree_branches(
-    cid: List[OrderedDict],
+    cid: List[Dict],
     pid: np.ndarray,
     subtree_branches: torch.Tensor,
-    response_len: int,
     round_idx: int,
     n_samples_per_round: int,
     rid2idx: Optional[Dict[str, int]] = None,
     parent_branch_pos: Optional[List[int]] = None,
-    parent_subtree_branches: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Compute partree_branches for each state.
 
@@ -2163,36 +2089,33 @@ def compute_partree_branches(
     The parent branch point is the nearest upstream branch node of state t.
 
     Args:
-        cid: Children ID mapping for each trajectory.
+        cid: Children ID mapping for each trajectory (dict, keys are branch positions).
         pid: Parent IDs for each trajectory.
         subtree_branches: subtree_branches values, shape (batch_size, response_len).
-        response_len: Length of response.
         round_idx: Current round index (0-based).
         n_samples_per_round: Number of samples per round (n).
         rid2idx: Mapping from rid to index.
         parent_branch_pos: Branch positions in parent trajectories.
-        parent_subtree_branches: subtree_branches from parent trajectories.
 
     Returns:
         partree_branches: shape (batch_size, response_len)
     """
-    batch_size = len(cid)
-    device = subtree_branches.device
-    partree_branches = torch.zeros(batch_size, response_len, device=device)
+    batch_size, response_len = subtree_branches.shape
+    partree_branches = torch.zeros(batch_size, response_len)
 
     for i in range(batch_size):
         trajectory_cid = cid[i]
         p_rid = pid[i] if pid is not None else None
 
-        # Get branch positions sorted
+        # Get branch positions (sorted needed as insertion order may not equal position order)
         branch_positions = sorted(trajectory_cid.keys()) if trajectory_cid else []
 
         # Determine the default value (from parent or root)
         if p_rid is not None and rid2idx is not None and p_rid in rid2idx:
             # Has parent: use parent's subtree_branches at the branch position
             p_idx = rid2idx[p_rid]
-            branch_pos = parent_branch_pos[i] if parent_branch_pos is not None else 0
-            default_value = parent_subtree_branches[p_idx, branch_pos].item() if parent_subtree_branches is not None else (round_idx + 1) * n_samples_per_round
+            bp = parent_branch_pos[i] if parent_branch_pos is not None else 0
+            default_value = subtree_branches[p_idx, bp].item()
         else:
             # No parent: use root subtree_branches
             default_value = (round_idx + 1) * n_samples_per_round
@@ -2214,8 +2137,7 @@ def compute_partree_branches(
 
             # Positions after last branch point
             last_branch = branch_positions[-1]
-            if last_branch + 1 < response_len:
-                partree_branches[i, last_branch + 1:] = subtree_branches[i, last_branch]
+            partree_branches[i, last_branch + 1:] = subtree_branches[i, last_branch]
 
     return partree_branches
 
@@ -2231,136 +2153,95 @@ def select_next_states(
     uid: np.ndarray,
     rid: np.ndarray,
     pid: np.ndarray,
-    cid: List[OrderedDict],
+    cid: List[Dict],
     lam: float,
     c: float,
     round_idx: int,
     n_samples_per_round: int,
-    parent_branch_pos: Optional[List[int]] = None,
+    parent_branch_pos: List[int],
 ) -> Tuple[List[Tuple[str, int]], torch.Tensor]:
     """Select next states for expansion using TUCT.
 
-    This function computes TUCT values for all states and selects the best state
-    for each unique prompt (uid) to expand in the next round.
-
     Args:
-        values: Value estimates, shape (batch_size, response_len).
-        advantages_mean: Mean advantages, shape (batch_size, response_len - 1).
-        trajectory_reward: Cumulative rewards, shape (batch_size, response_len).
-        gamma_t: gamma^t values, shape (batch_size, response_len).
-        lam_t: lambda^t values, shape (batch_size, response_len).
-        subtree_branches: Subtree branch counts, shape (batch_size, response_len).
-        response_mask: Valid token mask, shape (batch_size, response_len).
-        uid: Unique prompt IDs, shape (batch_size,).
-        rid: Response IDs, shape (batch_size,).
-        pid: Parent IDs, shape (batch_size,).
-        cid: Children ID mappings.
-        lam: Lambda value for GAE.
-        c: Exploration constant for TUCT.
-        round_idx: Current round index (0-based).
-        n_samples_per_round: Number of samples per round.
-        parent_branch_pos: Branch positions in parent trajectories.
+        values: shape (batch_size, response_len)
+        advantages_mean: shape (batch_size, response_len - 1)
+        trajectory_reward: shape (batch_size, response_len)
+        gamma_t: shape (batch_size, response_len)
+        lam_t: shape (batch_size, response_len)
+        subtree_branches: shape (batch_size, response_len)
+        response_mask: shape (batch_size, response_len)
+        uid, rid, pid: shape (batch_size,)
+        cid: List of dict
+        lam, c: floats
+        round_idx, n_samples_per_round: ints
+        parent_branch_pos: List[int], len = batch_size
 
     Returns:
-        Tuple of:
-            - selected_states: List of (rid, token_position) tuples for each uid
-            - updated_subtree_branches: Updated subtree_branches tensor
+        selected_states: List of (rid, pos) for each unique uid
+        updated_subtree_branches: shape (batch_size, response_len)
     """
     batch_size, response_len = values.shape
-    device = values.device
-
-    # Build rid to index mapping
     rid2idx = {r: i for i, r in enumerate(rid)}
 
-    # Compute GVE: gve[t] = values[t+1] + lam * advantages_mean[t]
-    # Shape: (batch_size, response_len - 1)
-    gve = values[:, 1:] + lam * advantages_mean
-
-    # Compute expected_trajectory_reward: trajectory_reward[:-1] + gamma_t[:-1] * gve
-    # Shape: (batch_size, response_len - 1)
+    # 1) Compute GVE and expected trajectory reward
+    gve = values[:, 1:] + lam * advantages_mean  # (bs, response_len-1)
     expected_traj_reward = trajectory_reward[:, :-1] + gamma_t[:, :-1] * gve
 
-    # Compute partree_branches
+    # 2) Compute partree_branches
     partree_branches = compute_partree_branches(
-        cid=cid,
-        pid=pid,
-        subtree_branches=subtree_branches,
-        response_len=response_len,
-        round_idx=round_idx,
-        n_samples_per_round=n_samples_per_round,
-        rid2idx=rid2idx,
-        parent_branch_pos=parent_branch_pos,
-        parent_subtree_branches=subtree_branches,
+        cid=cid, pid=pid, subtree_branches=subtree_branches,
+        round_idx=round_idx, n_samples_per_round=n_samples_per_round,
+        rid2idx=rid2idx, parent_branch_pos=parent_branch_pos,
     )
 
-    # Compute TUCT: expected_traj_reward * lam_t[1:] + c * sqrt(log(partree_branches)) / subtree_branches[:-1]
-    # Shape: (batch_size, response_len - 1)
-    exploration_term = c * torch.sqrt(torch.log(partree_branches[:, :-1] + 1)) / (subtree_branches[:, :-1] + 1e-8)
-    tuct = expected_traj_reward * lam_t[:, 1:] + exploration_term
+    # 3) Compute TUCT: exploitation * lam_t + exploration
+    exploration = c * torch.sqrt(torch.log(partree_branches[:, :-1] + 1)) / (subtree_branches[:, :-1] + 1e-8)
+    tuct = expected_traj_reward * lam_t[:, 1:] + exploration
+    tuct = torch.where(response_mask[:, :-1] > 0, tuct, torch.tensor(-float('inf')))
 
-    # Mask invalid positions
-    tuct_mask = response_mask[:, :-1]  # Valid positions for selection
-    tuct = tuct * tuct_mask + (-float('inf')) * (1 - tuct_mask)
-
-    # Group by uid and select best state for each
+    # 4) Select best state per uid
     unique_uids = np.unique(uid)
     selected_states = []
 
     for u in unique_uids:
-        # Find indices with this uid
-        uid_mask = uid == u
-        uid_indices = np.where(uid_mask)[0]
+        uid_indices = np.where(uid == u)[0]
 
-        # Find best TUCT among all states for this uid
-        best_tuct = -float('inf')
-        best_rid = None
-        best_pos = None
+        # Find max TUCT across all trajectories for this uid
+        uid_tuct = tuct[uid_indices]  # (num_traj, response_len-1)
+        max_val, max_flat_idx = uid_tuct.view(-1).max(dim=0)
+        traj_idx = max_flat_idx.item() // (response_len - 1)
+        pos_idx = max_flat_idx.item() % (response_len - 1)
+        best_tuct, best_rid, best_pos = max_val.item(), rid[uid_indices[traj_idx]], pos_idx
 
-        for idx in uid_indices:
-            # Find best position in this trajectory
-            valid_tuct = tuct[idx]
-            if valid_tuct.max().item() > best_tuct:
-                best_tuct = valid_tuct.max().item()
-                best_pos = valid_tuct.argmax().item()
-                best_rid = rid[idx]
+        # Compare with root TUCT
+        root_indices = [i for i in uid_indices if pid[i] is None]
+        root_advs = advantages_mean[root_indices, 0]
+        root_gve = values[root_indices[0], 0] + lam * root_advs.mean()
+        root_tuct = root_gve.item() + c  # exploration bonus for root
+        if root_tuct > best_tuct:
+            best_rid, best_pos = rid[root_indices[0]], -1
 
-        # Also consider root state for first-round trajectories
-        # Root TUCT: gve at position 0 + exploration bonus
-        root_candidates = [i for i in uid_indices if pid[i] is None]
-        if root_candidates:
-            # Compute root gve as mean of first advantages
-            first_advs = [advantages_mean[i, 0].item() for i in root_candidates if advantages_mean.shape[1] > 0]
-            if first_advs:
-                root_adv_mean = sum(first_advs) / len(first_advs)
-                root_gve = values[root_candidates[0], 0].item() + lam * root_adv_mean
-                root_exploration = c * 1.0  # sqrt(log(1)) = 0, but add exploration bonus
-                root_tuct = root_gve + root_exploration
+        selected_states.append((best_rid, best_pos))
 
-                if root_tuct > best_tuct:
-                    best_tuct = root_tuct
-                    best_rid = None  # Indicates root selection
-                    best_pos = -1  # Special marker for root
-
-        if best_rid is not None:
-            selected_states.append((best_rid, best_pos))
-        else:
-            # Root selected: use first trajectory's rid with position -1
-            selected_states.append((rid[root_candidates[0]] if root_candidates else rid[uid_indices[0]], -1))
-
-    # Update subtree_branches for selected states
-    updated_subtree_branches = subtree_branches.clone()
+    # 5) Update subtree_branches: propagate n upward from selected states
+    # Only update positions 0 to branch_pos for each trajectory along ancestor chain
     for sel_rid, sel_pos in selected_states:
-        if sel_pos >= 0 and sel_rid in rid2idx:
-            idx = rid2idx[sel_rid]
-            # Update state_branches at selected position (done in caller)
-            # Here we update subtree_branches: propagate n upward
+        if sel_pos >= 0:
+            # Start with selected trajectory and position
             current_rid = sel_rid
-            while current_rid is not None and current_rid in rid2idx:
-                current_idx = rid2idx[current_rid]
-                updated_subtree_branches[current_idx, :] += n_samples_per_round
-                current_rid = pid[current_idx] if pid[current_idx] is not None else None
+            bp = sel_pos
 
-    return selected_states, updated_subtree_branches
+            while current_rid is not None and current_rid in rid2idx:
+                idx = rid2idx[current_rid]
+                # Update positions 0 to bp (inclusive)
+                subtree_branches[idx, :bp + 1] += n_samples_per_round
+
+                # Move to parent: use parent_branch_pos directly instead of searching cid
+                current_rid = pid[idx]
+                if current_rid is not None and current_rid in rid2idx:
+                    bp = parent_branch_pos[idx]
+
+    return selected_states, subtree_branches
 
 
 def compute_branch_weight_factors(
@@ -2384,11 +2265,10 @@ def compute_branch_weight_factors(
         branch_weight_factor: shape (batch_size, response_len)
     """
     batch_size, response_len = state_branches.shape
-    device = state_branches.device
     rid2idx = {r: i for i, r in enumerate(rid)}
 
     # Step 1: Compute initial weight for each sample (ancestor chain product)
-    init_weights = torch.ones(batch_size, device=device, dtype=state_branches.dtype)
+    init_weights = torch.ones(batch_size, dtype=state_branches.dtype)
     for i in range(batch_size):
         current_idx, current_bp = i, branch_pos[i]
         while pid[current_idx] is not None and pid[current_idx] in rid2idx:
@@ -2398,7 +2278,7 @@ def compute_branch_weight_factors(
 
     # Step 2: Forward cumulative product using cumprod
     # Prepend 1 to state_branches for correct alignment, then cumprod
-    padded = torch.cat([torch.ones(batch_size, 1, device=device), state_branches[:, :-1]], dim=1)
+    padded = torch.cat([torch.ones(batch_size, 1), state_branches[:, :-1]], dim=1)
     cumulative = torch.cumprod(padded, dim=1)
 
     # Multiply by initial weights
