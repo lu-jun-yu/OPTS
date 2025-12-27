@@ -39,6 +39,8 @@ git push
 
 ### 4. 克隆主仓库后初始化 submodule
 
+**注意：克隆后 `LLM/verl` 默认是空目录！必须执行以下命令初始化：**
+
 ```bash
 git clone https://github.com/lu-jun-yu/OPTS.git
 cd OPTS
@@ -46,10 +48,18 @@ git submodule init
 git submodule update
 ```
 
-或一步完成：
+或一步完成（推荐）：
 
 ```bash
 git clone --recurse-submodules https://github.com/lu-jun-yu/OPTS.git
+```
+
+如果已经克隆但 verl 是空的：
+
+```bash
+cd OPTS
+git submodule init
+git submodule update
 ```
 
 ### 5. 拉取主仓库时同步更新 submodule
