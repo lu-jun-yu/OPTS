@@ -2,8 +2,8 @@
 
 ## 仓库结构
 
-- **origin**: 你的 fork (`https://github.com/你的用户名/verl.git`)
-- **upstream**: 原仓库 (`https://github.com/volcengine/verl.git`)
+- **origin**: `https://github.com/lu-jun-yu/verl.git`
+- **upstream**: `https://github.com/volcengine/verl.git`
 
 ## 常用操作
 
