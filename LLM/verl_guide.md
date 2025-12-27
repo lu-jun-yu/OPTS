@@ -62,6 +62,14 @@ git submodule init
 git submodule update
 ```
 
+**重要：submodule update 后会进入 detached HEAD 状态，修改前必须先切换到分支：**
+
+```bash
+cd LLM/verl
+git checkout main
+# 然后再修改、提交、推送
+```
+
 ### 5. 拉取主仓库时同步更新 submodule
 
 ```bash
