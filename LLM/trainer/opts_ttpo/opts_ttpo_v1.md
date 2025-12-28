@@ -1,6 +1,6 @@
 # OPTS_TTPO 详细设计文档
 
-> 本文档基于 `opts_ttpo.md` 需求文档，对 OPTS_TTPO 算法进行详细的技术阐述。
+> **代码实现状态**：已完成。代码位于 `LLM/trainer/opts_ttpo/` 目录下。
 
 ## 1 算法概述
 
@@ -513,14 +513,45 @@ $$
 
 ## 7 附录：核心函数清单
 
-| 函数名 | 类型 | 说明 |
-|--------|------|------|
-| `set_opts_ttpo_info` | 新函数 | 统一设置 rid, pid, branch_pos, cid 等树结构信息，接收 next_states 参数 |
-| `compute_forward_values` | 新函数 | 计算 gamma_t, lam_t, trajectory_reward |
-| `compute_treegae_advantage_return` | 新注册函数 | 通过 `@register_adv_est(AdvantageEstimator.TreeGAE)` 注册，由 `compute_advantage` 调用 |
-| `select_next_states` | 新函数 | TUCT 状态选择 |
-| `compute_partree_branches` | 新函数 | 计算父分支点的 subtree_branches |
-| `compute_branch_weight_factors` | 新函数 | 计算分支权重因子（祖先链累乘 + cumprod） |
-| `agg_loss` | 修改 | 新增 "weighted-token-mean" 模式，需传入 branch_weight_factor |
-| `compute_policy_loss_vanilla` 等 | 修改 | 新增 branch_weight_factor 参数，条件判断是否应用权重校正 |
-| `AdvantageEstimator` | 修改 | 新增 `TreeGAE = "treegae"` 枚举值 |
+### 7.1 代码文件结构
+
+```
+LLM/trainer/opts_ttpo/
+├── main_opts_ttpo.py     # 入口文件
+├── ray_trainer.py        # RayOPTSTTPOTrainer 类
+├── core_algos.py         # 核心算法函数
+└── opts_ttpo_v1.md       # 本文档
+```
+
+### 7.2 核心函数列表
+
+| 函数名 | 所在文件 | 类型 | 说明 |
+|--------|----------|------|------|
+| `_set_opts_ttpo_info` | ray_trainer.py | RayOPTSTTPOTrainer 方法 | 设置树结构信息：rid, pid, branch_pos, cid |
+| `_prepare_next_round_input` | ray_trainer.py | RayOPTSTTPOTrainer 方法 | 构建下一轮采样的输入 batch |
+| `_merge_batches` | ray_trainer.py | RayOPTSTTPOTrainer 方法 | 合并局部 batch 到全局 batch |
+| `compute_forward_values` | core_algos.py | 新函数 | 计算 gamma_t, lam_t, trajectory_reward |
+| `compute_treegae_advantage_return` | core_algos.py | 注册函数 | 通过 `@register_adv_est(AdvantageEstimator.TreeGAE)` 注册 |
+| `select_next_states` | core_algos.py | 新函数 | TUCT 状态选择 |
+| `compute_partree_branches` | core_algos.py | 新函数 | 计算父分支点的 subtree_branches |
+| `compute_branch_weight_factors` | core_algos.py | 新函数 | 计算分支权重因子 |
+| `agg_loss` | core_algos.py | 修改 | 新增 "weighted-token-mean" 模式 |
+| `compute_policy_loss_vanilla` | core_algos.py | 修改 | 新增 branch_weight_factor 参数 |
+| `AdvantageEstimator` | core_algos.py | 枚举扩展 | 新增 `TreeGAE = "treegae"` |
+
+### 7.3 配置参数
+
+在 verl 配置文件中新增以下参数：
+
+```yaml
+actor_rollout_ref:
+  rollout:
+    g: 8          # 循环采样的轮数（总采样数 = n * g）
+    search: opts  # 搜索算法："opts" 启用 OPTS_TTPO
+
+algorithm:
+  adv_estimator: treegae  # 使用 TreeGAE 优势估计
+  c: 1.0                  # TUCT 探索常数
+  gamma: 1.0              # 折扣因子
+  lam: 0.95               # GAE lambda
+```
