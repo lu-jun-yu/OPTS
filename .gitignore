@@ -1,0 +1,4 @@
+LLM/models/
+__pycache__/
+LLM/outputs/
+LLM/checkpoints/
