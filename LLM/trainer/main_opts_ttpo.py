@@ -17,6 +17,12 @@ Note that we don't combine the main with ray_trainer as ray_trainer is used by o
 
 import os
 import socket
+import sys
+
+# Add LLM directory to Python path for correct imports
+LLM_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if LLM_DIR not in sys.path:
+    sys.path.insert(0, LLM_DIR)
 
 import hydra
 import ray
@@ -28,17 +34,20 @@ from trainer.opts_ttpo.ray_trainer import RayOPTSTTPOTrainer
 from verl.trainer.ppo.reward import load_reward_manager
 from verl.trainer.ppo.utils import need_critic, need_reference_policy
 from verl.utils.config import validate_config
-from verl.utils.device import is_cuda_available
+from verl.utils.device import auto_set_ascend_device_name, is_cuda_available
 from verl.utils.import_utils import load_extern_object
 
 
-@hydra.main(config_path="config", config_name="ppo_trainer", version_base=None)
+@hydra.main(config_path="pkg://verl.trainer.config", config_name="ppo_trainer", version_base=None)
 def main(config):
     """Main entry point for PPO training with Hydra configuration management.
 
     Args:
         config_dict: Hydra configuration dictionary containing training parameters.
     """
+    # Automatically set `config.trainer.device = npu` when running on Ascend NPU.
+    auto_set_ascend_device_name(config)
+
     run_ppo(config)
 
 
@@ -67,6 +76,15 @@ def run_ppo(config, task_runner_class=None) -> None:
             runtime_env_vars = runtime_env_kwargs.get("env_vars", {})
             runtime_env_vars["TRANSFER_QUEUE_ENABLE"] = "1"
             runtime_env_kwargs["env_vars"] = runtime_env_vars
+
+        # Add LLM directory to PYTHONPATH for Ray workers
+        runtime_env_vars = runtime_env_kwargs.get("env_vars", {})
+        existing_pythonpath = runtime_env_vars.get("PYTHONPATH", "")
+        if existing_pythonpath:
+            runtime_env_vars["PYTHONPATH"] = f"{LLM_DIR}:{existing_pythonpath}"
+        else:
+            runtime_env_vars["PYTHONPATH"] = LLM_DIR
+        runtime_env_kwargs["env_vars"] = runtime_env_vars
 
         runtime_env = OmegaConf.merge(default_runtime_env, runtime_env_kwargs)
         ray_init_kwargs = OmegaConf.create({**ray_init_kwargs, "runtime_env": runtime_env})
@@ -175,18 +193,21 @@ class TaskRunner:
 
     def add_critic_worker(self, config):
         """Add critic worker to role mapping."""
+        use_legacy_worker_impl = config.trainer.get("use_legacy_worker_impl", "auto")
         if config.critic.strategy in {"fsdp", "fsdp2"}:
-            use_legacy_worker_impl = config.trainer.get("use_legacy_worker_impl", "auto")
             if use_legacy_worker_impl in ["auto", "enable"]:
                 from verl.workers.fsdp_workers import CriticWorker
             elif use_legacy_worker_impl == "disable":
-                from verl.workers.engine_workers import CriticWorker
+                # we don't need to specialize critic worker. Just use TrainingWorker
+                from verl.workers.engine_workers import TrainingWorker
 
+                CriticWorker = TrainingWorker
                 print("Using new worker implementation")
             else:
                 raise ValueError(f"Invalid use_legacy_worker_impl: {use_legacy_worker_impl}")
 
         elif config.critic.strategy == "megatron":
+            # TODO: switch this to TrainingWorker as well
             from verl.workers.megatron_workers import CriticWorker
 
         else:

@@ -64,7 +64,7 @@ from verl.utils.tracking import ValidationGenerationsLogger
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 
 # Import OPTS_TTPO specific functions from local core_algos
-from core_algos import (
+from .core_algos import (
     compute_forward_values,
     compute_partree_branches,
     select_next_states,
@@ -252,7 +252,7 @@ def compute_advantage(
         data.batch["returns"] = returns
     elif adv_estimator == AdvantageEstimator.TreeGAE:
         # TreeGAE for OPTS_TTPO: compute advantages on tree-structured trajectories
-        from core_algos import compute_treegae_advantage_return
+        from .core_algos import compute_treegae_advantage_return
 
         advantages, returns, advantages_mean = compute_treegae_advantage_return(
             token_level_rewards=data.batch["token_level_rewards"],
