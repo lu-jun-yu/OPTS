@@ -42,7 +42,6 @@ from verl.single_controller.ray import RayClassWithInitArgs, RayResourcePool, Ra
 from verl.single_controller.ray.base import create_colocated_worker_cls
 from verl.trainer.config import AlgoConfig
 from verl.trainer.ppo import core_algos
-from verl.trainer.ppo.core_algos import AdvantageEstimator, agg_loss
 from verl.trainer.ppo.metric_utils import (
     compute_data_metrics,
     compute_throughout_metrics,
@@ -51,20 +50,27 @@ from verl.trainer.ppo.metric_utils import (
 )
 from verl.trainer.ppo.reward import compute_reward, compute_reward_async
 from verl.trainer.ppo.utils import Role, WorkerType, need_critic, need_reference_policy, need_reward_model
+from verl.utils import tensordict_utils as tu
 from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path, should_save_ckpt_esi
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.debug import marked_timer
+from verl.utils.import_utils import load_class_from_fqn
 from verl.utils.metric import reduce_metrics
+from verl.utils.py_functional import rename_dict
 from verl.utils.rollout_skip import RolloutSkip
 from verl.utils.seqlen_balancing import calculate_workload, get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
+from verl.workers.config import FSDPEngineConfig
+from verl.workers.utils.padding import left_right_2_no_padding, no_padding_2_padding
 
 # Import RayPPOTrainer from verl for inheritance
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 
 # Import OPTS_TTPO specific functions from local core_algos
 from .core_algos import (
+    AdvantageEstimator, 
+    agg_loss, 
     compute_forward_values,
     compute_partree_branches,
     select_next_states,
@@ -655,11 +661,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
             # repeat test batch
             test_batch = test_batch.repeat(
                 repeat_times=self.config.actor_rollout_ref.rollout.val_kwargs.n, interleave=True
-            )
-
-            # add unique response_id for each response (after repeat, so each response gets unique id)
-            test_batch.non_tensor_batch["response_id"] = np.array(
-                [str(uuid.uuid4()) for _ in range(len(test_batch.batch))], dtype=object
             )
 
             # we only do validation on rule-based rm
@@ -1539,10 +1540,10 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                 )
 
                 # OPTS_TTPO setup: get parameters and initialize global batch
-                opts_ttpo_mode = self.config.actor_rollout_ref.rollout.get("search") == "opts"
+                opts_ttpo_mode = self.config.actor_rollout_ref.rollout.search == "opts"
                 global_batch = None
                 next_states = {}
-                original_batch = batch  # Keep reference to original batch for _prepare_next_round_input
+                original_batch = batch
 
                 with marked_timer("step", timing_raw):
                     for round_idx in range(self.config.actor_rollout_ref.rollout.g):
