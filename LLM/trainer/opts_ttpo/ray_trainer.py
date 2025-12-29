@@ -1232,7 +1232,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
 
         uid2root_idx = {uid_arr[i]: i for i, p in enumerate(pid_arr) if p is None}
         root_indices = [uid2root_idx[u] for u in sel_uids]
-        for key in ["data_source", "reward_model", "extra_info"]:
+        for key in ["data_source", "reward_model", "extra_info", "raw_prompt", "raw_prompt_ids"]:
             if key in global_batch.non_tensor_batch:
                 new_batch.non_tensor_batch[key] = global_batch.non_tensor_batch[key][root_indices]
 
