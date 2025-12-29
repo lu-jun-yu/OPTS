@@ -418,11 +418,19 @@ for epoch in ...:
 
                 - 构建新的局部batch并赋值给batch【_prepare_next_round_input】：
                     - 赋值给batch而非gen_batch，以便与初始batch对齐
-                    - 输入：original_batch, global_batch, selected_states, n=1（在循环开始时会repeat n次）
-                    - 使用selected_states构建完整状态作为输入
-                    - 设置uid、input_ids、attention_mask、position_ids
-                    - 从original_batch继承data_source、reward_model、extra_info等non_tensor数据（根据uid查找）
-                    - 其他树结构信息由set_opts_ttpo_info在下一轮统一设置
+                    - 输入：global_batch, selected_states
+                    - 核心逻辑：
+                        1. 计算每个样本的有效 prompt 长度（通过 attention_mask 求和）
+                        2. 计算 left-padding 长度：padded_prompt_len - valid_prompt_len
+                        3. 提取有效 token（跳过原始 left-padding）：
+                           - pos < 0：只提取有效 prompt tokens
+                           - pos >= 0：提取有效 prompt + response[:pos+1] tokens
+                        4. 重新构建 left-padded batch：
+                           - input_ids：有效 token 放右侧，左侧填充 0
+                           - attention_mask：有效 token 为 1，padding 为 0
+                           - position_ids：基于新的 attention_mask 重新计算
+                    - 从 global_batch 的根节点继承 data_source、reward_model、extra_info 等 non_tensor 数据
+                    - 其他树结构信息由 set_opts_ttpo_info 在下一轮统一设置
 
         ======== 3. 更新 ========
 

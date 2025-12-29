@@ -1184,15 +1184,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
         global_batch: DataProto,
         selected_states: List[Tuple[str, int]],
     ) -> DataProto:
-        """Prepare input batch for next round based on selected states.
-
-        Args:
-            global_batch: Current global batch.
-            selected_states: List of (rid, pos) for selected states.
-
-        Returns:
-            New batch for next round.
-        """
+        """Prepare input batch for next round based on selected states."""
         if not selected_states:
             raise ValueError("selected_states cannot be empty")
 
@@ -1200,44 +1192,45 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
         uid_arr = global_batch.non_tensor_batch["uid"]
         pid_arr = global_batch.non_tensor_batch["pid"]
 
-        # Build mappings: rid -> index, uid -> root index (pid is None)
         rid2idx = {r: i for i, r in enumerate(rid_arr)}
-        uid2root_idx = {uid_arr[i]: i for i, p in enumerate(pid_arr) if p is None}
-
-        # Compute prompt_len from global_batch shape (all samples have same padded shape after merge)
         prompt_len = global_batch.batch["input_ids"].shape[1] - global_batch.batch["responses"].shape[1]
 
-        # Vectorized: pre-compute all indices, uids, and sequence lengths
         sel_indices = [rid2idx[rid] for rid, _ in selected_states]
         sel_positions = [pos for _, pos in selected_states]
         sel_uids = [uid_arr[idx] for idx in sel_indices]
-        seq_lens = [prompt_len if pos < 0 else prompt_len + pos + 1 for pos in sel_positions]
 
-        max_len = max(seq_lens)
-        bs = len(selected_states)
+        # Vectorized: compute valid prompt lengths
+        prompt_masks = global_batch.batch["attention_mask"][sel_indices, :prompt_len]
+        valid_prompt_lens = prompt_masks.sum(dim=1).int()
+        left_pad_lens = prompt_len - valid_prompt_lens
+
+        # Compute valid token counts: valid_prompt + (pos+1 if pos >= 0 else 0)
+        pos_tensor = torch.tensor(sel_positions, device=valid_prompt_lens.device)
+        valid_lens = valid_prompt_lens + torch.clamp(pos_tensor + 1, min=0)
+
+        max_len, bs = int(valid_lens.max().item()), len(selected_states)
         device = global_batch.batch["input_ids"].device
 
-        # Pre-allocate padded tensors
         padded_ids = torch.zeros(bs, max_len, dtype=torch.long, device=device)
         padded_mask = torch.zeros(bs, max_len, dtype=torch.long, device=device)
-        padded_pos = torch.zeros(bs, max_len, dtype=torch.long, device=device)
 
-        # Fill tensors: use root node for sel_pos < 0, otherwise selected node
-        for i, (sel_idx, sel_pos, sel_uid, seq_len) in enumerate(
-            zip(sel_indices, sel_positions, sel_uids, seq_lens)
-        ):
-            src_idx = uid2root_idx[sel_uid] if sel_pos < 0 else sel_idx
-            padded_ids[i, :seq_len] = global_batch.batch["input_ids"][src_idx, :seq_len]
-            padded_mask[i, :seq_len] = global_batch.batch["attention_mask"][src_idx, :seq_len]
-            padded_pos[i, :seq_len] = global_batch.batch["position_ids"][src_idx, :seq_len]
+        # Fill tensors: extract valid tokens only, left-pad
+        for i, (sel_idx, sel_pos) in enumerate(zip(sel_indices, sel_positions)):
+            left_pad, valid_len = int(left_pad_lens[i]), int(valid_lens[i])
+            end_idx = prompt_len if sel_pos < 0 else prompt_len + sel_pos + 1
+            pad_len = max_len - valid_len
+            padded_ids[i, pad_len:] = global_batch.batch["input_ids"][sel_idx, left_pad:end_idx]
+            padded_mask[i, pad_len:] = 1
 
-        # Create new batch
+        from verl.utils.model import compute_position_id_with_mask
+        padded_pos = compute_position_id_with_mask(padded_mask)
+
         new_batch = DataProto.from_single_dict({
             "input_ids": padded_ids, "attention_mask": padded_mask, "position_ids": padded_pos
         })
         new_batch.non_tensor_batch["uid"] = np.array(sel_uids, dtype=object)
 
-        # Inherit non_tensor data from root nodes (vectorized indexing)
+        uid2root_idx = {uid_arr[i]: i for i, p in enumerate(pid_arr) if p is None}
         root_indices = [uid2root_idx[u] for u in sel_uids]
         for key in ["data_source", "reward_model", "extra_info"]:
             if key in global_batch.non_tensor_batch:
