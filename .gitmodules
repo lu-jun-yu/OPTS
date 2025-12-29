@@ -1,3 +1,7 @@
 [submodule "LLM/verl"]
 	path = LLM/verl
 	url = https://github.com/lu-jun-yu/verl.git
+
+[submodule "Atari_MuJoCo/cleanrl"]
+	path = Atari_MuJoCo/cleanrl
+	url = https://github.com/lu-jun-yu/cleanrl.git
