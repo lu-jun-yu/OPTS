@@ -1174,6 +1174,9 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                 merged_non_tensor[k] = np.concatenate([v1, v2], axis=0)
             elif isinstance(v1, list):
                 merged_non_tensor[k] = v1 + v2
+            elif isinstance(v1, dict):
+                # For dict types like next_states, use the latest value (from batch2)
+                merged_non_tensor[k] = v2
             else:
                 merged_non_tensor[k] = np.array(list(v1) + list(v2), dtype=object)
 
