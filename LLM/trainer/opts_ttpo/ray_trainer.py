@@ -1181,96 +1181,69 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
 
     def _prepare_next_round_input(
         self,
-        original_batch: DataProto,
         global_batch: DataProto,
         selected_states: List[Tuple[str, int]],
     ) -> DataProto:
         """Prepare input batch for next round based on selected states.
 
-        Sets uid, input_ids, attention_mask, position_ids, and inherits
-        data_source, reward_model, extra_info from original_batch to align with initial batch.
-        Tree structure info (rid, pid, branch_pos, cid) will be set by _set_opts_ttpo_info.
-
         Args:
-            original_batch: Original batch with prompts.
             global_batch: Current global batch.
             selected_states: List of (rid, pos) for selected states.
 
         Returns:
-            New batch for next round, aligned with original_batch structure.
+            New batch for next round.
         """
-        rid2idx = {r: i for i, r in enumerate(global_batch.non_tensor_batch["rid"])}
-        prompt_len = original_batch.batch["input_ids"].shape[1] - original_batch.batch["responses"].shape[1] \
-            if "responses" in original_batch.batch else original_batch.batch["input_ids"].shape[1]
+        if not selected_states:
+            raise ValueError("selected_states cannot be empty")
 
-        # Build uid to original_batch index mapping for inheriting non_tensor data
-        orig_uid2idx = {u: i for i, u in enumerate(original_batch.non_tensor_batch["uid"])}
+        rid_arr = global_batch.non_tensor_batch["rid"]
+        uid_arr = global_batch.non_tensor_batch["uid"]
+        pid_arr = global_batch.non_tensor_batch["pid"]
 
-        new_input_ids, new_attention_mask, new_position_ids, new_uid = [], [], [], []
-        # Lists for inherited non_tensor data
-        new_data_source, new_reward_model, new_extra_info = [], [], []
+        # Build mappings: rid -> index, uid -> root index (pid is None)
+        rid2idx = {r: i for i, r in enumerate(rid_arr)}
+        uid2root_idx = {uid_arr[i]: i for i, p in enumerate(pid_arr) if p is None}
 
-        for sel_rid, sel_pos in selected_states:
-            idx = rid2idx[sel_rid]
-            uid = global_batch.non_tensor_batch["uid"][idx]
+        # Compute prompt_len from global_batch shape (all samples have same padded shape after merge)
+        prompt_len = global_batch.batch["input_ids"].shape[1] - global_batch.batch["responses"].shape[1]
 
-            if sel_pos < 0:
-                # Root: use original prompt
-                uid_mask = original_batch.non_tensor_batch["uid"] == uid
-                orig_idx = np.where(uid_mask)[0][0]
-                input_ids = original_batch.batch["input_ids"][orig_idx, :prompt_len]
-                attn_mask = original_batch.batch["attention_mask"][orig_idx, :prompt_len]
-                pos_ids = original_batch.batch["position_ids"][orig_idx, :prompt_len]
-            else:
-                # Non-root: prompt + response[:sel_pos+1]
-                total_len = prompt_len + sel_pos + 1
-                input_ids = global_batch.batch["input_ids"][idx, :total_len]
-                attn_mask = global_batch.batch["attention_mask"][idx, :total_len]
-                pos_ids = global_batch.batch["position_ids"][idx, :total_len]
+        # Vectorized: pre-compute all indices, uids, and sequence lengths
+        sel_indices = [rid2idx[rid] for rid, _ in selected_states]
+        sel_positions = [pos for _, pos in selected_states]
+        sel_uids = [uid_arr[idx] for idx in sel_indices]
+        seq_lens = [prompt_len if pos < 0 else prompt_len + pos + 1 for pos in sel_positions]
 
-            new_input_ids.append(input_ids)
-            new_attention_mask.append(attn_mask)
-            new_position_ids.append(pos_ids)
-            new_uid.append(uid)
+        max_len = max(seq_lens)
+        bs = len(selected_states)
+        device = global_batch.batch["input_ids"].device
 
-            # Inherit non_tensor data from original_batch based on uid
-            orig_idx = orig_uid2idx.get(uid, 0)
-            if "data_source" in original_batch.non_tensor_batch:
-                new_data_source.append(original_batch.non_tensor_batch["data_source"][orig_idx])
-            if "reward_model" in original_batch.non_tensor_batch:
-                new_reward_model.append(original_batch.non_tensor_batch["reward_model"][orig_idx])
-            if "extra_info" in original_batch.non_tensor_batch:
-                new_extra_info.append(original_batch.non_tensor_batch["extra_info"][orig_idx])
-
-        # Pad to same length
-        max_len = max(ids.shape[0] for ids in new_input_ids)
-        device = new_input_ids[0].device
-        bs = len(new_input_ids)
-
+        # Pre-allocate padded tensors
         padded_ids = torch.zeros(bs, max_len, dtype=torch.long, device=device)
         padded_mask = torch.zeros(bs, max_len, dtype=torch.long, device=device)
         padded_pos = torch.zeros(bs, max_len, dtype=torch.long, device=device)
 
-        for i, (ids, mask, pos) in enumerate(zip(new_input_ids, new_attention_mask, new_position_ids)):
-            seq_len = ids.shape[0]
-            padded_ids[i, :seq_len] = ids
-            padded_mask[i, :seq_len] = mask
-            padded_pos[i, :seq_len] = pos
+        # Fill tensors: use root node for sel_pos < 0, otherwise selected node
+        for i, (sel_idx, sel_pos, sel_uid, seq_len) in enumerate(
+            zip(sel_indices, sel_positions, sel_uids, seq_lens)
+        ):
+            src_idx = uid2root_idx[sel_uid] if sel_pos < 0 else sel_idx
+            padded_ids[i, :seq_len] = global_batch.batch["input_ids"][src_idx, :seq_len]
+            padded_mask[i, :seq_len] = global_batch.batch["attention_mask"][src_idx, :seq_len]
+            padded_pos[i, :seq_len] = global_batch.batch["position_ids"][src_idx, :seq_len]
 
+        # Create new batch
         new_batch = DataProto.from_single_dict({
             "input_ids": padded_ids, "attention_mask": padded_mask, "position_ids": padded_pos
         })
-        new_batch.non_tensor_batch["uid"] = np.array(new_uid, dtype=object)
+        new_batch.non_tensor_batch["uid"] = np.array(sel_uids, dtype=object)
 
-        # Set inherited non_tensor data
-        if new_data_source:
-            new_batch.non_tensor_batch["data_source"] = np.array(new_data_source, dtype=object)
-        if new_reward_model:
-            new_batch.non_tensor_batch["reward_model"] = np.array(new_reward_model, dtype=object)
-        if new_extra_info:
-            new_batch.non_tensor_batch["extra_info"] = np.array(new_extra_info, dtype=object)
+        # Inherit non_tensor data from root nodes (vectorized indexing)
+        root_indices = [uid2root_idx[u] for u in sel_uids]
+        for key in ["data_source", "reward_model", "extra_info"]:
+            if key in global_batch.non_tensor_batch:
+                new_batch.non_tensor_batch[key] = global_batch.non_tensor_batch[key][root_indices]
 
-        new_batch.meta_info = original_batch.meta_info.copy()
+        new_batch.meta_info = global_batch.meta_info.copy()
         return new_batch
 
     def _set_opts_ttpo_info(
@@ -1543,7 +1516,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                 opts_ttpo_mode = self.config.actor_rollout_ref.rollout.search == "opts"
                 global_batch = None
                 next_states = {}
-                original_batch = batch
 
                 with marked_timer("step", timing_raw):
                     for round_idx in range(self.config.actor_rollout_ref.rollout.g):
@@ -1824,10 +1796,8 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 next_states = {global_uid[rid2idx[sel_rid]]: (rid2idx[sel_rid], sel_pos)
                                                for sel_rid, sel_pos in selected_states if sel_rid in rid2idx}
 
-                                # Prepare next round input (assign to batch, not gen_batch)
-                                # batch is used because it needs to align with original_batch
+                                # Prepare next round input
                                 batch = self._prepare_next_round_input(
-                                    original_batch=original_batch,
                                     global_batch=global_batch,
                                     selected_states=selected_states,
                                 )
