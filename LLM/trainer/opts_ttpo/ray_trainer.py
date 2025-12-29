@@ -1158,8 +1158,11 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
     def _merge_batches(self, batch1: DataProto, batch2: DataProto) -> DataProto:
         """Merge two DataProto batches along batch dimension."""
         # Merge tensor batch
+        batch1_keys = set(batch1.batch.keys())
+        batch2_keys = set(batch2.batch.keys())
+        common_keys = batch1_keys & batch2_keys
         merged_batch = {k: torch.cat([batch1.batch[k], batch2.batch[k]], dim=0)
-                        for k in batch1.batch if k in batch2.batch}
+                        for k in common_keys}
 
         # Merge non-tensor batch
         merged_non_tensor = {}
@@ -1232,7 +1235,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
 
         uid2root_idx = {uid_arr[i]: i for i, p in enumerate(pid_arr) if p is None}
         root_indices = [uid2root_idx[u] for u in sel_uids]
-        for key in ["data_source", "reward_model", "extra_info", "raw_prompt", "raw_prompt_ids"]:
+        for key in ["data_source", "reward_model", "extra_info", "raw_prompt"]:
             if key in global_batch.non_tensor_batch:
                 new_batch.non_tensor_batch[key] = global_batch.non_tensor_batch[key][root_indices]
 
