@@ -305,7 +305,7 @@ def compute_treegae_advantage_return(
             # No parent trajectories to update
             returns = advantages + values
             advantages = verl_F.masked_whiten(advantages, response_mask)
-            return advantages, returns
+            return advantages, returns, advantages_mean
 
         # Initialize with parent trajectories from next_states
         # next_states: {uid: (parent_index, branch_pos)} - already deduplicated

@@ -1805,7 +1805,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                     pid=global_batch.non_tensor_batch["pid"],
                                     cid=list(global_batch.non_tensor_batch["cid"]),
                                     lam=self.config.algorithm.lam,
-                                    c=self.config.algorithm.c,
+                                    c=self.config.actor_rollout_ref.rollout.c,
                                     round_idx=round_idx,
                                     n_samples_per_round=self.config.actor_rollout_ref.rollout.n,
                                     parent_branch_pos=global_batch.non_tensor_batch["branch_pos"],
