@@ -561,3 +561,88 @@ algorithm:
   gamma: 1.0              # 折扣因子
   lam: 0.95               # GAE lambda
 ```
+
+### 7.4 verl 框架修改
+
+为支持 OPTS_TTPO，需要对 verl 框架进行以下修改：
+
+#### 7.4.1 配置文件修改
+
+**`LLM/verl/verl/trainer/config/rollout/rollout.yaml`**：
+```yaml
+# This controls the third loop inside fit() for TTPO algorithm
+g: 1
+
+# OPTS parameters
+c: 1.0
+
+# Search algorithm: null for standard PPO, "opts" for OPTS
+search: null
+```
+
+**`LLM/verl/verl/workers/config/rollout.py`**：
+```python
+@dataclass
+class RolloutConfig(BaseConfig):
+    # ...
+    g: int = 1
+    c: float = 1.0
+    search: str = None
+```
+
+#### 7.4.2 Agent Loop 续写模式
+
+**`LLM/verl/verl/experimental/agent_loop/agent_loop.py`**：
+
+OPTS_TTPO 需要从已有的 `input_ids` 续写生成，而不是从 `raw_prompt` 重新生成。新增以下功能：
+
+1. **`generate_sequences` 方法**：添加续写模式分支
+   ```python
+   # Continuation mode: generate from input_ids instead of raw_prompt
+   if "input_ids" in batch.batch.keys():
+       return await self._generate_from_input_ids(batch)
+   ```
+
+2. **`_generate_from_input_ids` 方法**：从 `input_ids` 续写生成
+   - 提取有效 token（移除 left padding）
+   - 调用 `server_manager.generate` 生成新 token
+   - 返回处理后的 `DataProto`
+
+3. **`_postprocess_continuation` 方法**：续写结果后处理
+   - 将原始输入作为 prompt，新生成的 token 作为 response
+   - 使用 `tokenizer.pad` 进行填充，与原有 `_agent_loop_postprocess` 风格一致
+   - 返回包含 `prompts`、`responses`、`response_mask`、`input_ids`、`attention_mask`、`position_ids` 的 `DataProto`
+
+#### 7.4.3 Actor 策略损失修改
+
+**`LLM/verl/verl/workers/actor/dp_actor.py`**：
+
+1. **导入本地 `core_algos`**：优先使用 OPTS_TTPO 的 `core_algos` 以支持 `branch_weight_factor`
+   ```python
+   try:
+       from trainer.opts_ttpo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
+   except ImportError:
+       from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
+   ```
+
+2. **提取并传递 `branch_weight_factor`**：
+   ```python
+   # Include branch_weight_factor for OPTS_TTPO gradient correction
+   if "branch_weight_factor" in data.batch.keys():
+       select_keys.append("branch_weight_factor")
+
+   # Extract branch_weight_factor for OPTS_TTPO gradient correction
+   branch_weight_factor = model_inputs.get("branch_weight_factor", None)
+
+   # Compute policy loss with branch_weight_factor
+   if branch_weight_factor is not None:
+       pg_loss, pg_metrics = policy_loss_fn(..., branch_weight_factor=branch_weight_factor)
+   ```
+
+#### 7.4.4 注意事项
+
+1. **Tensor 布尔判断**：使用 `if tensor is not None:` 而非 `if tensor:`，避免多元素 Tensor 的歧义错误
+2. **`non_tensor_batch` 类型约束**：`DataProto.non_tensor_batch` 的所有值必须是 `np.ndarray` 类型
+   - `cid` 存储为 `np.array([OrderedDict() for ...], dtype=object)`（正确）
+   - `next_states` 是 `Dict[str, Tuple[int, int]]`，不能存入 `non_tensor_batch`，应作为函数参数传递
+

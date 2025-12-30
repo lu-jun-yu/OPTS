@@ -625,8 +625,11 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
     def _get_gen_batch(self, batch: DataProto) -> DataProto:
         reward_model_keys = set({"data_source", "reward_model", "extra_info", "uid"}) & batch.non_tensor_batch.keys()
 
-        # pop those keys for generation
-        batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
+        # In OPTS mode, preserve input_ids for continuation generation
+        if self.config.actor_rollout_ref.rollout.search == "opts":
+            batch_keys_to_pop = []
+        else:
+            batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
         non_tensor_batch_keys_to_pop = set(batch.non_tensor_batch.keys()) - reward_model_keys
         gen_batch = batch.pop(
             batch_keys=batch_keys_to_pop,
