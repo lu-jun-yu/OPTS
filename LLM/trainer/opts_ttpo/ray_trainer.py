@@ -203,6 +203,7 @@ def compute_advantage(
     num_repeat: int = 1,
     norm_adv_by_std_in_grpo: bool = True,
     config: Optional[AlgoConfig] = None,
+    next_states: Optional[Dict] = None,
 ) -> DataProto:
     """Compute advantage estimates for policy optimization.
 
@@ -271,7 +272,7 @@ def compute_advantage(
             cid=list(data.non_tensor_batch["cid"]),
             state_branches=data.batch["state_branches"],
             new_sample_indices=data.non_tensor_batch["new_sample_indices"],
-            next_states=data.non_tensor_batch["next_states"],
+            next_states=next_states,
             advantages=data.batch["advantages"],
             advantages_mean=data.batch["advantages_mean"],
         )
@@ -1170,15 +1171,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
             if k not in batch2.non_tensor_batch:
                 continue
             v1, v2 = batch1.non_tensor_batch[k], batch2.non_tensor_batch[k]
-            if isinstance(v1, np.ndarray):
-                merged_non_tensor[k] = np.concatenate([v1, v2], axis=0)
-            elif isinstance(v1, list):
-                merged_non_tensor[k] = v1 + v2
-            elif isinstance(v1, dict):
-                # For dict types like next_states, use the latest value (from batch2)
-                merged_non_tensor[k] = v2
-            else:
-                merged_non_tensor[k] = np.array(list(v1) + list(v2), dtype=object)
+            merged_non_tensor[k] = np.concatenate([v1, v2], axis=0)
 
         result = DataProto.from_single_dict(merged_batch)
         result.non_tensor_batch = merged_non_tensor
@@ -1706,7 +1699,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 # Set tree structure info (rid, pid, branch_pos, cid)
                                 new_sample_indices = self._set_opts_ttpo_info(batch, global_batch, next_states, round_idx)
                                 batch.non_tensor_batch["new_sample_indices"] = new_sample_indices
-                                batch.non_tensor_batch["next_states"] = next_states
 
                                 # Initialize state_branches, subtree_branches as all ones
                                 batch_size, response_len = batch.batch["responses"].shape
@@ -1753,6 +1745,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 num_repeat=self.config.actor_rollout_ref.rollout.n,
                                 norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                                 config=self.config.algorithm,
+                                next_states=next_states if opts_ttpo_mode else None,
                             )
                             if opts_ttpo_mode:
                                 global_batch = target_batch

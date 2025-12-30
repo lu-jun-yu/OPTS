@@ -96,10 +96,9 @@ algorithm:
 **OPTS_TTPO 新增键：**
 - `rid`：每条 response 的唯一标识
 - `pid`：父轨迹的 rid（第一轮为 None）
-- `cid`：子轨迹映射，有序字典 `{位置索引: [子轨迹rid列表]}`
+- `cid`：子轨迹映射，ndarray of OrderedDict `{位置索引: [子轨迹rid列表]}`
 - `branch_pos`：在父轨迹中的分支位置（第一轮为 -1）
 - `new_sample_indices`: 新样本的索引列表
-- `next_states`: 本轮循环中被选中的状态索引
 
 ### 3.2 变量详解
 
@@ -138,7 +137,7 @@ new_sample_indices
 ├── 标识新样本的索引
 └── 用于在计算 TreeGAE 时快速定位新样本
 
-next_states
+next_states（函数参数，不存储在 non_tensor_batch 中）
 ├── 字典 Dict[str, Tuple[int, int]]
 ├── key: uid（子轨迹的 uid，与父轨迹 uid 相同）
 ├── value: (parent_index, branch_pos)
@@ -306,7 +305,6 @@ for epoch in ...:
                     - (局部batch) 初始化cid为空OrderedDict
                     - (全局batch) 在父轨迹上插入新的cid键值
                     - 返回 new_sample_indices
-                - (局部batch) 将next_states保存到non_tensor_batch
                 - (局部batch) 初始化state_branches、subtree_branches为全1，初始化advantages、advantages_mean、returns为全0【新行】
                 - (局部batch) compute_forward_values【新函数】：
                     - 输入：token_level_rewards, response_mask, gamma, lam, pid, parent_branch_pos, parent_gamma_t, parent_lam_t, parent_trajectory_reward, rid2idx
