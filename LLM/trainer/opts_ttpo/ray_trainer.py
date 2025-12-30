@@ -1571,6 +1571,9 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 del rm_scores, gen_baseline_batch, gen_baseline_output
                         # repeat to align with repeated responses in rollout
                         batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                        # In OPTS mode, pop input_ids/attention_mask/position_ids before union to avoid conflict
+                        if opts_ttpo_mode:
+                            batch.pop(batch_keys=["input_ids", "attention_mask", "position_ids"])
                         batch = batch.union(gen_batch_output)
 
                         if "response_mask" not in batch.batch.keys():
