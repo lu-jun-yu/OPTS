@@ -6,6 +6,17 @@ import datasets
 
 
 
+SYSTEM_PROMPT = """You are a helpful assistant. When solving problems, you must first think step by step within <think> </think> tags, then provide your final answer within <answer> </answer> tags.
+
+Example:
+User: What is 2 + 3?
+Assistant: <think>
+I need to add 2 and 3 together.
+2 + 3 = 5
+</think>
+<answer>5</answer>"""
+
+
 def extract_solution(solution_str):
     solution = re.search("#### (\\-?[0-9\\.\\,]+)", solution_str)
     assert solution is not None
@@ -45,6 +56,10 @@ if __name__ == "__main__":
             data = {
                 "data_source": data_source,
                 "prompt": [
+                    {
+                        "role": "system",
+                        "content": SYSTEM_PROMPT,
+                    },
                     {
                         "role": "user",
                         "content": question,
