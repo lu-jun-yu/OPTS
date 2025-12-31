@@ -1895,6 +1895,10 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                             # Select next states if not last round
                             if round_idx < self.config.actor_rollout_ref.rollout.g - 1:
                                 with timed_block("select_next_states", step=self.global_steps, round_idx=round_idx):
+                                    # Compute prompt_lengths for each trajectory
+                                    prompt_len = global_batch.batch["input_ids"].shape[1] - global_batch.batch["responses"].shape[1]
+                                    prompt_lengths = global_batch.batch["attention_mask"][:, :prompt_len].sum(dim=1)
+
                                     selected_states, updated_subtree_branches = select_next_states(
                                         values=global_batch.batch["values"],
                                         advantages_mean=global_batch.batch["advantages_mean"],
@@ -1912,9 +1916,11 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                         round_idx=round_idx,
                                         n_samples_per_round=self.config.actor_rollout_ref.rollout.n,
                                         parent_branch_pos=global_batch.non_tensor_batch["branch_pos"],
+                                        prompt_lengths=prompt_lengths,
+                                        max_prompt_length=self.config.data.max_prompt_length,
                                     )
                                     global_batch.batch["subtree_branches"] = updated_subtree_branches
-                                    logger_batch.info(f"[step={self.global_steps}][round={round_idx}][after_select_next_states] selected_states count={len(selected_states)}, states={sorted(selected_states, key=lambda x: x[1])[:10]}...")
+                                    logger_batch.info(f"[step={self.global_steps}][round={round_idx}][after_select_next_states] selected_states count={len(selected_states)}, states={sorted(selected_states, key=lambda x: -x[1])[:10]}...")
 
                                 # Update state_branches for selected states
                                 rid2idx = {r: i for i, r in enumerate(global_batch.non_tensor_batch["rid"])}

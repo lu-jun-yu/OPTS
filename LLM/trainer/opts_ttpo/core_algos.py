@@ -2163,6 +2163,8 @@ def select_next_states(
     round_idx: int,
     n_samples_per_round: int,
     parent_branch_pos: List[int],
+    prompt_lengths: torch.Tensor,
+    max_prompt_length: int,
 ) -> Tuple[List[Tuple[str, int]], torch.Tensor]:
     """Select next states for expansion using TUCT.
 
@@ -2179,6 +2181,8 @@ def select_next_states(
         lam, c: floats
         round_idx, n_samples_per_round: ints
         parent_branch_pos: List[int], len = batch_size
+        prompt_lengths: shape (batch_size,), prompt length for each trajectory
+        max_prompt_length: maximum allowed prompt length
 
     Returns:
         selected_states: List of (rid, pos) for each unique uid
@@ -2202,6 +2206,11 @@ def select_next_states(
     exploration = c * torch.sqrt(torch.log(partree_branches[:, :-1] + 1)) / (subtree_branches[:, :-1] + 1e-8)
     tuct = expected_traj_reward * lam_t[:, 1:] + exploration
     tuct = torch.where(response_mask[:, :-1] > 0, tuct, torch.tensor(-float('inf')))
+
+    # Set tuct to -inf where pos_idx + prompt_length > max_prompt_length
+    pos_indices = torch.arange(response_len - 1).unsqueeze(0)  # (1, response_len-1)
+    exceeds_length_mask = (pos_indices + prompt_lengths.unsqueeze(1)) > max_prompt_length
+    tuct = torch.where(exceeds_length_mask, torch.tensor(-float('inf')), tuct)
 
     # 4) Select best state per uid
     unique_uids = np.unique(uid)
