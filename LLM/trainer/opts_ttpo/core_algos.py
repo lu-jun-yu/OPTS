@@ -2102,7 +2102,8 @@ def compute_partree_branches(
     batch_size, response_len = subtree_branches.shape
     partree_branches = torch.zeros(batch_size, response_len)
 
-    for i in range(batch_size):
+    def _process_trajectory(i: int) -> None:
+        """Process a single trajectory to compute its partree_branches."""
         trajectory_cid = cid[i]
         p_rid = pid[i] if pid is not None else None
 
@@ -2137,6 +2138,10 @@ def compute_partree_branches(
             # Positions after last branch point
             last_branch = branch_positions[-1]
             partree_branches[i, last_branch + 1:] = subtree_branches[i, last_branch]
+
+    # Process all trajectories in parallel
+    with ThreadPoolExecutor() as executor:
+        list(executor.map(_process_trajectory, range(batch_size)))
 
     return partree_branches
 
@@ -2200,9 +2205,9 @@ def select_next_states(
 
     # 4) Select best state per uid
     unique_uids = np.unique(uid)
-    selected_states = []
 
-    for u in unique_uids:
+    def _select_for_uid(u) -> Tuple[str, int]:
+        """Select the best state for a single uid."""
         uid_indices = np.where(uid == u)[0]
 
         # Find max TUCT across all trajectories for this uid
@@ -2220,25 +2225,30 @@ def select_next_states(
         if root_tuct > best_tuct:
             best_rid, best_pos = rid[root_indices[0]], -1
 
-        selected_states.append((best_rid, best_pos))
+        return (best_rid, best_pos)
+
+    # Process all uids in parallel
+    with ThreadPoolExecutor() as executor:
+        selected_states = list(executor.map(_select_for_uid, unique_uids))
 
     # 5) Update subtree_branches: propagate n upward from selected states
-    # Only update positions 0 to branch_pos for each trajectory along ancestor chain
-    for sel_rid, sel_pos in selected_states:
+    def _update_subtree_branches(sel_rid: str, sel_pos: int) -> None:
+        """Update subtree_branches for a single selected state."""
         if sel_pos >= 0:
-            # Start with selected trajectory and position
             current_rid = sel_rid
             bp = sel_pos
 
             while current_rid is not None and current_rid in rid2idx:
                 idx = rid2idx[current_rid]
-                # Update positions 0 to bp (inclusive)
                 subtree_branches[idx, :bp + 1] += n_samples_per_round
 
-                # Move to parent: use parent_branch_pos directly instead of searching cid
                 current_rid = pid[idx]
                 if current_rid is not None and current_rid in rid2idx:
                     bp = parent_branch_pos[idx]
+
+    # Process all selected states in parallel
+    with ThreadPoolExecutor() as executor:
+        list(executor.map(lambda args: _update_subtree_branches(*args), selected_states))
 
     return selected_states, subtree_branches
 
@@ -2267,13 +2277,20 @@ def compute_branch_weight_factors(
     rid2idx = {r: i for i, r in enumerate(rid)}
 
     # Step 1: Compute initial weight for each sample (ancestor chain product)
-    init_weights = torch.ones(batch_size, dtype=state_branches.dtype)
-    for i in range(batch_size):
+    def _compute_init_weight(i: int) -> torch.Tensor:
+        """Compute initial weight for a single sample."""
+        weight = torch.tensor(1.0, dtype=state_branches.dtype)
         current_idx, current_bp = i, branch_pos[i]
         while pid[current_idx] is not None and pid[current_idx] in rid2idx:
             parent_idx = rid2idx[pid[current_idx]]
-            init_weights[i] *= state_branches[parent_idx, :current_bp + 1].prod()
+            weight *= state_branches[parent_idx, :current_bp + 1].prod()
             current_idx, current_bp = parent_idx, branch_pos[parent_idx]
+        return weight
+
+    # Process all samples in parallel
+    with ThreadPoolExecutor() as executor:
+        weights = list(executor.map(_compute_init_weight, range(batch_size)))
+    init_weights = torch.stack(weights)
 
     # Step 2: Forward cumulative product using cumprod
     # Prepend 1 to state_branches for correct alignment, then cumprod

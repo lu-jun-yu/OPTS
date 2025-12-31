@@ -1914,7 +1914,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                         parent_branch_pos=global_batch.non_tensor_batch["branch_pos"],
                                     )
                                     global_batch.batch["subtree_branches"] = updated_subtree_branches
-                                    logger_batch.info(f"[step={self.global_steps}][round={round_idx}][after_select_next_states] selected_states count={len(selected_states)}, states={sorted(selected_states, key=lambda x: x[1])[-10:]}...")
+                                    logger_batch.info(f"[step={self.global_steps}][round={round_idx}][after_select_next_states] selected_states count={len(selected_states)}, states={sorted(selected_states, key=lambda x: x[1])[:10]}...")
 
                                 # Update state_branches for selected states
                                 rid2idx = {r: i for i, r in enumerate(global_batch.non_tensor_batch["rid"])}
