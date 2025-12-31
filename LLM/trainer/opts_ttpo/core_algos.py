@@ -2209,7 +2209,7 @@ def select_next_states(
 
     # Set tuct to -inf where pos_idx + prompt_length > max_prompt_length
     pos_indices = torch.arange(response_len - 1).unsqueeze(0)  # (1, response_len-1)
-    exceeds_length_mask = (pos_indices + prompt_lengths.unsqueeze(1)) > max_prompt_length
+    exceeds_length_mask = (pos_indices + prompt_lengths.unsqueeze(1)) >= max_prompt_length
     tuct = torch.where(exceeds_length_mask, torch.tensor(-float('inf')), tuct)
 
     # 4) Select best state per uid

@@ -650,7 +650,16 @@ OPTS_TTPO 需要从已有的 `input_ids` 续写生成，而不是从 `raw_prompt
        pg_loss, pg_metrics = policy_loss_fn(..., branch_weight_factor=branch_weight_factor)
    ```
 
-#### 7.4.4 注意事项
+#### 7.4.4 Critic Value Head 激活函数
+
+为支持 0-1 范围的规则奖励，在 verl 的 critic 配置中新增 `value_head_activation` 参数，可选值为 `none`、`sigmoid`、`tanh`。设为 `sigmoid` 时，critic 输出将被限制到 (0, 1) 范围，与规则奖励的范围对齐。
+
+修改文件：
+- `verl/workers/config/critic.py`：新增 `value_head_activation` 配置项
+- `verl/trainer/config/critic/critic.yaml`：新增对应的 yaml 配置
+- `verl/workers/critic/dp_critic.py`：在 `_forward_micro_batch` 中根据配置应用激活函数
+
+#### 7.4.5 注意事项
 
 1. **Tensor 布尔判断**：使用 `if tensor is not None:` 而非 `if tensor:`，避免多元素 Tensor 的歧义错误
 2. **`non_tensor_batch` 类型约束**：`DataProto.non_tensor_batch` 的所有值必须是 `np.ndarray` 类型
