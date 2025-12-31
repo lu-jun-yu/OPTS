@@ -4,7 +4,6 @@ PYTHONUNBUFFERED=1 python3 -m trainer.main_opts_ttpo \
  data.train_batch_size=1024 \
  data.max_prompt_length=1024 \
  data.max_response_length=1024 \
- data.generation_prefix="<think>\n" \
  actor_rollout_ref.model.path=models/Qwen3-0.6B \
  actor_rollout_ref.actor.optim.lr=1e-6 \
  actor_rollout_ref.actor.ppo_mini_batch_size=128 \

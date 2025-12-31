@@ -14,7 +14,9 @@ Assistant: <think>
 I need to add 2 and 3 together.
 2 + 3 = 5
 </think>
-<answer>5</answer>"""
+<answer>
+5
+</answer>"""
 
 
 def extract_solution(solution_str):
