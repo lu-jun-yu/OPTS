@@ -592,26 +592,30 @@ class RolloutConfig(BaseConfig):
 
 #### 7.4.2 Agent Loop 续写模式
 
+OPTS_TTPO 需要从已有的 `input_ids` 续写生成，而不是从 `raw_prompt` 重新生成。
+
 **`LLM/verl/verl/experimental/agent_loop/agent_loop.py`**：
 
-OPTS_TTPO 需要从已有的 `input_ids` 续写生成，而不是从 `raw_prompt` 重新生成。新增以下功能：
+1. **`AgentLoopBase` 基类**：新增 `run_from_input_ids` 抽象方法，定义续写模式接口，接收 `prompt_ids` 参数而非从 `raw_prompt` 解析
 
-1. **`generate_sequences` 方法**：添加续写模式分支
-   ```python
-   # Continuation mode: generate from input_ids instead of raw_prompt
-   if "input_ids" in batch.batch.keys():
-       return await self._generate_from_input_ids(batch)
-   ```
+2. **`generate_sequences` 方法**：添加续写模式分支，当 `batch.meta_info["round_idx"] >= 1` 时调用 `_generate_from_input_ids`
 
-2. **`_generate_from_input_ids` 方法**：从 `input_ids` 续写生成
+3. **`_run_agent_loop_from_input_ids` 方法**（新增）：仿照 `_run_agent_loop` 实现，创建 agent loop 实例后调用其 `run_from_input_ids` 方法，最后通过 `_agent_loop_postprocess` 进行后处理
+
+4. **`_generate_from_input_ids` 方法**：仿照 `generate_sequences` 的完整模式实现
+   - 设置 sampling_params、agent_name、index、traced_indices 等
    - 提取有效 token（移除 left padding）
-   - 调用 `server_manager.generate` 生成新 token
-   - 返回处理后的 `DataProto`
+   - 为每个样本创建异步任务调用 `_run_agent_loop_from_input_ids`
+   - 使用 `_postprocess(outputs)` 进行后处理，与原有流程对齐
 
-3. **`_postprocess_continuation` 方法**：续写结果后处理
-   - 将原始输入作为 prompt，新生成的 token 作为 response
-   - 使用 `tokenizer.pad` 进行填充，与原有 `_agent_loop_postprocess` 风格一致
-   - 返回包含 `prompts`、`responses`、`response_mask`、`input_ids`、`attention_mask`、`position_ids` 的 `DataProto`
+**`LLM/verl/verl/experimental/agent_loop/single_turn_agent_loop.py`**：
+
+5. **`SingleTurnAgentLoop` 类**：实现 `run_from_input_ids` 方法，接收 `prompt_ids` 直接调用 `server_manager.generate` 生成新 token，返回 `AgentLoopOutput`
+
+**关键改动说明**：
+
+- 通过 `run_from_input_ids` 抽象方法，各 AgentLoop 子类可以自定义续写逻辑
+- `_generate_from_input_ids` 直接复用 `_postprocess` 和 `_agent_loop_postprocess`，保证与原有流程输出格式完全一致
 
 #### 7.4.3 Actor 策略损失修改
 
