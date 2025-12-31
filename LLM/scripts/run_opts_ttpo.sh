@@ -1,6 +1,6 @@
 PYTHONUNBUFFERED=1 python3 -m trainer.main_opts_ttpo \
- data.train_files=data/gsm8k/train.parquet \
- data.val_files=data/gsm8k/test.parquet \
+ data.train_files=data/train.parquet \
+ data.val_files=data/test.parquet \
  data.train_batch_size=1024 \
  data.max_prompt_length=1024 \
  data.max_response_length=1024 \
