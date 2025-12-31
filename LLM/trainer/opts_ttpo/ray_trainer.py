@@ -33,39 +33,6 @@ from typing import Any, Optional, List, Tuple, Dict
 import numpy as np
 import ray
 import torch
-
-# Setup logging for batch tracking
-logger_batch = logging.getLogger("opts_ttpo.batch_tracker")
-logger_batch.setLevel(logging.DEBUG)
-logger_batch.propagate = False  # Prevent duplicate logs from propagating to root logger
-if not logger_batch.handlers:
-    handler = logging.StreamHandler()
-    handler.setLevel(logging.DEBUG)
-    formatter = logging.Formatter('[%(asctime)s][%(name)s][%(levelname)s] %(message)s')
-    handler.setFormatter(formatter)
-    logger_batch.addHandler(handler)
-
-
-@contextmanager
-def timed_block(name: str, step: int = -1, round_idx: int = -1):
-    """Context manager to log the execution time of a code block.
-
-    Args:
-        name: Name of the code block being timed.
-        step: Global training step number.
-        round_idx: OPTS round index (for multi-round generation).
-    """
-    step_info = f"step={step}" if step >= 0 else ""
-    round_info = f"round={round_idx}" if round_idx >= 0 else ""
-    prefix = f"[{step_info}][{round_info}]" if step_info or round_info else ""
-
-    logger_batch.info(f"{prefix}[{name}] >>> START")
-    start_time = time.perf_counter()
-    try:
-        yield
-    finally:
-        elapsed = time.perf_counter() - start_time
-        logger_batch.info(f"{prefix}[{name}] <<< END (elapsed: {elapsed:.3f}s)")
 from omegaconf import OmegaConf, open_dict
 from torch.utils.data import Dataset, Sampler
 from torchdata.stateful_dataloader import StatefulDataLoader
@@ -111,6 +78,40 @@ from .core_algos import (
     select_next_states,
     compute_branch_weight_factors,
 )
+
+
+# Setup logging for batch tracking
+logger_batch = logging.getLogger("opts_ttpo.batch_tracker")
+logger_batch.setLevel(logging.DEBUG)
+logger_batch.propagate = False  # Prevent duplicate logs from propagating to root logger
+if not logger_batch.handlers:
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('[%(asctime)s][%(name)s][%(levelname)s] %(message)s')
+    handler.setFormatter(formatter)
+    logger_batch.addHandler(handler)
+
+
+@contextmanager
+def timed_block(name: str, step: int = -1, round_idx: int = -1):
+    """Context manager to log the execution time of a code block.
+
+    Args:
+        name: Name of the code block being timed.
+        step: Global training step number.
+        round_idx: OPTS round index (for multi-round generation).
+    """
+    step_info = f"step={step}" if step >= 0 else ""
+    round_info = f"round={round_idx}" if round_idx >= 0 else ""
+    prefix = f"[{step_info}][{round_info}]" if step_info or round_info else ""
+
+    logger_batch.info(f"{prefix}[{name}] >>> START")
+    start_time = time.perf_counter()
+    try:
+        yield
+    finally:
+        elapsed = time.perf_counter() - start_time
+        logger_batch.info(f"{prefix}[{name}] <<< END (elapsed: {elapsed:.3f}s)")
 
 
 def log_batch_state(batch: "DataProto", stage: str, step: int = -1, round_idx: int = -1) -> None:
@@ -1913,7 +1914,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                         parent_branch_pos=global_batch.non_tensor_batch["branch_pos"],
                                     )
                                     global_batch.batch["subtree_branches"] = updated_subtree_branches
-                                    logger_batch.info(f"[step={self.global_steps}][round={round_idx}][after_select_next_states] selected_states count={len(selected_states)}, states={selected_states[:10]}...")
+                                    logger_batch.info(f"[step={self.global_steps}][round={round_idx}][after_select_next_states] selected_states count={len(selected_states)}, states={sorted(selected_states, key=lambda x: x[1])[-10:]}...")
 
                                 # Update state_branches for selected states
                                 rid2idx = {r: i for i, r in enumerate(global_batch.non_tensor_batch["rid"])}

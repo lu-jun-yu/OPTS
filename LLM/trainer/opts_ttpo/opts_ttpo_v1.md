@@ -346,19 +346,26 @@ for epoch in ...:
                                 - lastgaelam = delta + gamma * lam * lastgaelam
                             - 保存到 advantages[new_sample_indices] 和 advantages_mean[new_sample_indices]
 
-                        - 第二个循环（使用next_states向祖先轨迹传播优势值）：
+                        - 第二个循环（使用next_states向祖先轨迹传播优势值，使用线程池并行）：
+                            - 定义 _process_parent(p_idx, branch_pos) 辅助函数：
+                                - lastgaelam = advantages[p_idx, branch_pos + 1]
+                                - for t in reversed(range(branch_pos + 1)):
+                                    - if t 是分支节点:
+                                        - lastgaelam_mean = (advantages[child_indices, 0].sum() + advantages[p_idx, t + 1]) / state_branches
+                                        - advantages_mean[p_idx, t] = lastgaelam_mean
+                                        - delta = rewards[p_idx, t] + gamma * values[p_idx, t + 1] - values[p_idx, t]
+                                        - lastgaelam_ = delta + gamma * lam * lastgaelam_mean
+                                    - else:
+                                        - advantages_mean[p_idx, t] = lastgaelam
+                                        - delta = rewards[p_idx, t] + gamma * values[p_idx, t + 1] - values[p_idx, t]
+                                        - lastgaelam_ = delta + gamma * lam * lastgaelam
+                                    - lastgaelam = lastgaelam_ * mask + (1 - mask) * lastgaelam
+                                    - advantages[p_idx, t] = lastgaelam
+                                - 返回祖父轨迹信息 (grandparent_idx, pos) 或 None
                             - current_level = next_states.values()
                             - while current_level:
-                                - for 每个父轨迹 (p_idx, branch_pos):
-                                    - Step 1: 处理 branch_pos（分支节点）
-                                        - child_indices = [rid2idx[c_rid] for c_rid in parent_cid[branch_pos]]
-                                        - lastgaelam_mean = (advantages[child_indices, 0].sum() + advantages[p_idx, branch_pos + 1]) / state_branches
-                                        - 计算并保存 advantages_mean 和 advantages
-                                    - Step 2: 从 branch_pos - 1 反向遍历到 0
-                                        - if 分支节点: 计算 lastgaelam_mean 并更新
-                                        - else: 标准 GAE 更新
-                                    - 若父轨迹有祖父轨迹，加入 next_level
-                                - current_level = next_level
+                                - 使用 ThreadPoolExecutor 并行处理 current_level 中的所有父轨迹
+                                - current_level = 收集返回的祖父轨迹信息
                 - elif adv_estimator == AdvantageEstimator.GAE:
                     - 调用原有的compute_gae_advantage_return
 

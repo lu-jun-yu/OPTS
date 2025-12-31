@@ -21,6 +21,7 @@ implement PPO-like algorithms.
 __all__ = ["register_adv_est", "get_adv_estimator_fn", "AdvantageEstimator"]
 
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -306,43 +307,53 @@ def compute_treegae_advantage_return(
             returns = advantages + values
             return advantages, returns, advantages_mean
 
+        def _process_parent(p_idx: int, branch_pos: int) -> Optional[Tuple[int, int]]:
+            """Process a single parent trajectory for TreeGAE advantage propagation.
+
+            Returns:
+                Optional grandparent info (grandparent_idx, pos) for next level, or None.
+            """
+            parent_cid = cid[p_idx]
+            cid_positions = set(parent_cid.keys())
+            lastgaelam = advantages[p_idx, branch_pos + 1]
+
+            for t in reversed(range(branch_pos + 1)):
+                if t in cid_positions:
+                    child_indices = [rid2idx[c_rid] for c_rid in parent_cid[t]]
+                    lastgaelam_mean = (advantages[child_indices, 0].sum() + advantages[p_idx, t + 1]) / state_branches[p_idx, t]
+                    advantages_mean[p_idx, t] = lastgaelam_mean
+                    delta = token_level_rewards[p_idx, t] + gamma * values[p_idx, t + 1] - values[p_idx, t]
+                    lastgaelam_ = delta + gamma * lam * lastgaelam_mean
+                else:
+                    advantages_mean[p_idx, t] = lastgaelam
+                    delta = token_level_rewards[p_idx, t] + gamma * values[p_idx, t + 1] - values[p_idx, t]
+                    lastgaelam_ = delta + gamma * lam * lastgaelam
+
+                lastgaelam = lastgaelam_ * response_mask[p_idx, t] + (1 - response_mask[p_idx, t]) * lastgaelam
+                advantages[p_idx, t] = lastgaelam
+
+            # Find grandparent info for next level
+            grandparent_rid = pid[p_idx]
+            if grandparent_rid is not None:
+                grandparent_idx = rid2idx[grandparent_rid]
+                grandparent_cid = cid[grandparent_idx]
+                current_rid = rid[p_idx]
+                for pos, child_rids in grandparent_cid.items():
+                    if current_rid in child_rids:
+                        return (grandparent_idx, pos)
+            return None
+
         # Initialize with parent trajectories from next_states
         # next_states: {uid: (parent_index, branch_pos)} - already deduplicated
         current_level = list(next_states.values())
 
         while current_level:
-            next_level = []
+            # Process all parents in current level in parallel
+            with ThreadPoolExecutor() as executor:
+                results = list(executor.map(lambda args: _process_parent(*args), current_level))
 
-            for p_idx, branch_pos in current_level:
-                parent_cid = cid[p_idx]
-                cid_positions = set(parent_cid.keys())
-
-                for t in reversed(range(branch_pos + 1)):
-                    if t in cid_positions:
-                        child_indices = [rid2idx[c_rid] for c_rid in parent_cid[t]]
-                        lastgaelam_mean = (advantages[child_indices, 0].sum() + advantages[p_idx, t + 1]) / state_branches[p_idx, t]
-                        advantages_mean[p_idx, t] = lastgaelam_mean
-                        delta = token_level_rewards[p_idx, t] + gamma * values[p_idx, t + 1] - values[p_idx, t]
-                        lastgaelam_ = delta + gamma * lam * lastgaelam_mean
-                    else:
-                        advantages_mean[p_idx, t] = lastgaelam
-                        delta = token_level_rewards[p_idx, t] + gamma * values[p_idx, t + 1] - values[p_idx, t]
-                        lastgaelam_ = delta + gamma * lam * lastgaelam
-
-                    lastgaelam = lastgaelam_ * response_mask[p_idx, t] + (1 - response_mask[p_idx, t]) * lastgaelam
-                    advantages[p_idx, t] = lastgaelam
-
-                grandparent_rid = pid[p_idx]
-                if grandparent_rid is not None:
-                    grandparent_idx = rid2idx[grandparent_rid]
-                    grandparent_cid = cid[grandparent_idx]
-                    current_rid = rid[p_idx]
-                    for pos, child_rids in grandparent_cid.items():
-                        if current_rid in child_rids:
-                            next_level.append((grandparent_idx, pos))
-                            break
-
-            current_level = next_level
+            # Collect next level from results
+            current_level = [r for r in results if r is not None]
 
         returns = advantages + values
         # Note: Do NOT whiten advantages here. In OPTS_TTPO, advantages from previous
