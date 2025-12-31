@@ -8,17 +8,17 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Merge GSM8K and Math12K training datasets.")
     parser.add_argument(
         "--gsm8k_path",
-        default="~/data/gsm8k/train.parquet",
+        default="data/gsm8k/train.parquet",
         help="Path to GSM8K train.parquet file.",
     )
     parser.add_argument(
         "--math12k_path",
-        default="~/data/math12k/train.parquet",
+        default="data/math12k/train.parquet",
         help="Path to Math12K train.parquet file.",
     )
     parser.add_argument(
         "--output_path",
-        default="~/data/train.parquet",
+        default="data/train.parquet",
         help="Output path for the merged dataset.",
     )
     parser.add_argument(
