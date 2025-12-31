@@ -1720,7 +1720,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                         assert self.reward_loop_manager is not None, "RewardLoopManager is None"
                                         reward_tensor = self.reward_loop_manager.compute_rm_score(batch)
                                     batch = batch.union(reward_tensor)
-                                    log_batch_state(batch, stage="after_rm_score", step=self.global_steps, round_idx=round_idx)
 
                             # Compute or extract reward for training
                             if self.config.reward_model.launch_reward_fn_async:
@@ -1732,7 +1731,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                     reward_tensor, reward_extra_infos_dict = self._compute_or_extract_reward(
                                         batch, reward_fn=self.reward_fn, return_dict=False
                                     )
-                                    logger_batch.info(f"[step={self.global_steps}][round={round_idx}][after_reward_compute] reward_tensor shape={reward_tensor.shape}, sum min={reward_tensor.sum(dim=-1).min().item():.4f}, max={reward_tensor.sum(dim=-1).max().item():.4f}, mean={reward_tensor.sum(dim=-1).mean().item():.4f}")
 
                         # Operating Mode Selection:
                         # - Bypass mode: Sets old_log_probs = rollout_log_probs (2 policies: π_rollout, π_θ)
@@ -1768,7 +1766,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                     metrics.update(old_log_prob_metrics)
                                     old_log_prob.batch.pop("entropys")
                                     batch = batch.union(old_log_prob)
-                                    log_batch_state(batch, stage="after_old_log_prob", step=self.global_steps, round_idx=round_idx)
                                 if "rollout_log_probs" in batch.batch.keys():
                                     # TODO: we may want to add diff of probs too.
                                     from verl.utils.debug.metrics import calculate_debug_metrics
@@ -1783,7 +1780,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 with timed_block("compute_ref_log_prob", step=self.global_steps, round_idx=round_idx):
                                     ref_log_prob = self._compute_ref_log_prob(batch)
                                     batch = batch.union(ref_log_prob)
-                                    log_batch_state(batch, stage="after_ref_log_prob", step=self.global_steps, round_idx=round_idx)
 
                         # compute values
                         if self.use_critic:
@@ -1791,7 +1787,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 with timed_block("compute_values", step=self.global_steps, round_idx=round_idx):
                                     values = self._compute_values(batch)
                                     batch = batch.union(values)
-                                    log_batch_state(batch, stage="after_values", step=self.global_steps, round_idx=round_idx)
 
                         with marked_timer("adv", timing_raw, color="brown"):
                             # we combine with rule-based rm

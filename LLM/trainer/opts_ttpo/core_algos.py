@@ -317,20 +317,10 @@ def compute_treegae_advantage_return(
                 parent_cid = cid[p_idx]
                 cid_positions = set(parent_cid.keys())
 
-                # Step 1: Process branch_pos (always a branch node)
-                child_indices = [rid2idx[c_rid] for c_rid in parent_cid[branch_pos]]
-                lastgaelam_mean = (advantages[child_indices, 0].sum() + advantages[p_idx, branch_pos + 1]) / state_branches[p_idx, branch_pos]
-                advantages_mean[p_idx, branch_pos] = lastgaelam_mean
-
-                delta = token_level_rewards[p_idx, branch_pos] + gamma * values[p_idx, branch_pos + 1] - values[p_idx, branch_pos]
-                lastgaelam = (delta + gamma * lam * lastgaelam_mean) * response_mask[p_idx, branch_pos]
-                advantages[p_idx, branch_pos] = lastgaelam
-
-                # Step 2: Backward propagation from branch_pos - 1 to 0
-                for t in reversed(range(branch_pos)):
+                for t in reversed(range(branch_pos + 1)):
                     if t in cid_positions:
                         child_indices = [rid2idx[c_rid] for c_rid in parent_cid[t]]
-                        lastgaelam_mean = (advantages[child_indices, 0].sum() + lastgaelam) / state_branches[p_idx, t]
+                        lastgaelam_mean = (advantages[child_indices, 0].sum() + advantages[p_idx, t + 1]) / state_branches[p_idx, t]
                         advantages_mean[p_idx, t] = lastgaelam_mean
                         delta = token_level_rewards[p_idx, t] + gamma * values[p_idx, t + 1] - values[p_idx, t]
                         lastgaelam_ = delta + gamma * lam * lastgaelam_mean
@@ -342,7 +332,6 @@ def compute_treegae_advantage_return(
                     lastgaelam = lastgaelam_ * response_mask[p_idx, t] + (1 - response_mask[p_idx, t]) * lastgaelam
                     advantages[p_idx, t] = lastgaelam
 
-                # Check if this parent has a grandparent
                 grandparent_rid = pid[p_idx]
                 if grandparent_rid is not None:
                     grandparent_idx = rid2idx[grandparent_rid]
