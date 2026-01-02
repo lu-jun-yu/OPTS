@@ -1466,22 +1466,25 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
     def _prepare_next_round_input(
         self,
         global_batch: DataProto,
-        selected_states: List[Tuple[str, int]],
+        next_states: Dict[str, Tuple[int, int]],
     ) -> DataProto:
-        """Prepare input batch for next round based on selected states."""
-        if not selected_states:
-            raise ValueError("selected_states cannot be empty")
+        """Prepare input batch for next round based on selected states.
 
-        rid_arr = global_batch.non_tensor_batch["rid"]
+        Args:
+            global_batch: Global batch containing all trajectories.
+            next_states: Dict mapping uid to (parent_idx, branch_pos).
+        """
+        if not next_states:
+            raise ValueError("next_states cannot be empty")
+
         uid_arr = global_batch.non_tensor_batch["uid"]
         pid_arr = global_batch.non_tensor_batch["pid"]
 
-        rid2idx = {r: i for i, r in enumerate(rid_arr)}
         prompt_len = global_batch.batch["input_ids"].shape[1] - global_batch.batch["responses"].shape[1]
 
-        sel_indices = [rid2idx[rid] for rid, _ in selected_states]
-        sel_positions = [pos for _, pos in selected_states]
-        sel_uids = [uid_arr[idx] for idx in sel_indices]
+        sel_uids = list(next_states.keys())
+        sel_indices = [idx for idx, _ in next_states.values()]
+        sel_positions = [pos for _, pos in next_states.values()]
 
         # Vectorized: compute valid prompt lengths
         prompt_masks = global_batch.batch["attention_mask"][sel_indices, :prompt_len]
@@ -1492,7 +1495,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
         pos_tensor = torch.tensor(sel_positions, device=valid_prompt_lens.device)
         valid_lens = valid_prompt_lens + torch.clamp(pos_tensor + 1, min=0)
 
-        max_len, bs = int(valid_lens.max().item()), len(selected_states)
+        max_len, bs = int(valid_lens.max().item()), len(next_states)
         device = global_batch.batch["input_ids"].device
 
         padded_ids = torch.zeros(bs, max_len, dtype=torch.long, device=device)
@@ -1886,20 +1889,13 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 batch.batch["returns"] = torch.zeros(batch_size, response_len)
 
                                 # Compute forward values (gamma_t, lam_t, trajectory_reward)
-                                rid2idx = {r: i for i, r in enumerate(global_batch.non_tensor_batch["rid"])} if global_batch is not None else {}
-                                parent_branch_pos = [next_states.get(u, (None, 0))[1] if u in next_states else 0 for u in batch.non_tensor_batch["uid"]]
                                 with timed_block("compute_forward_values", step=self.global_steps, round_idx=round_idx):
                                     gamma_t, lam_t, trajectory_reward = compute_forward_values(
-                                        token_level_rewards=batch.batch["token_level_rewards"],
-                                        response_mask=batch.batch["response_mask"],
+                                        batch=batch,
+                                        global_batch=global_batch,
+                                        next_states=next_states,
                                         gamma=self.config.algorithm.gamma,
                                         lam=self.config.algorithm.lam,
-                                        pid=batch.non_tensor_batch["pid"],
-                                        parent_branch_pos=parent_branch_pos,
-                                        parent_gamma_t=global_batch.batch["gamma_t"] if global_batch is not None else None,
-                                        parent_lam_t=global_batch.batch["lam_t"] if global_batch is not None else None,
-                                        parent_trajectory_reward=global_batch.batch["trajectory_reward"] if global_batch is not None else None,
-                                        rid2idx=rid2idx,
                                     )
                                 batch.batch["gamma_t"] = gamma_t
                                 batch.batch["lam_t"] = lam_t
@@ -1936,7 +1932,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                             # Select next states if not last round
                             if round_idx < self.config.actor_rollout_ref.rollout.g - 1:
                                 with timed_block("select_next_states", step=self.global_steps, round_idx=round_idx):
-                                    selected_states, updated_subtree_branches = select_next_states(
+                                    next_states = select_next_states(
                                         batch=global_batch,
                                         lam=self.config.algorithm.lam,
                                         c=self.config.actor_rollout_ref.rollout.c,
@@ -1944,27 +1940,14 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                         n_samples_per_round=self.config.actor_rollout_ref.rollout.n,
                                         max_prompt_length=self.config.data.max_prompt_length,
                                     )
-                                    global_batch.batch["subtree_branches"] = updated_subtree_branches
-                                    sorted_states = sorted(selected_states, key=lambda x: -x[1])
-                                    logger_batch.info(f"[step={self.global_steps}][round={round_idx}][after_select_next_states] selected_states count={len(selected_states)}, states={sorted_states[:10]}...{sorted_states[-10:]}")
-
-                                # Update state_branches for selected states
-                                rid2idx = {r: i for i, r in enumerate(global_batch.non_tensor_batch["rid"])}
-                                for sel_rid, sel_pos in selected_states:
-                                    if sel_rid in rid2idx and sel_pos >= 0:
-                                        idx = rid2idx[sel_rid]
-                                        global_batch.batch["state_branches"][idx, sel_pos] += self.config.actor_rollout_ref.rollout.n
-
-                                # Build next_states dict for next round: {uid: (parent_idx, branch_pos)}
-                                global_uid = global_batch.non_tensor_batch["uid"]
-                                next_states = {global_uid[rid2idx[sel_rid]]: (rid2idx[sel_rid], sel_pos)
-                                               for sel_rid, sel_pos in selected_states if sel_rid in rid2idx}
+                                    sorted_states = sorted(next_states.values(), key=lambda x: -x[1])
+                                    logger_batch.info(f"[step={self.global_steps}][round={round_idx}][after_select_next_states] next_states count={len(next_states)}, max_pos={sorted_states[:5]}, min_pos={sorted_states[-5:]}")
 
                                 # Prepare next round input
                                 with timed_block("prepare_next_round_input", step=self.global_steps, round_idx=round_idx):
                                     batch = self._prepare_next_round_input(
                                         global_batch=global_batch,
-                                        selected_states=selected_states,
+                                        next_states=next_states,
                                     )
 
                         # Log round completion

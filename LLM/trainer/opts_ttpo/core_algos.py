@@ -2004,39 +2004,40 @@ def compute_policy_loss_bypass_mode(
 # ============================================================================
 
 def compute_forward_values(
-    token_level_rewards: torch.Tensor,
-    response_mask: torch.Tensor,
+    batch: "DataProto",
+    global_batch: Optional["DataProto"],
+    next_states: Dict[str, Tuple[int, int]],
     gamma: float,
     lam: float,
-    pid: np.ndarray,
-    parent_branch_pos: List[int],
-    parent_gamma_t: Optional[torch.Tensor],
-    parent_lam_t: Optional[torch.Tensor],
-    parent_trajectory_reward: Optional[torch.Tensor],
-    rid2idx: Dict[str, int],
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Compute forward values for OPTS_TTPO: gamma_t, lam_t, trajectory_reward.
 
-    All computations are vectorized for efficiency.
-
     Args:
-        token_level_rewards: shape (batch_size, response_len)
-        response_mask: shape (batch_size, response_len)
+        batch: Current round's batch containing token_level_rewards, response_mask, pid, uid.
+        global_batch: Global batch from previous rounds (None for first round).
+        next_states: Dict mapping uid to (parent_idx, branch_pos).
         gamma: Discount factor.
         lam: Lambda for GAE.
-        pid: Parent IDs, shape (batch_size,). None means no parent.
-        parent_branch_pos: Branch positions in parent trajectories, len = batch_size.
-        parent_gamma_t: gamma_t from global_batch, shape (global_size, response_len).
-        parent_lam_t: lam_t from global_batch, shape (global_size, response_len).
-        parent_trajectory_reward: trajectory_reward from global_batch, shape (global_size, response_len).
-        rid2idx: Mapping from rid to index in global_batch.
 
     Returns:
         gamma_t: shape (batch_size, response_len)
         lam_t: shape (batch_size, response_len)
         trajectory_reward: shape (batch_size, response_len)
     """
+    token_level_rewards = batch.batch["token_level_rewards"]
+    response_mask = batch.batch["response_mask"]
+    pid = batch.non_tensor_batch["pid"]
+    uid = batch.non_tensor_batch["uid"]
+
     batch_size, response_len = token_level_rewards.shape
+
+    # Build rid2idx from global_batch
+    rid2idx = {}
+    if global_batch is not None:
+        rid2idx = {r: i for i, r in enumerate(global_batch.non_tensor_batch["rid"])}
+
+    # Compute parent_branch_pos from next_states
+    parent_branch_pos = [next_states.get(u, (None, 0))[1] if u in next_states else 0 for u in uid]
 
     # Build parent indices and mask
     has_parent = torch.tensor([p is not None and p in rid2idx for p in pid])
@@ -2044,7 +2045,10 @@ def compute_forward_values(
     branch_pos = torch.tensor(parent_branch_pos, dtype=torch.long)
 
     # Initialize from parent or default values
-    if parent_gamma_t is not None and has_parent.any():
+    if global_batch is not None and has_parent.any():
+        parent_gamma_t = global_batch.batch["gamma_t"]
+        parent_lam_t = global_batch.batch["lam_t"]
+        parent_trajectory_reward = global_batch.batch["trajectory_reward"]
         init_gamma = torch.where(has_parent, parent_gamma_t[parent_indices, branch_pos], torch.tensor(1.0 / gamma))
         init_lam = torch.where(has_parent, parent_lam_t[parent_indices, branch_pos], torch.tensor(1.0 / lam))
         init_traj_reward = torch.where(has_parent, parent_trajectory_reward[parent_indices, branch_pos], torch.tensor(0.0))
@@ -2153,8 +2157,10 @@ def select_next_states(
     round_idx: int,
     n_samples_per_round: int,
     max_prompt_length: int,
-) -> Tuple[List[Tuple[str, int]], torch.Tensor]:
+) -> Dict[str, Tuple[int, int]]:
     """Select next states for expansion using TUCT.
+
+    This function updates batch's subtree_branches and state_branches in-place.
 
     Args:
         batch: DataProto containing all required tensors and non-tensor data
@@ -2165,10 +2171,9 @@ def select_next_states(
         max_prompt_length: maximum allowed prompt length
 
     Returns:
-        selected_states: List of (rid, pos) for each unique uid
-        updated_subtree_branches: shape (batch_size, response_len)
+        next_states: Dict mapping uid to (parent_idx, branch_pos)
     """
-    # Extract tensors from batch
+    # Extract tensors from batch (these are references, modifications are in-place)
     values = batch.batch["values"]
     advantages = batch.batch["advantages"]
     advantages_mean = batch.batch["advantages_mean"]
@@ -2176,6 +2181,7 @@ def select_next_states(
     gamma_t = batch.batch["gamma_t"]
     lam_t = batch.batch["lam_t"]
     subtree_branches = batch.batch["subtree_branches"]
+    state_branches = batch.batch["state_branches"]
     response_mask = batch.batch["response_mask"]
 
     # Extract non-tensor data
@@ -2213,11 +2219,11 @@ def select_next_states(
     exceeds_length_mask = (pos_indices + prompt_lengths.unsqueeze(1)) >= max_prompt_length
     tuct = torch.where(exceeds_length_mask, torch.tensor(-float('inf')), tuct)
 
-    # 4) Select best state per uid
+    # 4) Select best state per uid, directly return next_states format
     unique_uids = np.unique(uid)
 
-    def _select_for_uid(u) -> Tuple[str, int]:
-        """Select the best state for a single uid."""
+    def _select_for_uid(u) -> Tuple[str, Tuple[int, int]]:
+        """Select the best state for a single uid, return (uid, (parent_idx, branch_pos))."""
         uid_indices = np.where(uid == u)[0]
 
         # Find max TUCT across all trajectories for this uid
@@ -2225,7 +2231,9 @@ def select_next_states(
         max_val, max_flat_idx = uid_tuct.view(-1).max(dim=0)
         traj_idx = max_flat_idx.item() // (response_len - 1)
         pos_idx = max_flat_idx.item() % (response_len - 1)
-        best_tuct, best_rid, best_pos = max_val.item(), rid[uid_indices[traj_idx]], pos_idx
+        best_tuct = max_val.item()
+        best_idx = uid_indices[traj_idx]
+        best_pos = pos_idx
 
         # Compare with root TUCT (from prompt start)
         root_indices = [i for i in uid_indices if pid[i] is None]
@@ -2233,31 +2241,38 @@ def select_next_states(
         root_gve = values[root_indices[0], 0] + lam * root_advs.mean()
         root_tuct = root_gve.item() + c
         if root_tuct > best_tuct:
-            best_rid, best_pos = rid[root_indices[0]], -1
+            best_idx = root_indices[0]
+            best_pos = -1
 
-        return (best_rid, best_pos)
-
-    with ThreadPoolExecutor() as executor:
-        selected_states = list(executor.map(_select_for_uid, unique_uids))
-
-    # 5) Update subtree_branches: propagate n upward from selected states
-    def _update_subtree_branches(sel_rid: str, sel_pos: int) -> None:
-        if sel_pos >= 0:
-            current_rid = sel_rid
-            bp = sel_pos
-
-            while current_rid is not None and current_rid in rid2idx:
-                idx = rid2idx[current_rid]
-                subtree_branches[idx, :bp + 1] += n_samples_per_round
-
-                current_rid = pid[idx]
-                if current_rid is not None and current_rid in rid2idx:
-                    bp = parent_branch_pos[idx]
+        return (u, (best_idx, best_pos))
 
     with ThreadPoolExecutor() as executor:
-        list(executor.map(lambda args: _update_subtree_branches(*args), selected_states))
+        results = list(executor.map(_select_for_uid, unique_uids))
 
-    return selected_states, subtree_branches
+    next_states = dict(results)
+
+    # 5) Update subtree_branches and state_branches in-place (parallel)
+    def _update_branches(item: Tuple[str, Tuple[int, int]]) -> None:
+        u, (idx, pos) = item
+        if pos >= 0:
+            # Update state_branches at selected position
+            state_branches[idx, pos] += n_samples_per_round
+
+            # Propagate subtree_branches upward
+            current_idx = idx
+            bp = pos
+            while True:
+                subtree_branches[current_idx, :bp + 1] += n_samples_per_round
+                parent_rid = pid[current_idx]
+                if parent_rid is None or parent_rid not in rid2idx:
+                    break
+                current_idx = rid2idx[parent_rid]
+                bp = parent_branch_pos[current_idx]
+
+    with ThreadPoolExecutor() as executor:
+        list(executor.map(_update_branches, next_states.items()))
+
+    return next_states
 
 
 def compute_branch_weight_factors(
