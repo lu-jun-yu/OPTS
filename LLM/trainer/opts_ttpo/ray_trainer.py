@@ -199,6 +199,41 @@ def log_batch_state(batch: "DataProto", stage: str, step: int = -1, round_idx: i
     logger_batch.info(f"{prefix} === End Batch State ===")
 
 
+def log_sample_generations(batch: "DataProto", tokenizer, step: int = -1, round_idx: int = -1, num_samples: int = 2) -> None:
+    """Log decoded sample prompts and responses for debugging.
+
+    Args:
+        batch: The DataProto batch containing prompts and responses.
+        tokenizer: Tokenizer for decoding token ids to text.
+        step: Global training step number.
+        round_idx: OPTS round index.
+        num_samples: Number of samples to log.
+    """
+    if "prompts" not in batch.batch or "responses" not in batch.batch:
+        return
+
+    num_samples = min(num_samples, batch.batch["prompts"].shape[0])
+    logger_batch.info(f"[step={step}][round={round_idx}] === Sample Generations ===")
+
+    for i in range(num_samples):
+        prompt_ids = batch.batch["prompts"][i]
+        response_ids = batch.batch["responses"][i]
+        # Remove padding (zeros)
+        prompt_ids = prompt_ids[prompt_ids != 0]
+        response_ids = response_ids[response_ids != 0]
+        prompt_text = tokenizer.decode(prompt_ids, skip_special_tokens=False)
+        response_text = tokenizer.decode(response_ids, skip_special_tokens=False)
+        # Truncate if too long
+        if len(prompt_text) > 500:
+            prompt_text = prompt_text[:250] + "...[truncated]..." + prompt_text[-250:]
+        if len(response_text) > 500:
+            response_text = response_text[:250] + "...[truncated]..." + response_text[-250:]
+        logger_batch.info(f"[step={step}][round={round_idx}] Sample {i} PROMPT:\n{prompt_text}")
+        logger_batch.info(f"[step={step}][round={round_idx}] Sample {i} RESPONSE:\n{response_text}")
+
+    logger_batch.info(f"[step={step}][round={round_idx}] === End Sample Generations ===")
+
+
 @dataclass
 class ResourcePoolManager:
     """
@@ -1659,6 +1694,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 else:
                                     gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch_output)
                                 log_batch_state(gen_batch_output, stage="after_generate", step=self.global_steps, round_idx=round_idx)
+                                log_sample_generations(gen_batch_output, self.tokenizer, step=self.global_steps, round_idx=round_idx)
 
                             timing_raw.update(gen_batch_output.meta_info["timing"])
                             gen_batch_output.meta_info.pop("timing", None)
@@ -1900,32 +1936,17 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                             # Select next states if not last round
                             if round_idx < self.config.actor_rollout_ref.rollout.g - 1:
                                 with timed_block("select_next_states", step=self.global_steps, round_idx=round_idx):
-                                    # Compute prompt_lengths for each trajectory
-                                    prompt_len = global_batch.batch["input_ids"].shape[1] - global_batch.batch["responses"].shape[1]
-                                    prompt_lengths = global_batch.batch["attention_mask"][:, :prompt_len].sum(dim=1)
-
                                     selected_states, updated_subtree_branches = select_next_states(
-                                        values=global_batch.batch["values"],
-                                        advantages_mean=global_batch.batch["advantages_mean"],
-                                        trajectory_reward=global_batch.batch["trajectory_reward"],
-                                        gamma_t=global_batch.batch["gamma_t"],
-                                        lam_t=global_batch.batch["lam_t"],
-                                        subtree_branches=global_batch.batch["subtree_branches"],
-                                        response_mask=global_batch.batch["response_mask"],
-                                        uid=global_batch.non_tensor_batch["uid"],
-                                        rid=global_batch.non_tensor_batch["rid"],
-                                        pid=global_batch.non_tensor_batch["pid"],
-                                        cid=list(global_batch.non_tensor_batch["cid"]),
+                                        batch=global_batch,
                                         lam=self.config.algorithm.lam,
                                         c=self.config.actor_rollout_ref.rollout.c,
                                         round_idx=round_idx,
                                         n_samples_per_round=self.config.actor_rollout_ref.rollout.n,
-                                        parent_branch_pos=global_batch.non_tensor_batch["branch_pos"],
-                                        prompt_lengths=prompt_lengths,
                                         max_prompt_length=self.config.data.max_prompt_length,
                                     )
                                     global_batch.batch["subtree_branches"] = updated_subtree_branches
-                                    logger_batch.info(f"[step={self.global_steps}][round={round_idx}][after_select_next_states] selected_states count={len(selected_states)}, states={sorted(selected_states, key=lambda x: -x[1])[:10]}...")
+                                    sorted_states = sorted(selected_states, key=lambda x: -x[1])
+                                    logger_batch.info(f"[step={self.global_steps}][round={round_idx}][after_select_next_states] selected_states count={len(selected_states)}, states={sorted_states[:10]}...{sorted_states[-10:]}")
 
                                 # Update state_branches for selected states
                                 rid2idx = {r: i for i, r in enumerate(global_batch.non_tensor_batch["rid"])}

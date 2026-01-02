@@ -296,181 +296,79 @@ for epoch in ...:
             - (局部batch) 计算values
 
             if opts_ttpo:
-                - set_opts_ttpo_info【新函数】：
-                    - 输入：local_batch, global_batch, next_states, round_idx
-                    - (局部batch) 生成rid：所有response都有rid、uid
-                    - (局部batch) 根据next_states设置pid、branch_pos：
+                - _set_opts_ttpo_info：建立树结构关系
+                    - (局部batch) 为每条轨迹生成唯一 rid
+                    - (局部batch) 根据 next_states 设置 pid 和 branch_pos：
                         - 第一轮：pid=None, branch_pos=-1
-                        - 后续轮：通过uid直接查询next_states获取(parent_idx, branch_pos)，再从global_rid[parent_idx]获取pid
-                    - (局部batch) 初始化cid为空OrderedDict
-                    - (全局batch) 在父轨迹上插入新的cid键值
+                        - 后续轮：通过 uid 查询 next_states 获取父节点信息
+                    - (局部batch) 初始化 cid 为空 OrderedDict
+                    - (全局batch) 在父轨迹的 cid 中注册当前轨迹为子节点
                     - 返回 new_sample_indices
-                - (局部batch) 初始化state_branches、subtree_branches为全1，初始化advantages、advantages_mean、returns为全0【新行】
-                - (局部batch) compute_forward_values【新函数】：
-                    - 输入：token_level_rewards, response_mask, gamma, lam, pid, parent_branch_pos, parent_gamma_t, parent_lam_t, parent_trajectory_reward, rid2idx
-                    - 准备辅助数据：
-                        - rid2idx = {r: i for r, i in enumerate(全局batch的rid)} if 全局batch存在 else {}
-                        - parent_branch_pos = [next_states[uid][1] if uid in next_states else 0 for uid in 局部batch的uid]
-                    - gamma_t = []
-                    - lam_t = []
-                    - trajectory_reward = []
-                    - last_gamma_t = torch.where(pid存在, 全局batch的gamma_t[next_states[uid][0], parent_branch_pos], 1 / gamma)
-                    - last_lam_t = torch.where(pid存在, 全局batch的lam_t[next_states[uid][0], parent_branch_pos], 1 / lam)
-                    - last_trajectory_reward = torch.where(pid存在, 全局batch的trajectory_reward[next_states[uid][0], parent_branch_pos], 0)
-                    - for ...:
-                        - last_gamma_t *= gamma
-                        - last_lam_t *= lam
-                        - last_trajectory_reward += last_gamma_t * token_level_rewards[t]
-                        - gamma_t.append(last_gamma_t)
-                        - lam_t.append(last_lam_t)
-                        - trajectory_reward.append(last_trajectory_reward)
-                    - gamma_t = torch.stack(gamma_t, dim=1)
-                    - lam_t = torch.stack(lam_t, dim=1)
-                    - trajectory_reward = torch.stack(trajectory_reward, dim=1)
-                    - return gamma_t, lam_t, trajectory_reward
-                - 将上述函数返回的结果赋值到局部batch（gamma_t, lam_t, trajectory_reward）
-                - 局部batch添加至全局batch【新行】
-                    - 使用 _merge_batches 合并
-                    - new_sample_indices 用于标识新添加样本在全局batch中的索引
+                - (局部batch) 初始化 state_branches、subtree_branches 为全1
+                - (局部batch) 初始化 advantages、advantages_mean、returns 为全0
+                - (局部batch) compute_forward_values：计算时间累积量
+                    - gamma_t[t] = γ^t（若有父节点则从父节点位置继承后继续累乘）
+                    - lam_t[t] = λ^t（同上）
+                    - trajectory_reward[t] = 累计折扣奖励（同上）
+                - (局部batch) 合并到全局batch（_merge_batches）
 
             -------- b. 反向 --------
 
-            - 使用原有的compute_advantage函数，通过adv_estimator参数选择计算方式：
+            - 使用原有的 compute_advantage 函数，通过 adv_estimator 参数选择计算方式：
                 - if adv_estimator == AdvantageEstimator.TreeGAE:
-                    - 调用compute_treegae_advantage_return【新注册函数】：
-
-                        - 第一个循环（对新样本进行标准GAE）：
-                            - 只处理 new_sample_indices 对应的样本
-                            - for t in reversed(range(gen_len)):
-                                - delta = rewards[:, t] + gamma * nextvalues - values[:, t]
-                                - lastgaelam = delta + gamma * lam * lastgaelam
-                            - 保存到 advantages[new_sample_indices] 和 advantages_mean[new_sample_indices]
-
-                        - 第二个循环（使用next_states向祖先轨迹传播优势值，使用线程池并行）：
-                            - 定义 _process_parent(p_idx, branch_pos) 辅助函数：
-                                - lastgaelam = advantages[p_idx, branch_pos + 1]
-                                - for t in reversed(range(branch_pos + 1)):
-                                    - if t 是分支节点:
-                                        - lastgaelam_mean = (advantages[child_indices, 0].sum() + advantages[p_idx, t + 1]) / state_branches
-                                        - advantages_mean[p_idx, t] = lastgaelam_mean
-                                        - delta = rewards[p_idx, t] + gamma * values[p_idx, t + 1] - values[p_idx, t]
-                                        - lastgaelam_ = delta + gamma * lam * lastgaelam_mean
-                                    - else:
-                                        - advantages_mean[p_idx, t] = lastgaelam
-                                        - delta = rewards[p_idx, t] + gamma * values[p_idx, t + 1] - values[p_idx, t]
-                                        - lastgaelam_ = delta + gamma * lam * lastgaelam
-                                    - lastgaelam = lastgaelam_ * mask + (1 - mask) * lastgaelam
-                                    - advantages[p_idx, t] = lastgaelam
-                                - 返回祖父轨迹信息 (grandparent_idx, pos) 或 None
-                            - current_level = next_states.values()
-                            - while current_level:
-                                - 使用 ThreadPoolExecutor 并行处理 current_level 中的所有父轨迹
-                                - current_level = 收集返回的祖父轨迹信息
+                    - 调用 compute_treegae_advantage_return：
+                        - 第一个循环：对新样本执行标准 GAE（从后向前计算优势值）
+                        - 第二个循环：向祖先轨迹传播优势值（使用线程池并行）
+                            - 非分支位置：正常 GAE 传播
+                            - 分支位置：取所有子分支首 token 优势的均值再传播
                 - elif adv_estimator == AdvantageEstimator.GAE:
-                    - 调用原有的compute_gae_advantage_return
+                    - 调用原有的 compute_gae_advantage_return
 
             -------- c. 选择 --------
 
             if opts_ttpo and i < g - 1:  # 仅在非最后一轮执行
-                - (全局batch) select_next_states【新函数】：
-                    - 输入：values, advantages_mean, trajectory_reward, gamma_t, lam_t, subtree_branches, response_mask, uid, rid, pid, cid, lam, c, round_idx, n_samples_per_round, parent_branch_pos
-                    - 返回：(selected_states, updated_subtree_branches) 元组
-
-                    1) 计算各状态的评估值：
+                - (全局batch) select_next_states：用 TUCT 选择下一轮扩展的状态
+                    1) 计算各状态的期望轨迹奖励：
                        - gve = values[1:] + lam * advantages_mean[:]
                        - expected_trajectory_reward = trajectory_reward[:-1] + gamma_t[:-1] * gve
 
-                    2) 计算partree_branches【新函数：compute_partree_branches】：
-                       - 初始化：与subtree_branches形状一样的全零Tensor
-                       - if cid is None：
-                           - partree_branches[:] = 父轨迹所选状态的subtree_branches if pid is not None else (i+1) * n
-                       - else：
-                           - partree_branches[:cid.keys()[0]+1] = 父轨迹所选状态的subtree_branches (if pid存在)
-                                                   else (i+1) * n
-                           - for j in range(len(cid.keys())-1):
-                               - partree_branches[cid.keys()[j]+1: cid.keys()[j+1]+1] = subtree_branches[cid.keys()[j]]
-                           - partree_branches[cid.keys()[-1]+1:] = subtree_branches[cid.keys()[-1]]
+                    2) 计算 partree_branches（父分支点的 subtree_branches）
 
-                    3) 计算tuct：
-                       - tuct = expected_trajectory_reward * lam_t[1:] + c * sqrt(log(partree_branches)) / subtree_branches[:-1]
+                    3) 计算 TUCT：
+                       - tuct = expected_trajectory_reward * lam_t[1:] + c * sqrt(log(partree_branches + 1)) / subtree_branches[:-1]
 
-                    4) 为每个uid选择最优状态——最大tuct的状态索引：
-                       - 计算根状态的tuct：
-                           - root.gve = values[0] + lam * mean(advantages[相同uid且无pid的response][0])
-                           - root.tuct = root.gve + c * 1
-                       - 比较最大tuct状态与根状态，取tuct较大者
+                    4) 为每个 uid 选择 TUCT 最高的状态：
+                       - 同时考虑"根状态"（从 prompt 重新开始），与树中状态竞争
                        - 返回 selected_states = [(rid, pos), ...]
 
-                    5) 更新分支计数（在函数内部直接修改subtree_branches，无需clone）：
-                       - 对于选中的状态 (sel_rid, sel_pos)：
-                           - 初始化：current_rid = sel_rid, branch_pos = sel_pos
-                           - 循环：while current_rid 存在于 rid2idx:
-                               - 更新当前轨迹的位置 0 到 branch_pos（包含）：subtree_branches[idx, :branch_pos+1] += n
-                               - 找到父轨迹及分支点：从 cid[parent_idx] 中反向查找 current_rid 对应的分支位置
-                               - current_rid = parent_rid, branch_pos = 找到的分支位置
-                       - 返回 subtree_branches（原地修改，不返回副本）
+                    5) 更新 subtree_branches：沿祖先链向上传播（+= n）
 
-                - (全局batch) 更新subtree_branches：
-                    - global_batch.batch["subtree_branches"] = subtree_branches
+                - (全局batch) 更新 state_branches：被选中状态的分支数 += n
 
-                - (全局batch) 更新state_branches：
-                    - 遍历 selected_states
-                    - 被选中状态的 state_branches[idx, pos] += n
+                - 构建 next_states 字典供下一轮使用：
+                    - next_states = {uid: (parent_idx, branch_pos) for 每个选中状态}
 
-                - 构建next_states字典：
-                    - global_uid = global_batch.non_tensor_batch["uid"]
-                    - next_states = {global_uid[rid2idx[sel_rid]]: (rid2idx[sel_rid], sel_pos) for sel_rid, sel_pos in selected_states}
-
-                - 构建新的局部batch并赋值给batch【_prepare_next_round_input】：
-                    - 赋值给batch而非gen_batch，以便与初始batch对齐
-                    - 输入：global_batch, selected_states
-                    - 核心逻辑：
-                        1. 计算每个样本的有效 prompt 长度（通过 attention_mask 求和）
-                        2. 计算 left-padding 长度：padded_prompt_len - valid_prompt_len
-                        3. 提取有效 token（跳过原始 left-padding）：
-                           - pos < 0：只提取有效 prompt tokens
-                           - pos >= 0：提取有效 prompt + response[:pos+1] tokens
-                        4. 重新构建 left-padded batch：
-                           - input_ids：有效 token 放右侧，左侧填充 0
-                           - attention_mask：有效 token 为 1，padding 为 0
-                           - position_ids：基于新的 attention_mask 重新计算
-                    - 从 global_batch 的根节点继承 data_source、reward_model、extra_info 等 non_tensor 数据
-                    - 其他树结构信息由 set_opts_ttpo_info 在下一轮统一设置
+                - _prepare_next_round_input：构建下一轮输入
+                    - 提取 prompt + 部分响应（到选中位置）作为新的 input_ids
+                    - 重新构建 left-padded 的输入张量
+                    - 从根节点继承 data_source、reward_model、extra_info 等元信息
 
         ======== 3. 更新 ========
 
         if opts_ttpo:
-            - compute_branch_weight_factors【新函数】：
-                - 输入：state_branches, pid, rid, branch_pos
+            - 使用全局 batch 进行更新（包含完整的树）
+            - 对优势进行白化（whiten）
+            - compute_branch_weight_factors：计算策略梯度的权重校正因子
+                - W_t = 祖先轨迹所有分支数的累乘（保证树结构上的无偏梯度估计）
 
-                - Step 1: 计算每个样本的初始权重（祖先链累乘）
-                    - init_weights = torch.ones(batch_size)
-                    - for 每个样本 i:
-                        - current_idx, current_bp = i, branch_pos[i]
-                        - while pid[current_idx] 存在且在 rid2idx 中:
-                            - parent_idx = rid2idx[pid[current_idx]]
-                            - init_weights[i] *= state_branches[parent_idx, :current_bp+1].prod()
-                            - current_idx, current_bp = parent_idx, branch_pos[parent_idx]
+        - 更新 Critic：Loss 计算与 PPO 一致
 
-                - Step 2: 前向累乘（使用 cumprod）
-                    - padded = concat([ones(bs,1), state_branches[:, :-1]], dim=1)
-                    - cumulative = cumprod(padded, dim=1)
-                    - branch_weight_factor = init_weights.unsqueeze(1) * cumulative
-
-                - return branch_weight_factor
-
-        - 更新critic：Critic Loss计算与先前保持一致
-
-        - 更新actor（在原有policy loss函数基础上修改）：
-            - agg_loss函数新增"weighted-token-mean"分支【修改agg_loss】：
-                - elif loss_agg_mode == "weighted-token-mean":
-                    - loss = masked_sum(loss_mat) / masked_sum(1/branch_weight_factor) * dp_size
-            - compute_policy_loss_vanilla等函数新增branch_weight_factor参数【修改现有函数签名】：
-                - if branch_weight_factor is not None:
-                    - pg_losses = pg_losses / branch_weight_factor【新行】
-                    - 使用"weighted-token-mean"模式调用agg_loss
-                - else:
-                    - 使用原有的loss计算逻辑
+        - 更新 Actor：
+            - 若存在 branch_weight_factor：
+                - pg_loss = pg_loss / W_t
+                - 使用 "weighted-token-mean" 聚合模式：
+                    loss = masked_sum(loss_mat) / masked_sum(1/W_t) * dp_size
+            - 否则使用标准 PPO loss
 ```
 
 
@@ -493,7 +391,7 @@ $$
 ### 5.2 TUCT
 
 $$
-\text{TUCT}(s_t) = \underbrace{\bigg[R(\tau_{0:t}) + \gamma^t \cdot \text{GVE}(s_t)\bigg]}_{\text{利用项}} \cdot \lambda^t + \underbrace{c \cdot \frac{\sqrt{\log N_{\text{parent}}}}{N_{\text{child}}}}_{\text{探索项}}
+\text{TUCT}(s_t) = \underbrace{\bigg[R(\tau_{0:t}) + \gamma^t \cdot \text{GVE}(s_t)\bigg]}_{\text{利用项}} \cdot \lambda^t + \underbrace{c \cdot \frac{\sqrt{\log (N_{\text{parent}} + 1)}}{N_{\text{child}}}}_{\text{探索项}}
 $$
 
 其中：

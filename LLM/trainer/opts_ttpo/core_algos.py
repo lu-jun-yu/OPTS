@@ -2147,52 +2147,53 @@ def compute_partree_branches(
 
 
 def select_next_states(
-    values: torch.Tensor,
-    advantages_mean: torch.Tensor,
-    trajectory_reward: torch.Tensor,
-    gamma_t: torch.Tensor,
-    lam_t: torch.Tensor,
-    subtree_branches: torch.Tensor,
-    response_mask: torch.Tensor,
-    uid: np.ndarray,
-    rid: np.ndarray,
-    pid: np.ndarray,
-    cid: List[Dict],
+    batch: "DataProto",
     lam: float,
     c: float,
     round_idx: int,
     n_samples_per_round: int,
-    parent_branch_pos: List[int],
-    prompt_lengths: torch.Tensor,
     max_prompt_length: int,
 ) -> Tuple[List[Tuple[str, int]], torch.Tensor]:
     """Select next states for expansion using TUCT.
 
     Args:
-        values: shape (batch_size, response_len)
-        advantages_mean: shape (batch_size, response_len - 1)
-        trajectory_reward: shape (batch_size, response_len)
-        gamma_t: shape (batch_size, response_len)
-        lam_t: shape (batch_size, response_len)
-        subtree_branches: shape (batch_size, response_len)
-        response_mask: shape (batch_size, response_len)
-        uid, rid, pid: shape (batch_size,)
-        cid: List of dict
-        lam, c: floats
-        round_idx, n_samples_per_round: ints
-        parent_branch_pos: List[int], len = batch_size
-        prompt_lengths: shape (batch_size,), prompt length for each trajectory
+        batch: DataProto containing all required tensors and non-tensor data
+        lam: GAE lambda
+        c: TUCT exploration constant
+        round_idx: current round index
+        n_samples_per_round: number of samples per round (n)
         max_prompt_length: maximum allowed prompt length
 
     Returns:
         selected_states: List of (rid, pos) for each unique uid
         updated_subtree_branches: shape (batch_size, response_len)
     """
+    # Extract tensors from batch
+    values = batch.batch["values"]
+    advantages = batch.batch["advantages"]
+    advantages_mean = batch.batch["advantages_mean"]
+    trajectory_reward = batch.batch["trajectory_reward"]
+    gamma_t = batch.batch["gamma_t"]
+    lam_t = batch.batch["lam_t"]
+    subtree_branches = batch.batch["subtree_branches"]
+    response_mask = batch.batch["response_mask"]
+
+    # Extract non-tensor data
+    uid = batch.non_tensor_batch["uid"]
+    rid = batch.non_tensor_batch["rid"]
+    pid = batch.non_tensor_batch["pid"]
+    cid = list(batch.non_tensor_batch["cid"])
+    parent_branch_pos = batch.non_tensor_batch["branch_pos"]
+
+    # Compute prompt_lengths
+    prompt_len = batch.batch["input_ids"].shape[1] - batch.batch["responses"].shape[1]
+    prompt_lengths = batch.batch["attention_mask"][:, :prompt_len].sum(dim=1)
+
     batch_size, response_len = values.shape
     rid2idx = {r: i for i, r in enumerate(rid)}
 
     # 1) Compute GVE and expected trajectory reward
-    gve = values[:, 1:] + lam * advantages_mean  # (bs, response_len-1)
+    gve = values[:, 1:] + lam * advantages_mean
     expected_traj_reward = trajectory_reward[:, :-1] + gamma_t[:, :-1] * gve
 
     # 2) Compute partree_branches
@@ -2207,8 +2208,8 @@ def select_next_states(
     tuct = expected_traj_reward * lam_t[:, 1:] + exploration
     tuct = torch.where(response_mask[:, :-1] > 0, tuct, torch.tensor(-float('inf')))
 
-    # Set tuct to -inf where pos_idx + prompt_length > max_prompt_length
-    pos_indices = torch.arange(response_len - 1).unsqueeze(0)  # (1, response_len-1)
+    # Mask positions that would exceed max_prompt_length
+    pos_indices = torch.arange(response_len - 1).unsqueeze(0)
     exceeds_length_mask = (pos_indices + prompt_lengths.unsqueeze(1)) >= max_prompt_length
     tuct = torch.where(exceeds_length_mask, torch.tensor(-float('inf')), tuct)
 
@@ -2220,29 +2221,27 @@ def select_next_states(
         uid_indices = np.where(uid == u)[0]
 
         # Find max TUCT across all trajectories for this uid
-        uid_tuct = tuct[uid_indices]  # (num_traj, response_len-1)
+        uid_tuct = tuct[uid_indices]
         max_val, max_flat_idx = uid_tuct.view(-1).max(dim=0)
         traj_idx = max_flat_idx.item() // (response_len - 1)
         pos_idx = max_flat_idx.item() % (response_len - 1)
         best_tuct, best_rid, best_pos = max_val.item(), rid[uid_indices[traj_idx]], pos_idx
 
-        # Compare with root TUCT
+        # Compare with root TUCT (from prompt start)
         root_indices = [i for i in uid_indices if pid[i] is None]
-        root_advs = advantages_mean[root_indices, 0]
+        root_advs = advantages[root_indices, 0]
         root_gve = values[root_indices[0], 0] + lam * root_advs.mean()
-        root_tuct = root_gve.item() + c  # exploration bonus for root
+        root_tuct = root_gve.item() + c
         if root_tuct > best_tuct:
             best_rid, best_pos = rid[root_indices[0]], -1
 
         return (best_rid, best_pos)
 
-    # Process all uids in parallel
     with ThreadPoolExecutor() as executor:
         selected_states = list(executor.map(_select_for_uid, unique_uids))
 
     # 5) Update subtree_branches: propagate n upward from selected states
     def _update_subtree_branches(sel_rid: str, sel_pos: int) -> None:
-        """Update subtree_branches for a single selected state."""
         if sel_pos >= 0:
             current_rid = sel_rid
             bp = sel_pos
@@ -2255,7 +2254,6 @@ def select_next_states(
                 if current_rid is not None and current_rid in rid2idx:
                     bp = parent_branch_pos[idx]
 
-    # Process all selected states in parallel
     with ThreadPoolExecutor() as executor:
         list(executor.map(lambda args: _update_subtree_branches(*args), selected_states))
 
