@@ -2222,7 +2222,7 @@ def select_next_states(
     pos_mask = (pos_indices + prompt_lengths.unsqueeze(1)) < max_prompt_length
     tuct = torch.where(pos_mask, tuct, torch.tensor(-float('inf')))
 
-    extra_response_len = pos_mask[:, prompt_len:].sum(dim=1)
+    extra_response_len = pos_mask.sum(dim=1)
     logger_batch.info(f"[select_next_states] extra_response_len: min={extra_response_len.min().item()}, max={extra_response_len.max().item()}, mean={extra_response_len.float().mean().item():.2f}")
 
     # 4) Select best state per uid, directly return next_states format

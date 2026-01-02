@@ -215,12 +215,28 @@ def log_sample_generations(batch: "DataProto", tokenizer, step: int = -1, round_
     num_samples = min(num_samples, batch.batch["prompts"].shape[0])
     logger_batch.info(f"[step={step}][round={round_idx}] === Sample Generations ===")
 
+    pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+
     for i in range(num_samples):
         prompt_ids = batch.batch["prompts"][i]
         response_ids = batch.batch["responses"][i]
-        # Remove padding (zeros)
-        prompt_ids = prompt_ids[prompt_ids != 0]
-        response_ids = response_ids[response_ids != 0]
+
+        # Remove leading pads from prompt (left-padded)
+        nonpad_mask = prompt_ids != pad_token_id
+        if nonpad_mask.any():
+            first_nonpad = nonpad_mask.nonzero()[0].item()
+            prompt_ids = prompt_ids[first_nonpad:]
+        else:
+            prompt_ids = prompt_ids[:0]
+
+        # Remove trailing pads from response (right-padded)
+        nonpad_mask = response_ids != pad_token_id
+        if nonpad_mask.any():
+            last_nonpad = nonpad_mask.nonzero()[-1].item()
+            response_ids = response_ids[: last_nonpad + 1]
+        else:
+            response_ids = response_ids[:0]
+
         prompt_text = tokenizer.decode(prompt_ids, skip_special_tokens=False)
         response_text = tokenizer.decode(response_ids, skip_special_tokens=False)
         # Truncate if too long
