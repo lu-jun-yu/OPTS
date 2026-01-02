@@ -20,6 +20,7 @@ implement PPO-like algorithms.
 
 __all__ = ["register_adv_est", "get_adv_estimator_fn", "AdvantageEstimator"]
 
+import logging
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
@@ -28,6 +29,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 from omegaconf import DictConfig
+
+logger_batch = logging.getLogger("opts_ttpo.batch_tracker")
 
 import verl.utils.torch_functional as verl_F
 from verl.trainer.config import AlgoConfig
@@ -2216,8 +2219,11 @@ def select_next_states(
 
     # Mask positions that would exceed max_prompt_length
     pos_indices = torch.arange(response_len - 1).unsqueeze(0)
-    exceeds_length_mask = (pos_indices + prompt_lengths.unsqueeze(1)) >= max_prompt_length
-    tuct = torch.where(exceeds_length_mask, torch.tensor(-float('inf')), tuct)
+    pos_mask = (pos_indices + prompt_lengths.unsqueeze(1)) < max_prompt_length
+    tuct = torch.where(pos_mask, tuct, torch.tensor(-float('inf')))
+
+    extra_response_len = pos_mask[:, prompt_len:].sum(dim=1)
+    logger_batch.info(f"[select_next_states] extra_response_len: min={extra_response_len.min().item()}, max={extra_response_len.max().item()}, mean={extra_response_len.float().mean().item():.2f}")
 
     # 4) Select best state per uid, directly return next_states format
     unique_uids = np.unique(uid)
