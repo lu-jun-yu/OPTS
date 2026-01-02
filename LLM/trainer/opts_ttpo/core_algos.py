@@ -966,14 +966,15 @@ def agg_loss(
             aggregated loss
     """
     # NOTE: `masked_sum` is more robust than multiplying the `mask`.
+    if branch_weight_factor is not None:
+        loss_agg_mode = "weighted-token-mean"
     if loss_agg_mode == "token-mean":
         if batch_num_tokens is None:
             batch_num_tokens = loss_mask.sum()
         loss = verl_F.masked_sum(loss_mat, loss_mask) / batch_num_tokens * dp_size
     elif loss_agg_mode == "weighted-token-mean":
-        if branch_weight_factor is None:
-            raise ValueError("branch_weight_factor is required for weighted-token-mean mode")
         inv_weight = 1.0 / branch_weight_factor
+        loss_mat = loss_mat / branch_weight_factor
         loss = verl_F.masked_sum(loss_mat, loss_mask) / verl_F.masked_sum(inv_weight, loss_mask) * dp_size
     elif loss_agg_mode.startswith("seq-mean"):
         # TODO: Correct and unify the denominator logic.
@@ -1171,7 +1172,6 @@ def compute_policy_loss_vanilla(
 
     # Apply branch weight factor for TTPO gradient correction
     if branch_weight_factor is not None:
-        pg_losses = pg_losses / branch_weight_factor
         pg_loss = agg_loss(
             loss_mat=pg_losses,
             loss_mask=response_mask,
