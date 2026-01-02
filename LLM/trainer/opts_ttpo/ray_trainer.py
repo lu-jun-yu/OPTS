@@ -1966,9 +1966,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                     if self.use_critic:
                         with marked_timer("update_critic", timing_raw, color="pink"):
                             with timed_block("update_critic", step=self.global_steps):
-                                log_batch_state(batch, stage="before_update_critic", step=self.global_steps)
                                 critic_output = self._update_critic(batch)
-                                logger_batch.info(f"[step={self.global_steps}][after_update_critic] critic_output metrics: {critic_output.meta_info.get('metrics', {})}")
                         critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
                         metrics.update(critic_output_metrics)
 
@@ -1977,9 +1975,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                         # update actor
                         with marked_timer("update_actor", timing_raw, color="red"):
                             with timed_block("update_actor", step=self.global_steps):
-                                log_batch_state(batch, stage="before_update_actor", step=self.global_steps)
                                 actor_output = self._update_actor(batch)
-                                logger_batch.info(f"[step={self.global_steps}][after_update_actor] actor_output metrics: {actor_output.meta_info.get('metrics', {})}")
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
 
