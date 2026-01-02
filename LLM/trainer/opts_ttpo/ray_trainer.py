@@ -175,6 +175,11 @@ def log_batch_state(batch: "DataProto", stage: str, step: int = -1, round_idx: i
         total_scores = scores.sum(dim=-1)
         logger_batch.info(f"{prefix} total_scores: min={total_scores.min().item():.4f}, max={total_scores.max().item():.4f}, mean={total_scores.mean().item():.4f}")
 
+    if 'token_level_rewards' in batch.batch:
+        rewards = batch.batch['token_level_rewards']
+        total_rewards = rewards.sum(dim=-1)
+        logger_batch.info(f"{prefix} total_rewards: min={total_rewards.min().item():.4f}, max={total_rewards.max().item():.4f}, mean={total_rewards.mean().item():.4f}")
+
     if 'advantages' in batch.batch:
         adv = batch.batch['advantages']
         logger_batch.info(f"{prefix} advantages: min={adv.min().item():.4f}, max={adv.max().item():.4f}, mean={adv.mean().item():.4f}, std={adv.std().item():.4f}")
