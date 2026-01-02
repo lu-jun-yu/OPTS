@@ -34,4 +34,4 @@ PYTHONUNBUFFERED=1 python3 -m trainer.main_opts_ttpo \
  trainer.experiment_name=20k_0102 \
  trainer.save_freq=10 \
  trainer.test_freq=10 \
- trainer.total_epochs=10 2>&1 | tee verl_demo.log
+ trainer.total_epochs=10 2>&1 | tee logs/opts_ttpo_0102.log
