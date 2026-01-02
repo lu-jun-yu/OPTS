@@ -844,6 +844,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                 "do_sample": self.config.actor_rollout_ref.rollout.val_kwargs.do_sample,
                 "validate": True,
                 "global_steps": self.global_steps,
+                "round_idx": 0,
             }
             print(f"test_gen_batch meta info: {test_gen_batch.meta_info}")
 
