@@ -2213,7 +2213,7 @@ def select_next_states(
     )
 
     # 3) Compute TUCT: exploitation * lam_t + exploration
-    exploration = c * torch.sqrt(torch.log(partree_branches[:, :-1] + 1)) / (subtree_branches[:, :-1] + 1e-8)
+    exploration = c * torch.sqrt(torch.log(partree_branches[:, :-1])) / (subtree_branches[:, :-1] + 1e-8)
     tuct = expected_traj_reward * lam_t[:, 1:] + exploration
     tuct = torch.where(response_mask[:, :-1] > 0, tuct, torch.tensor(-float('inf')))
 

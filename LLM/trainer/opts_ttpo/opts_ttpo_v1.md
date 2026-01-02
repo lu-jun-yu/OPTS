@@ -335,7 +335,7 @@ for epoch in ...:
                     2) 计算 partree_branches（父分支点的 subtree_branches）
 
                     3) 计算 TUCT：
-                       - tuct = expected_trajectory_reward * lam_t[1:] + c * sqrt(log(partree_branches + 1)) / subtree_branches[:-1]
+                       - tuct = expected_trajectory_reward * lam_t[1:] + c * sqrt(log(partree_branches)) / subtree_branches[:-1]
 
                     4) 为每个 uid 选择 TUCT 最高的状态：
                        - 同时考虑"根状态"（从 prompt 重新开始），与树中状态竞争
