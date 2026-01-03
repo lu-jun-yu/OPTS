@@ -507,24 +507,31 @@ def prepare_next_round_input(
     sel_indices = [idx for idx, _ in next_states.values()]
     sel_positions = [pos for _, pos in next_states.values()]
 
-    # Vectorized: compute valid prompt lengths
+    # Compute valid prompt lengths
     prompt_len = global_batch.batch["input_ids"].shape[1] - global_batch.batch["responses"].shape[1]
     prompt_masks = global_batch.batch["attention_mask"][sel_indices, :prompt_len]
     valid_prompt_lens = prompt_masks.sum(dim=1).int()
 
-    # Compute valid token counts: valid_prompt + (pos+1 if pos >= 0 else 0)
-    pos_tensor = torch.tensor(sel_positions)
-    start_idx = prompt_len - valid_prompt_lens
-    end_idx = prompt_len + pos_tensor + 1
-    valid_lens = valid_prompt_lens + pos_tensor + 1
-    pad_len = prompt_len - valid_lens
-
     # Fill tensors: extract valid tokens only, left-pad
+    # Each sample has different start/end indices, so we must loop
     bs = len(next_states)
     padded_ids = torch.zeros(bs, prompt_len, dtype=torch.long)
     padded_mask = torch.zeros(bs, prompt_len, dtype=torch.long)
-    padded_ids[:, pad_len:] = global_batch.batch["input_ids"][sel_indices, start_idx: end_idx]
-    padded_mask[:, pad_len:] = 1
+
+    for i in range(bs):
+        sel_idx = sel_indices[i]
+        pos = sel_positions[i]
+        valid_prompt_len = valid_prompt_lens[i].item()
+
+        # Compute indices for this sample
+        start_idx = prompt_len - valid_prompt_len
+        end_idx = prompt_len + pos + 1
+        valid_len = valid_prompt_len + pos + 1
+        pad_l = prompt_len - valid_len
+
+        # Copy valid tokens with left-padding
+        padded_ids[i, pad_l:] = global_batch.batch["input_ids"][sel_idx, start_idx:end_idx]
+        padded_mask[i, pad_l:] = 1
 
     from verl.utils.model import compute_position_id_with_mask
     padded_pos = compute_position_id_with_mask(padded_mask)
