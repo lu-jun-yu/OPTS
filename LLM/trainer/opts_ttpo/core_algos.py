@@ -2038,26 +2038,20 @@ def compute_partree_branches(
     def _process_trajectory(i: int) -> None:
         """Process a single trajectory to compute its partree_branches."""
         trajectory_cid = cid[i]
-        p_rid = pid[i] if pid is not None else None
-
-        # Get branch positions (sorted needed as insertion order may not equal position order)
-        branch_positions = sorted(trajectory_cid.keys()) if trajectory_cid else []
+        p_rid = pid[i]
+        branch_positions = sorted(trajectory_cid.keys())
 
         # Determine the default value (from parent or root)
-        if p_rid is not None and rid2idx is not None and p_rid in rid2idx:
-            # Has parent: use parent's subtree_branches at the branch position
+        if p_rid is not None:
             p_idx = rid2idx[p_rid]
-            bp = parent_branch_pos[i] if parent_branch_pos is not None else 0
+            bp = parent_branch_pos[i]
             default_value = subtree_branches[p_idx, bp].item()
         else:
-            # No parent: use root subtree_branches
             default_value = (round_idx + 1) * n_samples_per_round
 
         if not branch_positions:
-            # No branch points in this trajectory: all positions use default
             partree_branches[i, :] = default_value
         else:
-            # Has branch points
             # Positions before first branch point: use default
             first_branch = branch_positions[0]
             partree_branches[i, :first_branch + 1] = default_value
@@ -2072,7 +2066,6 @@ def compute_partree_branches(
             last_branch = branch_positions[-1]
             partree_branches[i, last_branch + 1:] = subtree_branches[i, last_branch]
 
-    # Process all trajectories in parallel
     with ThreadPoolExecutor() as executor:
         list(executor.map(_process_trajectory, range(batch_size)))
 
