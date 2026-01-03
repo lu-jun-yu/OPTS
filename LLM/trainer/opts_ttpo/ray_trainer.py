@@ -713,6 +713,7 @@ def select_next_states(
         next_states: Dict mapping uid to (parent_idx, branch_pos)
     """
     # Extract tensors from batch (these are references, modifications are in-place)
+    rewards = batch.batch["token_level_rewards"]
     values = batch.batch["values"]
     advantages = batch.batch["advantages"]
     advantages_mean = batch.batch["advantages_mean"]
@@ -801,11 +802,14 @@ def select_next_states(
     next_states = dict(results)
     max_states = sorted(next_states.values(), key=lambda x: -x[1])[0]
     if max_states[1] != -1:
-        logger_batch.info(f"[select_next_states] advantages_mean[max_states[0]][max_states[1]:]: {advantages_mean[max_states[0]][max_states[1]:max_states[1]+100].tolist()}")
-        logger_batch.info(f"[select_next_states] gve[max_states[0]][max_states[1]:]: {gve[max_states[0]][max_states[1]:max_states[1]+100].tolist()}")
+        start_idx = max(max_states[1] - 10, 0)
+        end_idx = start_idx + 100
+        logger_batch.info(f"[select_next_states] rewards[max_states[0]]: {advantages_mean[max_states[0]][start_idx:end_idx].tolist()}")
+        logger_batch.info(f"[select_next_states] advantages_mean[max_states[0]]: {advantages_mean[max_states[0]][start_idx:end_idx].tolist()}")
+        logger_batch.info(f"[select_next_states] gve[max_states[0]]: {gve[max_states[0]][start_idx:end_idx].tolist()}")
         logger_batch.info(f"[select_next_states] trajectory_reward[max_states[0]][-1]: {trajectory_reward[max_states[0]][-1]}")
-        logger_batch.info(f"[select_next_states] expected_traj_reward[max_states[0]][max_states[1]:]: {expected_traj_reward[max_states[0]][max_states[1]:max_states[1]+100].tolist()}")
-        logger_batch.info(f"[select_next_states] tuct[max_states[0]][max_states[1]:]: {tuct[max_states[0]][max_states[1]:max_states[1]+100].tolist()}")
+        logger_batch.info(f"[select_next_states] expected_traj_reward[max_states[0]]: {expected_traj_reward[max_states[0]][start_idx:end_idx].tolist()}")
+        logger_batch.info(f"[select_next_states] tuct[max_states[0]]: {tuct[max_states[0]][start_idx:end_idx].tolist()}")
 
     # 5) Update subtree_branches and state_branches in-place (parallel)
     def _update_branches(item: Tuple[str, Tuple[int, int]]) -> None:
