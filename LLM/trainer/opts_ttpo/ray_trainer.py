@@ -804,7 +804,7 @@ def select_next_states(
     if max_states[1] != -1:
         start_idx = max(max_states[1] - 10, 0)
         end_idx = start_idx + 100
-        logger_batch.info(f"[select_next_states] rewards[max_states[0]]: {advantages_mean[max_states[0]][start_idx:end_idx].tolist()}")
+        logger_batch.info(f"[select_next_states] rewards[max_states[0]]: {rewards[max_states[0]][start_idx:end_idx].tolist()}")
         logger_batch.info(f"[select_next_states] advantages_mean[max_states[0]]: {advantages_mean[max_states[0]][start_idx:end_idx].tolist()}")
         logger_batch.info(f"[select_next_states] gve[max_states[0]]: {gve[max_states[0]][start_idx:end_idx].tolist()}")
         logger_batch.info(f"[select_next_states] trajectory_reward[max_states[0]][-1]: {trajectory_reward[max_states[0]][-1]}")
