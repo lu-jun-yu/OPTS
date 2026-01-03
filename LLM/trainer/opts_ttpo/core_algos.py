@@ -2007,8 +2007,8 @@ def compute_policy_loss_bypass_mode(
 # ============================================================================
 
 def compute_forward_values(
-    batch: "DataProto",
-    global_batch: Optional["DataProto"],
+    batch: DataProto,
+    global_batch: Optional[DataProto],
     next_states: Dict[str, Tuple[int, int]],
     gamma: float,
     lam: float,
@@ -2028,7 +2028,6 @@ def compute_forward_values(
         trajectory_reward: shape (batch_size, response_len)
     """
     token_level_rewards = batch.batch["token_level_rewards"]
-    response_mask = batch.batch["response_mask"]
     pid = batch.non_tensor_batch["pid"]
     uid = batch.non_tensor_batch["uid"]
 
@@ -2154,7 +2153,7 @@ def compute_partree_branches(
 
 
 def select_next_states(
-    batch: "DataProto",
+    batch: DataProto,
     lam: float,
     c: float,
     round_idx: int,

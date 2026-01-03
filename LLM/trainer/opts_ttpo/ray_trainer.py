@@ -114,7 +114,7 @@ def timed_block(name: str, step: int = -1, round_idx: int = -1):
         logger_batch.info(f"{prefix}[{name}] <<< END (elapsed: {elapsed:.3f}s)")
 
 
-def log_batch_state(batch: "DataProto", stage: str, step: int = -1, round_idx: int = -1) -> None:
+def log_batch_state(batch: DataProto, stage: str, step: int = -1, round_idx: int = -1) -> None:
     """Log the state of a batch for debugging purposes.
 
     Args:
@@ -199,7 +199,7 @@ def log_batch_state(batch: "DataProto", stage: str, step: int = -1, round_idx: i
     logger_batch.info(f"{prefix} === End Batch State ===")
 
 
-def log_sample_generations(batch: "DataProto", tokenizer, step: int = -1, round_idx: int = -1, num_samples: int = 2) -> None:
+def log_sample_generations(batch: DataProto, tokenizer, step: int = -1, round_idx: int = -1, num_samples: int = 2) -> None:
     """Log decoded sample prompts and responses for debugging.
 
     Args:
@@ -1491,37 +1491,28 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
             global_batch: Global batch containing all trajectories.
             next_states: Dict mapping uid to (parent_idx, branch_pos).
         """
-        uid_arr = global_batch.non_tensor_batch["uid"]
-        pid_arr = global_batch.non_tensor_batch["pid"]
-
-        prompt_len = global_batch.batch["input_ids"].shape[1] - global_batch.batch["responses"].shape[1]
-
-        sel_uids = list(next_states.keys())
         sel_indices = [idx for idx, _ in next_states.values()]
         sel_positions = [pos for _, pos in next_states.values()]
 
         # Vectorized: compute valid prompt lengths
+        prompt_len = global_batch.batch["input_ids"].shape[1] - global_batch.batch["responses"].shape[1]
         prompt_masks = global_batch.batch["attention_mask"][sel_indices, :prompt_len]
         valid_prompt_lens = prompt_masks.sum(dim=1).int()
-        left_pad_lens = prompt_len - valid_prompt_lens
+
+        start_idx = prompt_len - valid_prompt_lens
+        end_idx = prompt_len + pos_tensor + 1
 
         # Compute valid token counts: valid_prompt + (pos+1 if pos >= 0 else 0)
-        pos_tensor = torch.tensor(sel_positions, device=valid_prompt_lens.device)
-        valid_lens = valid_prompt_lens + torch.clamp(pos_tensor + 1, min=0)
-
-        max_len, bs = int(valid_lens.max().item()), len(next_states)
-        device = global_batch.batch["input_ids"].device
-
-        padded_ids = torch.zeros(bs, max_len, dtype=torch.long, device=device)
-        padded_mask = torch.zeros(bs, max_len, dtype=torch.long, device=device)
+        pos_tensor = torch.tensor(sel_positions)
+        valid_lens = valid_prompt_lens + pos_tensor + 1
+        pad_len = prompt_len - valid_lens
 
         # Fill tensors: extract valid tokens only, left-pad
-        for i, (sel_idx, sel_pos) in enumerate(zip(sel_indices, sel_positions)):
-            left_pad, valid_len = int(left_pad_lens[i]), int(valid_lens[i])
-            end_idx = prompt_len if sel_pos < 0 else prompt_len + sel_pos + 1
-            pad_len = max_len - valid_len
-            padded_ids[i, pad_len:] = global_batch.batch["input_ids"][sel_idx, left_pad:end_idx]
-            padded_mask[i, pad_len:] = 1
+        bs = len(next_states)
+        padded_ids = torch.zeros(bs, prompt_len, dtype=torch.long)
+        padded_mask = torch.zeros(bs, prompt_len, dtype=torch.long)
+        padded_ids[:, pad_len:] = global_batch.batch["input_ids"][sel_indices, start_idx: end_idx]
+        padded_mask[:, pad_len:] = 1
 
         from verl.utils.model import compute_position_id_with_mask
         padded_pos = compute_position_id_with_mask(padded_mask)
@@ -1529,13 +1520,10 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
         new_batch = DataProto.from_single_dict({
             "input_ids": padded_ids, "attention_mask": padded_mask, "position_ids": padded_pos
         })
-        new_batch.non_tensor_batch["uid"] = np.array(sel_uids, dtype=object)
 
-        uid2root_idx = {uid_arr[i]: i for i, p in enumerate(pid_arr) if p is None}
-        root_indices = [uid2root_idx[u] for u in sel_uids]
-        for key in ["data_source", "reward_model", "extra_info", "raw_prompt"]:
+        for key in ["uid", "data_source", "reward_model", "extra_info", "raw_prompt"]:
             if key in global_batch.non_tensor_batch:
-                new_batch.non_tensor_batch[key] = global_batch.non_tensor_batch[key][root_indices]
+                new_batch.non_tensor_batch[key] = global_batch.non_tensor_batch[key][sel_indices]
 
         new_batch.meta_info = global_batch.meta_info.copy()
         return new_batch
