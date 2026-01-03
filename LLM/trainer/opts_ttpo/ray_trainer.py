@@ -1179,7 +1179,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
             batch.non_tensor_batch["extra_info"][i]["full_response_str"] = full_response_str
 
     def _get_gen_batch(self, batch: DataProto) -> DataProto:
-        reward_model_keys = set({"data_source", "reward_model", "extra_info", "uid"}) & batch.non_tensor_batch.keys()
+        reward_model_keys = set({"data_source", "reward_model", "extra_info", "uid", "raw_prompt_len"}) & batch.non_tensor_batch.keys()
 
         # pop those keys for generation
         batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
