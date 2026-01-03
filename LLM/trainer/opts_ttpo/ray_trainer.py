@@ -789,14 +789,6 @@ def select_next_states(
             best_pos = -1
 
         if logger_uid == u:
-            logger_batch.info(f"[select_next_states] advantages_mean[best_idx]: {advantages_mean[best_idx][:100].tolist()}")
-            logger_batch.info(f"[select_next_states] values[best_idx]: {values[best_idx][:100].tolist()}")
-            logger_batch.info(f"[select_next_states] gve[best_idx]: {gve[best_idx][:100].tolist()}")
-            logger_batch.info(f"[select_next_states] trajectory_reward[best_idx][-1]: {trajectory_reward[best_idx].tolist()}")
-            logger_batch.info(f"[select_next_states] expected_traj_reward[best_idx]: {expected_traj_reward[best_idx][:100].tolist()}")
-            logger_batch.info(f"[select_next_states] partree_branches[best_idx]: {partree_branches[best_idx][:100].tolist()}")
-            logger_batch.info(f"[select_next_states] subtree_branches[best_idx]: {subtree_branches[best_idx][:100].tolist()}")
-            logger_batch.info(f"[select_next_states] tuct[best_idx]: {tuct[best_idx][:100].tolist()}")
             logger_batch.info(f"[select_next_states] root_advs: {root_advs}")
             logger_batch.info(f"[select_next_states] root_gve: {root_gve}")
             logger_batch.info(f"[select_next_states] root_tuct: {root_tuct}")
@@ -807,15 +799,13 @@ def select_next_states(
         results = list(executor.map(_select_for_uid, unique_uids))
 
     next_states = dict(results)
-    max_states_idx = sorted(next_states.values(), key=lambda x: -x[1])[0][0]
-    logger_batch.info(f"[select_next_states] advantages_mean[max_states_idx]: {advantages_mean[max_states_idx][:100].tolist()}")
-    logger_batch.info(f"[select_next_states] values[max_states_idx]: {values[max_states_idx][:100].tolist()}")
-    logger_batch.info(f"[select_next_states] gve[max_states_idx]: {gve[max_states_idx][:100].tolist()}")
-    logger_batch.info(f"[select_next_states] trajectory_reward[max_states_idx][-1]: {trajectory_reward[max_states_idx].tolist()}")
-    logger_batch.info(f"[select_next_states] expected_traj_reward[max_states_idx]: {expected_traj_reward[max_states_idx][:100].tolist()}")
-    logger_batch.info(f"[select_next_states] partree_branches[max_states_idx]: {partree_branches[max_states_idx][:100].tolist()}")
-    logger_batch.info(f"[select_next_states] subtree_branches[max_states_idx]: {subtree_branches[max_states_idx][:100].tolist()}")
-    logger_batch.info(f"[select_next_states] tuct[max_states_idx]: {tuct[max_states_idx][:100].tolist()}")
+    max_states = sorted(next_states.values(), key=lambda x: -x[1])[0]
+    if max_states[1] != -1:
+        logger_batch.info(f"[select_next_states] advantages_mean[max_states[0]][max_states[1]:]: {advantages_mean[max_states[0]][max_states[1]:max_states[1]+100].tolist()}")
+        logger_batch.info(f"[select_next_states] gve[max_states[0]][max_states[1]:]: {gve[max_states[0]][max_states[1]:max_states[1]+100].tolist()}")
+        logger_batch.info(f"[select_next_states] trajectory_reward[max_states[0]][-1]: {trajectory_reward[max_states[0]][-1]}")
+        logger_batch.info(f"[select_next_states] expected_traj_reward[max_states[0]][max_states[1]:]: {expected_traj_reward[max_states[0]][max_states[1]:max_states[1]+100].tolist()}")
+        logger_batch.info(f"[select_next_states] tuct[max_states[0]][max_states[1]:]: {tuct[max_states[0]][max_states[1]:max_states[1]+100].tolist()}")
 
     # 5) Update subtree_branches and state_branches in-place (parallel)
     def _update_branches(item: Tuple[str, Tuple[int, int]]) -> None:
