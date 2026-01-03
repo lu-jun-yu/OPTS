@@ -1491,9 +1491,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
             global_batch: Global batch containing all trajectories.
             next_states: Dict mapping uid to (parent_idx, branch_pos).
         """
-        if not next_states:
-            raise ValueError("next_states cannot be empty")
-
         uid_arr = global_batch.non_tensor_batch["uid"]
         pid_arr = global_batch.non_tensor_batch["pid"]
 
@@ -1568,7 +1565,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
         rid = np.array([f"r{round_idx}_{i}" for i in range(batch_size)], dtype=object)
 
         # Set pid and branch_pos
-        if round_idx == 0 or not next_states:
+        if round_idx == 0:
             pid = np.array([None] * batch_size, dtype=object)
             branch_pos = np.full(batch_size, -1, dtype=np.int32)
         else:
@@ -1576,19 +1573,19 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
             # Get parent_rid from parent_idx
             global_rid = global_batch.non_tensor_batch['rid']
 
-            pid = np.array([global_rid[next_states[u][0]] if u in next_states else None for u in uid], dtype=object)
-            branch_pos = np.array([next_states[u][1] if u in next_states else -1 for u in uid], dtype=np.int32)
+            pid = np.array([global_rid[next_states[u][0]] if next_states[u][1] != -1 else None for u in uid], dtype=object)
+            branch_pos = np.array([next_states[u][1] for u in uid], dtype=np.int32)
 
         # Initialize cid as empty OrderedDict for each sample
         cid = np.array([OrderedDict() for _ in range(batch_size)], dtype=object)
 
         # Update global_batch's cid with new children
-        if round_idx > 0 and global_batch is not None and next_states:
+        if round_idx > 0:
             global_cid = global_batch.non_tensor_batch['cid']
             rid2idx = {r: i for i, r in enumerate(global_batch.non_tensor_batch['rid'])}
 
             for i in range(batch_size):
-                if pid[i] is not None and pid[i] in rid2idx:
+                if pid[i] is not None:
                     p_idx, bp = rid2idx[pid[i]], int(branch_pos[i])
                     if bp not in global_cid[p_idx]:
                         global_cid[p_idx][bp] = []

@@ -2214,7 +2214,8 @@ def select_next_states(
 
     # 3) Compute TUCT: exploitation * lam_t + exploration
     exploration = c * torch.sqrt(torch.log(partree_branches[:, :-1])) / (subtree_branches[:, :-1] + 1e-8)
-    tuct = expected_traj_reward * lam_t[:, 1:] + exploration
+    # tuct = expected_traj_reward * lam_t[:, 1:] + exploration
+    tuct = expected_traj_reward + exploration
     tuct = torch.where(response_mask[:, :-1] > 0, tuct, torch.tensor(-float('inf')))
 
     # Mask positions that would exceed max_prompt_length
@@ -2252,14 +2253,14 @@ def select_next_states(
             best_pos = -1
 
         if logger_uid == u:
-            logger_batch.info(f"[select_next_states] advantages_mean[best_idx]: {advantages_mean[best_idx].tolist()}")
-            logger_batch.info(f"[select_next_states] values[best_idx]: {values[best_idx].tolist()}")
-            logger_batch.info(f"[select_next_states] gve[best_idx]: {gve[best_idx].tolist()}")
+            logger_batch.info(f"[select_next_states] advantages_mean[best_idx]: {advantages_mean[best_idx][:100].tolist()}")
+            logger_batch.info(f"[select_next_states] values[best_idx]: {values[best_idx][:100].tolist()}")
+            logger_batch.info(f"[select_next_states] gve[best_idx]: {gve[best_idx][:100].tolist()}")
             logger_batch.info(f"[select_next_states] trajectory_reward[best_idx][-1]: {trajectory_reward[best_idx][-1]}")
-            logger_batch.info(f"[select_next_states] expected_traj_reward[best_idx]: {expected_traj_reward[best_idx].tolist()}")
-            logger_batch.info(f"[select_next_states] partree_branches[best_idx]: {partree_branches[best_idx].tolist()}")
-            logger_batch.info(f"[select_next_states] subtree_branches[best_idx]: {subtree_branches[best_idx].tolist()}")
-            logger_batch.info(f"[select_next_states] tuct[best_idx]: {tuct[best_idx].tolist()}")
+            logger_batch.info(f"[select_next_states] expected_traj_reward[best_idx]: {expected_traj_reward[best_idx][:100].tolist()}")
+            logger_batch.info(f"[select_next_states] partree_branches[best_idx]: {partree_branches[best_idx][:100].tolist()}")
+            logger_batch.info(f"[select_next_states] subtree_branches[best_idx]: {subtree_branches[best_idx][:100].tolist()}")
+            logger_batch.info(f"[select_next_states] tuct[best_idx]: {tuct[best_idx][:100].tolist()}")
             logger_batch.info(f"[select_next_states] root_advs: {root_advs}")
             logger_batch.info(f"[select_next_states] root_gve: {root_gve}")
             logger_batch.info(f"[select_next_states] root_tuct: {root_tuct}")
