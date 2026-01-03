@@ -1155,6 +1155,29 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                 reward_tensor = reward_tensor.sum(dim=-1)
             return reward_tensor, reward_extra_infos_dict
 
+    def _set_full_response_str(self, batch: DataProto) -> None:
+        """Decode full response and store in extra_info for OPTS_TTPO mode.
+
+        This method computes the full response string for each sample by extracting
+        tokens from raw_prompt_len onwards and decoding them.
+
+        Args:
+            batch: DataProto containing input_ids, attention_mask, and raw_prompt_len.
+        """
+        batch_size = batch.batch["input_ids"].shape[0]
+
+        if "extra_info" not in batch.non_tensor_batch:
+            batch.non_tensor_batch["extra_info"] = np.array([{} for _ in range(batch_size)], dtype=object)
+
+        for i in range(batch_size):
+            raw_prompt_len = int(batch.non_tensor_batch["raw_prompt_len"][i])
+            valid_prompt_len = int(batch.batch["attention_mask"][i, :self.config.data.max_prompt_length].sum().item())
+            pad_len = self.config.data.max_prompt_length - valid_prompt_len
+            start_pos = pad_len + raw_prompt_len
+            full_response_ids = batch.batch["input_ids"][i, start_pos:]
+            full_response_str = self.tokenizer.decode(full_response_ids, skip_special_tokens=True)
+            batch.non_tensor_batch["extra_info"][i]["full_response_str"] = full_response_str
+
     def _get_gen_batch(self, batch: DataProto) -> DataProto:
         reward_model_keys = set({"data_source", "reward_model", "extra_info", "uid"}) & batch.non_tensor_batch.keys()
 
@@ -2005,19 +2028,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
 
                             # OPTS_TTPO: Decode full response and store in extra_info
                             if opts_ttpo_mode:
-                                batch_size = batch.batch["input_ids"].shape[0]
-
-                                if "extra_info" not in batch.non_tensor_batch:
-                                    batch.non_tensor_batch["extra_info"] = np.array([{} for _ in range(batch_size)], dtype=object)
-
-                                for i in range(batch_size):
-                                    raw_prompt_len = int(batch.non_tensor_batch["raw_prompt_len"][i])
-                                    valid_prompt_len = int(batch.batch["attention_mask"][i, :self.config.data.max_prompt_length].sum().item())
-                                    pad_len = self.config.data.max_prompt_length - valid_prompt_len
-                                    start_pos = pad_len + raw_prompt_len
-                                    full_response_ids = batch.batch["input_ids"][i, start_pos:]
-                                    full_response_str = self.tokenizer.decode(full_response_ids, skip_special_tokens=True)
-                                    batch.non_tensor_batch["extra_info"][i]["full_response_str"] = full_response_str
+                                self._set_full_response_str(batch)
 
                             # Compute or extract reward for training
                             if self.config.reward_model.launch_reward_fn_async:
