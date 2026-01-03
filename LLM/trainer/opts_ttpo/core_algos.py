@@ -2256,7 +2256,7 @@ def select_next_states(
         results = list(executor.map(_select_for_uid, unique_uids))
 
     next_states = dict(results)
-    logger_index = next_states.values()[0]
+    logger_index = sorted(next_states.values(), key=lambda x: -x[1])[0][0]
     logger_batch.info(f"[select_next_states] advantages_mean[logger_index]: {advantages_mean[logger_index].tolist()}")
     logger_batch.info(f"[select_next_states] values[logger_index]: {values[logger_index].tolist()}")
     logger_batch.info(f"[select_next_states] gve[logger_index]: {gve[logger_index].tolist()}")
