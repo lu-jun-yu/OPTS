@@ -2028,6 +2028,7 @@ def compute_forward_values(
         trajectory_reward: shape (batch_size, response_len)
     """
     token_level_rewards = batch.batch["token_level_rewards"]
+    response_mask = batch.batch["response_mask"]
     pid = batch.non_tensor_batch["pid"]
     uid = batch.non_tensor_batch["uid"]
 
@@ -2064,9 +2065,15 @@ def compute_forward_values(
     last_gamma, last_lam, last_traj = init_gamma, init_lam, init_traj_reward
 
     for t in range(response_len):
-        last_gamma = last_gamma * gamma
-        last_lam = last_lam * lam
-        last_traj = last_traj + last_gamma * token_level_rewards[:, t]
+        mask_t = response_mask[:, t]
+        # Only accumulate when response_mask is 1
+        new_gamma = last_gamma * gamma
+        new_lam = last_lam * lam
+        new_traj = last_traj + new_gamma * token_level_rewards[:, t]
+
+        last_gamma = torch.where(mask_t > 0, new_gamma, last_gamma)
+        last_lam = torch.where(mask_t > 0, new_lam, last_lam)
+        last_traj = torch.where(mask_t > 0, new_traj, last_traj)
 
         gamma_t_list.append(last_gamma)
         lam_t_list.append(last_lam)
