@@ -2224,6 +2224,10 @@ def select_next_states(
 
     extra_response_len = pos_mask.sum(dim=1)
     logger_batch.info(f"[select_next_states] extra_response_len: min={extra_response_len.min().item()}, max={extra_response_len.max().item()}, mean={extra_response_len.float().mean().item():.2f}")
+    logger_batch.info(f"[select_next_states] advantages_mean[0]: {advantages_mean[0].tolist()}")
+    logger_batch.info(f"[select_next_states] gve[0]: {gve[0].tolist()}")
+    logger_batch.info(f"[select_next_states] trajectory_reward[0]: {trajectory_reward[0].tolist()}")
+    logger_batch.info(f"[select_next_states] expected_traj_reward[0]: {expected_traj_reward[0].tolist()}")
 
     # 4) Select best state per uid, directly return next_states format
     unique_uids = np.unique(uid)
