@@ -540,7 +540,7 @@ def prepare_next_round_input(
         "input_ids": padded_ids, "attention_mask": padded_mask, "position_ids": padded_pos
     })
 
-    for key in ["uid", "data_source", "reward_model", "extra_info", "raw_prompt"]:
+    for key in ["uid", "data_source", "reward_model", "extra_info", "raw_prompt", "raw_prompt_len"]:
         if key in global_batch.non_tensor_batch:
             new_batch.non_tensor_batch[key] = global_batch.non_tensor_batch[key][sel_indices]
 
@@ -764,7 +764,7 @@ def select_next_states(
 
     # 4) Select best state per uid, directly return next_states format
     unique_uids = np.unique(uid)
-    logger_uid = uid[0]
+    logger_uid = unique_uids[0]
 
     def _select_for_uid(u) -> Tuple[str, Tuple[int, int]]:
         """Select the best state for a single uid, return (uid, (parent_idx, branch_pos))."""
@@ -1903,6 +1903,11 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                 global_batch = None
                 next_states = {}
 
+                # OPTS_TTPO: Initialize raw_prompt_len before round loop
+                if opts_ttpo_mode:
+                    raw_prompt_lens = batch.batch["attention_mask"].sum(dim=1).cpu().numpy()
+                    batch.non_tensor_batch["raw_prompt_len"] = raw_prompt_lens
+
                 with marked_timer("step", timing_raw):
                     step_start_time = time.perf_counter()
                     logger_batch.info(f"[step={self.global_steps}] ========== STEP START ==========")
@@ -1997,6 +2002,22 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                         assert self.reward_loop_manager is not None, "RewardLoopManager is None"
                                         reward_tensor = self.reward_loop_manager.compute_rm_score(batch)
                                     batch = batch.union(reward_tensor)
+
+                            # OPTS_TTPO: Decode full response and store in extra_info
+                            if opts_ttpo_mode:
+                                batch_size = batch.batch["input_ids"].shape[0]
+
+                                if "extra_info" not in batch.non_tensor_batch:
+                                    batch.non_tensor_batch["extra_info"] = np.array([{} for _ in range(batch_size)], dtype=object)
+
+                                for i in range(batch_size):
+                                    raw_prompt_len = int(batch.non_tensor_batch["raw_prompt_len"][i])
+                                    valid_prompt_len = int(batch.batch["attention_mask"][i, :self.config.data.max_prompt_length].sum().item())
+                                    pad_len = self.config.data.max_prompt_length - valid_prompt_len
+                                    start_pos = pad_len + raw_prompt_len
+                                    full_response_ids = batch.batch["input_ids"][i, start_pos:]
+                                    full_response_str = self.tokenizer.decode(full_response_ids, skip_special_tokens=True)
+                                    batch.non_tensor_batch["extra_info"][i]["full_response_str"] = full_response_str
 
                             # Compute or extract reward for training
                             if self.config.reward_model.launch_reward_fn_async:
@@ -2138,7 +2159,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                     global_batch = batch
                                 else:
                                     global_batch = merge_batches(global_batch, batch)
-                                log_batch_state(global_batch, stage="after_merge_to_global_batch", step=self.global_steps, round_idx=round_idx)
+                                # log_batch_state(global_batch, stage="after_merge_to_global_batch", step=self.global_steps, round_idx=round_idx)
 
                             # For OPTS_TTPO, compute advantage on global_batch; otherwise on batch
                             target_batch = global_batch if opts_ttpo_mode else batch
