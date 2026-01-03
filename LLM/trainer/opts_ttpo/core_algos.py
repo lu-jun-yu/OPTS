@@ -2227,6 +2227,7 @@ def select_next_states(
 
     # 4) Select best state per uid, directly return next_states format
     unique_uids = np.unique(uid)
+    logger_uid = uid[0]
 
     def _select_for_uid(u) -> Tuple[str, Tuple[int, int]]:
         """Select the best state for a single uid, return (uid, (parent_idx, branch_pos))."""
@@ -2250,19 +2251,23 @@ def select_next_states(
             best_idx = root_indices[0]
             best_pos = -1
 
+        if logger_uid == u:
+            logger_batch.info(f"[select_next_states] advantages_mean[best_idx]: {advantages_mean[best_idx].tolist()}")
+            logger_batch.info(f"[select_next_states] values[best_idx]: {values[best_idx].tolist()}")
+            logger_batch.info(f"[select_next_states] gve[best_idx]: {gve[best_idx].tolist()}")
+            logger_batch.info(f"[select_next_states] trajectory_reward[best_idx][-1]: {trajectory_reward[best_idx][-1]}")
+            logger_batch.info(f"[select_next_states] expected_traj_reward[best_idx]: {expected_traj_reward[best_idx].tolist()}")
+            logger_batch.info(f"[select_next_states] tuct[best_idx]: {tuct[best_idx].tolist()}")
+            logger_batch.info(f"[select_next_states] root_advs: {root_advs}")
+            logger_batch.info(f"[select_next_states] root_gve: {root_gve}")
+            logger_batch.info(f"[select_next_states] root_tuct: {root_tuct}")
+
         return (u, (best_idx, best_pos))
 
     with ThreadPoolExecutor() as executor:
         results = list(executor.map(_select_for_uid, unique_uids))
 
     next_states = dict(results)
-    logger_index = sorted(next_states.values(), key=lambda x: -x[1])[0][0]
-    logger_batch.info(f"[select_next_states] advantages_mean[logger_index]: {advantages_mean[logger_index].tolist()}")
-    logger_batch.info(f"[select_next_states] values[logger_index]: {values[logger_index].tolist()}")
-    logger_batch.info(f"[select_next_states] gve[logger_index]: {gve[logger_index].tolist()}")
-    logger_batch.info(f"[select_next_states] trajectory_reward[logger_index]: {trajectory_reward[logger_index].tolist()}")
-    logger_batch.info(f"[select_next_states] expected_traj_reward[logger_index]: {expected_traj_reward[logger_index].tolist()}")
-    logger_batch.info(f"[select_next_states] tuct[logger_index]: {tuct[logger_index].tolist()}")
 
     # 5) Update subtree_branches and state_branches in-place (parallel)
     def _update_branches(item: Tuple[str, Tuple[int, int]]) -> None:
