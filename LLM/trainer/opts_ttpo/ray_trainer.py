@@ -753,7 +753,7 @@ def select_next_states(
     exploration = c * torch.sqrt(torch.log(partree_branches[:, :-1])) / (subtree_branches[:, :-1] + 1e-8)
     tuct = expected_traj_reward * alpha_t[:, 1:] + exploration
     # tuct = expected_traj_reward + exploration
-    tuct = torch.where(response_mask[:, :-1] > 0, tuct, torch.tensor(-float('inf')))
+    tuct = torch.where(response_mask[:, 1:] > 0, tuct, torch.tensor(-float('inf')))
 
     # Mask positions that would exceed max_prompt_length
     pos_indices = torch.arange(response_len - 1).unsqueeze(0)
