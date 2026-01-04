@@ -2006,6 +2006,69 @@ def compute_policy_loss_bypass_mode(
 # OPTS_TTPO Specific Functions
 # ============================================================================
 
+def compute_decay_factor(
+    cid: List[Dict],
+    response_mask: torch.Tensor,
+    alpha: float,
+) -> torch.Tensor:
+    """Compute decay_factor for TUCT calculation.
+
+    For each segment between branch points (or start/end), the decay_factor is 1 at
+    the middle and decays towards both ends: decay_factor[t] = alpha^|t - middle|.
+    For the last segment, endpoint is the valid response end (not padding).
+
+    Returns:
+        decay_factor: shape (batch_size, response_len)
+    """
+    batch_size, response_len = response_mask.shape
+    decay_factor = torch.ones(batch_size, response_len)
+    valid_lengths = response_mask.sum(dim=1).long()
+
+    def _process_trajectory(i: int) -> None:
+        trajectory_cid = cid[i]
+        branch_positions = sorted(trajectory_cid.keys())
+        valid_end = valid_lengths[i].item() - 1
+
+        if valid_end < 0:
+            return
+
+        if not branch_positions:
+            # No branches: single segment from 0 to valid_end
+            segment_len = valid_end + 1
+            middle = segment_len // 2
+            for t in range(segment_len):
+                decay_factor[i, t] = alpha ** abs(t - middle)
+        else:
+            # First segment: from 0 to first_branch
+            first_branch = branch_positions[0]
+            segment_len = first_branch + 1
+            middle = segment_len // 2
+            for t in range(segment_len):
+                decay_factor[i, t] = alpha ** abs(t - middle)
+
+            # Middle segments: between consecutive branch points
+            for j in range(len(branch_positions) - 1):
+                start = branch_positions[j] + 1
+                end = branch_positions[j + 1]
+                segment_len = end - start + 1
+                middle = segment_len // 2
+                for t in range(segment_len):
+                    decay_factor[i, start + t] = alpha ** abs(t - middle)
+
+            # Last segment: from last_branch + 1 to valid_end
+            last_branch = branch_positions[-1]
+            start = last_branch + 1
+            segment_len = valid_end - last_branch
+            middle = segment_len // 2
+            for t in range(segment_len):
+                decay_factor[i, start + t] = alpha ** abs(t - middle)
+
+    with ThreadPoolExecutor() as executor:
+        list(executor.map(_process_trajectory, range(batch_size)))
+
+    return decay_factor
+
+
 def compute_partree_branches(
     cid: List[Dict],
     pid: np.ndarray,

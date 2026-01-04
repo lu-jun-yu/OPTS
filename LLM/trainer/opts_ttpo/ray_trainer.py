@@ -75,6 +75,7 @@ from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 from .core_algos import (
     AdvantageEstimator,
     agg_loss,
+    compute_decay_factor,
     compute_partree_branches,
     compute_branch_weight_factors,
 )
@@ -614,20 +615,17 @@ def compute_forward_values(
     global_batch: Optional[DataProto],
     next_states: Dict[str, Tuple[int, int]],
     gamma: float,
-    alpha: float,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Compute forward values for OPTS_TTPO: gamma_t, alpha_t, trajectory_reward.
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Compute forward values for OPTS_TTPO: gamma_t, trajectory_reward.
 
     Args:
         batch: Current round's batch containing token_level_rewards, response_mask, pid, uid.
         global_batch: Global batch from previous rounds (None for first round).
         next_states: Dict mapping uid to (parent_idx, branch_pos).
         gamma: Discount factor.
-        alpha: Decay factor for alpha_t.
 
     Returns:
         gamma_t: shape (batch_size, response_len)
-        alpha_t: shape (batch_size, response_len)
         trajectory_reward: shape (batch_size, response_len)
     """
     token_level_rewards = batch.batch["token_level_rewards"]
@@ -653,46 +651,40 @@ def compute_forward_values(
     # Initialize from parent or default values
     if global_batch is not None and has_parent.any():
         parent_gamma_t = global_batch.batch["gamma_t"]
-        parent_alpha_t = global_batch.batch["alpha_t"]
         parent_trajectory_reward = global_batch.batch["trajectory_reward"]
         init_gamma = torch.where(has_parent, parent_gamma_t[parent_indices, branch_pos], torch.tensor(1.0 / gamma))
-        init_alpha = torch.where(has_parent, parent_alpha_t[parent_indices, branch_pos], torch.tensor(1.0 / alpha))
         init_traj_reward = torch.where(has_parent, parent_trajectory_reward[parent_indices, branch_pos], torch.tensor(0.0))
     else:
         init_gamma = torch.full((batch_size,), 1.0 / gamma)
-        init_alpha = torch.full((batch_size,), 1.0 / alpha)
         init_traj_reward = torch.zeros(batch_size)
 
     # Forward loop (vectorized over batch, sequential over time)
-    gamma_t_list, alpha_t_list, traj_reward_list = [], [], []
-    last_gamma, last_alpha, last_traj = init_gamma, init_alpha, init_traj_reward
+    gamma_t_list, traj_reward_list = [], []
+    last_gamma, last_traj = init_gamma, init_traj_reward
 
     for t in range(response_len):
         mask_t = response_mask[:, t]
         # Only accumulate when response_mask is 1
         new_gamma = last_gamma * gamma
-        new_alpha = last_alpha * alpha
         new_traj = last_traj + new_gamma * token_level_rewards[:, t]
 
         last_gamma = torch.where(mask_t > 0, new_gamma, last_gamma)
-        last_alpha = torch.where(mask_t > 0, new_alpha, last_alpha)
         last_traj = torch.where(mask_t > 0, new_traj, last_traj)
 
         gamma_t_list.append(last_gamma)
-        alpha_t_list.append(last_alpha)
         traj_reward_list.append(last_traj)
 
     gamma_t = torch.stack(gamma_t_list, dim=1)
-    alpha_t = torch.stack(alpha_t_list, dim=1)
     trajectory_reward = torch.stack(traj_reward_list, dim=1)
 
-    return gamma_t, alpha_t, trajectory_reward
+    return gamma_t, trajectory_reward
 
 
 def select_next_states(
     batch: DataProto,
     lam: float,
     c: float,
+    alpha: float,
     round_idx: int,
     n_samples_per_round: int,
     max_prompt_length: int,
@@ -705,6 +697,7 @@ def select_next_states(
         batch: DataProto containing all required tensors and non-tensor data
         lam: GAE lambda
         c: TUCT exploration constant
+        alpha: Decay factor for TUCT
         round_idx: current round index
         n_samples_per_round: number of samples per round (n)
         max_prompt_length: maximum allowed prompt length
@@ -719,7 +712,6 @@ def select_next_states(
     advantages_mean = batch.batch["advantages_mean"]
     trajectory_reward = batch.batch["trajectory_reward"]
     gamma_t = batch.batch["gamma_t"]
-    alpha_t = batch.batch["alpha_t"]
     subtree_branches = batch.batch["subtree_branches"]
     state_branches = batch.batch["state_branches"]
     response_mask = batch.batch["response_mask"]
@@ -742,16 +734,17 @@ def select_next_states(
     gve = values[:, 1:] + lam * advantages_mean
     expected_traj_reward = trajectory_reward[:, :-1] + gamma_t[:, :-1] * gve
 
-    # 2) Compute partree_branches
+    # 2) Compute partree_branches and decay_factor
     partree_branches = compute_partree_branches(
         cid=cid, pid=pid, subtree_branches=subtree_branches,
         round_idx=round_idx, n_samples_per_round=n_samples_per_round,
         rid2idx=rid2idx, parent_branch_pos=parent_branch_pos,
     )
+    decay_factor = compute_decay_factor(cid=cid, response_mask=response_mask, alpha=alpha)
 
-    # 3) Compute TUCT: exploitation * alpha_t + exploration
+    # 3) Compute TUCT: exploitation + exploration, scaled by decay_factor
     exploration = c * torch.sqrt(torch.log(partree_branches[:, :-1])) / (subtree_branches[:, :-1] + 1e-8)
-    tuct = (expected_traj_reward + exploration) * alpha_t[:, 1:]
+    tuct = (expected_traj_reward + exploration) * decay_factor[:, :-1]
     tuct = torch.where(response_mask[:, 1:] > 0, tuct, torch.tensor(-float('inf')))
 
     # Mask positions that would exceed max_prompt_length
@@ -2155,17 +2148,15 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 batch.batch["advantages_mean"] = torch.zeros(batch_size, response_len - 1)
                                 batch.batch["returns"] = torch.zeros(batch_size, response_len)
 
-                                # Compute forward values (gamma_t, alpha_t, trajectory_reward)
+                                # Compute forward values (gamma_t, trajectory_reward)
                                 with timed_block("compute_forward_values", step=self.global_steps, round_idx=round_idx):
-                                    gamma_t, alpha_t, trajectory_reward = compute_forward_values(
+                                    gamma_t, trajectory_reward = compute_forward_values(
                                         batch=batch,
                                         global_batch=global_batch,
                                         next_states=next_states,
                                         gamma=self.config.algorithm.gamma,
-                                        alpha=self.config.actor_rollout_ref.rollout.alpha,
                                     )
                                 batch.batch["gamma_t"] = gamma_t
-                                batch.batch["alpha_t"] = alpha_t
                                 batch.batch["trajectory_reward"] = trajectory_reward
 
                                 # Merge local_batch to global_batch
@@ -2203,6 +2194,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                         batch=global_batch,
                                         lam=self.config.algorithm.lam,
                                         c=self.config.actor_rollout_ref.rollout.c,
+                                        alpha=self.config.actor_rollout_ref.rollout.alpha,
                                         round_idx=round_idx,
                                         n_samples_per_round=self.config.actor_rollout_ref.rollout.n,
                                         max_prompt_length=self.config.data.max_prompt_length,

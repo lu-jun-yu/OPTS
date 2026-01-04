@@ -40,14 +40,14 @@ actor_rollout_ref:
   rollout:
     g: 8          # 循环采样的轮数（总采样数 = n * g）
     c: 1.0        # TUCT 探索常数，控制探索与利用的平衡
-    alpha: 0.99   # alpha_t 衰减因子，用于 TUCT 中公平比较不同深度的状态
+    alpha: 0.99   # decay_factor 衰减因子，用于 TUCT 中公平比较不同深度的状态
     search: opts  # 搜索算法：null 为标准 PPO，"opts" 为 On-Policy Parallel Tree Search
 ```
 
 **参数说明：**
 - `g`：总共进行的采样轮数，决定树的深度和广度
 - `c`：探索常数，较大的值鼓励探索未充分访问的状态
-- `alpha`：alpha_t 的衰减因子，用于在 TUCT 中公平比较不同深度的状态
+- `alpha`：decay_factor 的衰减因子，用于在 TUCT 中公平比较不同深度的状态
 - `search`：搜索算法类型，设为 "opts" 启用 OPTS_TTPO 模式
 
 
@@ -79,7 +79,6 @@ actor_rollout_ref:
 |------|------|------|
 | advantages_mean | (bs, response_len-1) | 分支节点处所有动作的平均优势 |
 | gamma_t | (bs, response_len) | gamma 的累乘：γ^t |
-| alpha_t | (bs, response_len) | alpha 的累乘：α^t，用于 TUCT 中的公平比较 |
 | trajectory_reward | (bs, response_len) | 累计折扣奖励 |
 | state_branches | (bs, response_len) | 每个状态的分支数 |
 | subtree_branches | (bs, response_len) | 子树的轨迹数 |
@@ -175,15 +174,16 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 - t>0 时：gamma_t[t] = gamma_t[t-1] * gamma
 - 若有父轨迹：从父轨迹所选状态的 gamma_t 继续累乘
 
-**alpha_t[t]**：α^t，用于 TUCT 中的公平比较
-- t=0 时：alpha_t[0] = 1
-- t>0 时：alpha_t[t] = alpha_t[t-1] * alpha
-- 若有父轨迹：从父轨迹所选状态的 alpha_t 继续累乘
-
 **trajectory_reward[t]**：到达状态 t 时的累计折扣奖励
 - t=0 时：trajectory_reward[0] = token_level_rewards[0]
 - t>0 时：trajectory_reward[t] = trajectory_reward[t-1] + gamma_t[t] * reward[t]
 - 若有父轨迹：从父轨迹所选状态的 trajectory_reward 继续累加
+
+**decay_factor[t]**：使选择的状态尽可能远离之前已选择的状态
+- 每个 segment（从起点/分支点到下一个分支点/终点）独立计算
+- segment 中间位置：decay_factor = 1
+- 向两端衰减：decay_factor[t] = alpha^|t - middle|
+- 对于最后一个 segment，终点是有效 response 的终点（非 padding 位置）
 
 #### 3.2.3 分支相关计数
 
@@ -226,9 +226,10 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 #### 3.2.5 TUCT 和权重因子
 
 **tuct[t]**：Tree UCT 值
-- 公式：expected_trajectory_reward[t] * alpha_t[t+1] + c * sqrt(log(partree_branches[t])) / subtree_branches[t]
-- 利用项：expected_trajectory_reward * alpha_t（alpha_t 用于公平比较不同深度的状态）
+- 公式：(expected_trajectory_reward[t] + exploration[t]) * decay_factor[t]
+- 利用项：expected_trajectory_reward
 - 探索项：c * sqrt(log(N_parent)) / N_child（UCB1 风格）
+- decay_factor 使选择的状态尽可能远离之前已选择的状态（分支节点）
 
 **branch_weight_factor[t]**：策略梯度权重因子
 - t=0 时：branch_weight_factor[0] = 1
@@ -308,7 +309,6 @@ for epoch in ...:
                 - (局部batch) 初始化 advantages、advantages_mean、returns 为全0
                 - (局部batch) compute_forward_values：计算时间累积量
                     - gamma_t[t] = γ^t（若有父节点则从父节点位置继承后继续累乘）
-                    - alpha_t[t] = α^t（同上）
                     - trajectory_reward[t] = 累计折扣奖励（同上）
                 - (局部batch) 合并到全局batch（_merge_batches）
 
@@ -332,10 +332,11 @@ for epoch in ...:
                        - gve = values[1:] + lam * advantages_mean[:]
                        - expected_trajectory_reward = trajectory_reward[:-1] + gamma_t[:-1] * gve
 
-                    2) 计算 partree_branches（父分支点的 subtree_branches）
+                    2) 计算 partree_branches（父分支点的 subtree_branches）和 decay_factor
 
                     3) 计算 TUCT：
-                       - tuct = expected_trajectory_reward * alpha_t[1:] + c * sqrt(log(partree_branches)) / subtree_branches[:-1]
+                       - exploration = c * sqrt(log(partree_branches)) / subtree_branches[:-1]
+                       - tuct = (expected_trajectory_reward + exploration) * decay_factor
 
                     4) 为每个 uid 选择 TUCT 最高的状态：
                        - 同时考虑"根状态"（从 prompt 重新开始），与树中状态竞争
@@ -391,15 +392,15 @@ $$
 ### 5.2 TUCT
 
 $$
-\text{TUCT}(s_t) = \underbrace{\bigg[R(\tau_{0:t}) + \gamma^t \cdot \text{GVE}(s_t)\bigg]}_{\text{利用项}} \cdot \alpha^t + \underbrace{c \cdot \frac{\sqrt{\log (N_{\text{parent}} + 1)}}{N_{\text{child}}}}_{\text{探索项}}
+\text{TUCT}(s_t) = \Bigg(\underbrace{R(\tau_{0:t}) + \gamma^t \cdot \text{GVE}(s_t)}_{\text{利用项}} + \underbrace{c \cdot \frac{\sqrt{\log (N_{\text{parent}} + 1)}}{N_{\text{child}}}}_{\text{探索项}}\Bigg) \cdot \text{decay\_factor}(t)
 $$
 
 其中：
 - $R(\tau_{0:t})$ 为到达状态 $t$ 的累计折扣奖励
 - $\text{GVE}(s_t) = V(s_{t+1}) + \lambda \cdot \bar{A}(s_{t+1})$ 为广义状态价值估计
-- $\alpha^t$ 用于公平比较不同深度的状态
 - $N_{\text{parent}}$ 为父分支点的 subtree_branches
 - $N_{\text{child}}$ 为当前状态的 subtree_branches
+- $\text{decay\_factor}(t)$ 使选择的状态尽可能远离已选择的分支节点
 
 ### 5.3 TTPO 策略梯度
 
@@ -441,9 +442,10 @@ LLM/trainer/opts_ttpo/
 | `set_opts_ttpo_info` | ray_trainer.py | 函数 | 设置树结构信息：rid, pid, branch_pos, cid |
 | `prepare_next_round_input` | ray_trainer.py | 函数 | 构建下一轮采样的输入 batch |
 | `merge_batches` | ray_trainer.py | 函数 | 合并局部 batch 到全局 batch |
-| `compute_forward_values` | ray_trainer.py | 函数 | 计算 gamma_t, alpha_t, trajectory_reward |
+| `compute_forward_values` | ray_trainer.py | 函数 | 计算 gamma_t, trajectory_reward |
 | `select_next_states` | ray_trainer.py | 函数 | TUCT 状态选择 |
 | `compute_treegae_advantage_return` | core_algos.py | 注册函数 | 通过 `@register_adv_est(AdvantageEstimator.TreeGAE)` 注册 |
+| `compute_decay_factor` | core_algos.py | 函数 | 计算 TUCT 中的 decay_factor |
 | `compute_partree_branches` | core_algos.py | 函数 | 计算父分支点的 subtree_branches |
 | `compute_branch_weight_factors` | core_algos.py | 函数 | 计算分支权重因子 |
 | `agg_loss` | core_algos.py | 修改 | 新增 "weighted-token-mean" 模式 |
@@ -459,7 +461,7 @@ actor_rollout_ref:
   rollout:
     g: 8          # 循环采样的轮数（总采样数 = n * g）
     c: 1.0        # TUCT 探索常数
-    alpha: 0.99   # alpha_t 衰减因子，用于 TUCT 中公平比较不同深度的状态
+    alpha: 0.99   # decay_factor 衰减因子
     search: opts  # 搜索算法："opts" 启用 OPTS_TTPO
 
 algorithm:
@@ -482,7 +484,7 @@ g: 1
 # OPTS parameters
 c: 1.0
 
-# Decay factor for alpha_t in OPTS
+# Decay factor for decay_factor in OPTS
 alpha: 0.99
 
 # Search algorithm: null for standard PPO, "opts" for OPTS
