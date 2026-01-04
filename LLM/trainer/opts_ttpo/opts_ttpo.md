@@ -79,6 +79,7 @@ actor_rollout_ref:
 |------|------|------|
 | advantages_mean | (bs, response_len-1) | 分支节点处所有动作的平均优势 |
 | gamma_t | (bs, response_len) | gamma 的累乘：γ^t |
+| lam_t | (bs, response_len) | lam 的累乘：λ^t |
 | trajectory_reward | (bs, response_len) | 累计折扣奖励 |
 | state_branches | (bs, response_len) | 每个状态的分支数 |
 | subtree_branches | (bs, response_len) | 子树的轨迹数 |
@@ -174,6 +175,11 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 - t>0 时：gamma_t[t] = gamma_t[t-1] * gamma
 - 若有父轨迹：从父轨迹所选状态的 gamma_t 继续累乘
 
+**lam_t[t]**：λ^t，用于 TUCT 中缩放期望轨迹奖励
+- t=0 时：lam_t[0] = 1
+- t>0 时：lam_t[t] = lam_t[t-1] * lam
+- 若有父轨迹：从父轨迹所选状态的 lam_t 继续累乘
+
 **trajectory_reward[t]**：到达状态 t 时的累计折扣奖励
 - t=0 时：trajectory_reward[0] = token_level_rewards[0]
 - t>0 时：trajectory_reward[t] = trajectory_reward[t-1] + gamma_t[t] * reward[t]
@@ -226,8 +232,8 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 #### 3.2.5 TUCT 和权重因子
 
 **tuct[t]**：Tree UCT 值
-- 公式：(expected_trajectory_reward[t] + exploration[t]) * decay_factor[t]
-- 利用项：expected_trajectory_reward
+- 公式：(expected_trajectory_reward[t] * lam_t[t] + exploration[t]) * decay_factor[t]
+- 利用项：expected_trajectory_reward * lam_t
 - 探索项：c * sqrt(log(N_parent)) / N_child（UCB1 风格）
 - decay_factor 使选择的状态尽可能远离之前已选择的状态（分支节点）
 
@@ -309,6 +315,7 @@ for epoch in ...:
                 - (局部batch) 初始化 advantages、advantages_mean、returns 为全0
                 - (局部batch) compute_forward_values：计算时间累积量
                     - gamma_t[t] = γ^t（若有父节点则从父节点位置继承后继续累乘）
+                    - lam_t[t] = λ^t（同上）
                     - trajectory_reward[t] = 累计折扣奖励（同上）
                 - (局部batch) 合并到全局batch（_merge_batches）
 
@@ -336,7 +343,7 @@ for epoch in ...:
 
                     3) 计算 TUCT：
                        - exploration = c * sqrt(log(partree_branches)) / subtree_branches[:-1]
-                       - tuct = (expected_trajectory_reward + exploration) * decay_factor
+                       - tuct = (expected_trajectory_reward * lam_t + exploration) * decay_factor
 
                     4) 为每个 uid 选择 TUCT 最高的状态：
                        - 同时考虑"根状态"（从 prompt 重新开始），与树中状态竞争
@@ -392,12 +399,13 @@ $$
 ### 5.2 TUCT
 
 $$
-\text{TUCT}(s_t) = \Bigg(\underbrace{R(\tau_{0:t}) + \gamma^t \cdot \text{GVE}(s_t)}_{\text{利用项}} + \underbrace{c \cdot \frac{\sqrt{\log (N_{\text{parent}} + 1)}}{N_{\text{child}}}}_{\text{探索项}}\Bigg) \cdot \text{decay\_factor}(t)
+\text{TUCT}(s_t) = \Bigg(\underbrace{R(\tau_{0:t}) + \gamma^t \cdot \text{GVE}(s_t)}_{\text{利用项}} \cdot \lambda^t + \underbrace{c \cdot \frac{\sqrt{\log (N_{\text{parent}} + 1)}}{N_{\text{child}}}}_{\text{探索项}}\Bigg) \cdot \text{decay\_factor}(t)
 $$
 
 其中：
 - $R(\tau_{0:t})$ 为到达状态 $t$ 的累计折扣奖励
 - $\text{GVE}(s_t) = V(s_{t+1}) + \lambda \cdot \bar{A}(s_{t+1})$ 为广义状态价值估计
+- $\lambda^t$ 为 lam_t，用于缩放利用项
 - $N_{\text{parent}}$ 为父分支点的 subtree_branches
 - $N_{\text{child}}$ 为当前状态的 subtree_branches
 - $\text{decay\_factor}(t)$ 使选择的状态尽可能远离已选择的分支节点
@@ -442,7 +450,7 @@ LLM/trainer/opts_ttpo/
 | `set_opts_ttpo_info` | ray_trainer.py | 函数 | 设置树结构信息：rid, pid, branch_pos, cid |
 | `prepare_next_round_input` | ray_trainer.py | 函数 | 构建下一轮采样的输入 batch |
 | `merge_batches` | ray_trainer.py | 函数 | 合并局部 batch 到全局 batch |
-| `compute_forward_values` | ray_trainer.py | 函数 | 计算 gamma_t, trajectory_reward |
+| `compute_forward_values` | ray_trainer.py | 函数 | 计算 gamma_t, lam_t, trajectory_reward |
 | `select_next_states` | ray_trainer.py | 函数 | TUCT 状态选择 |
 | `compute_treegae_advantage_return` | core_algos.py | 注册函数 | 通过 `@register_adv_est(AdvantageEstimator.TreeGAE)` 注册 |
 | `compute_decay_factor` | core_algos.py | 函数 | 计算 TUCT 中的 decay_factor |
