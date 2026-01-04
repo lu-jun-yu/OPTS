@@ -199,7 +199,7 @@ def log_batch_state(batch: DataProto, stage: str, step: int = -1, round_idx: int
     logger_batch.info(f"{prefix} === End Batch State ===")
 
 
-def log_sample_generations(batch: DataProto, tokenizer, step: int = -1, round_idx: int = -1, num_samples: int = 2) -> None:
+def log_sample_generations(batch: DataProto, tokenizer, step: int = 1, round_idx: int = 1, num_samples: int = 2) -> None:
     """Log decoded sample prompts and responses for debugging.
 
     Args:
@@ -751,8 +751,7 @@ def select_next_states(
 
     # 3) Compute TUCT: exploitation * alpha_t + exploration
     exploration = c * torch.sqrt(torch.log(partree_branches[:, :-1])) / (subtree_branches[:, :-1] + 1e-8)
-    tuct = expected_traj_reward * alpha_t[:, 1:] + exploration
-    # tuct = expected_traj_reward + exploration
+    tuct = (expected_traj_reward + exploration) * alpha_t[:, 1:]
     tuct = torch.where(response_mask[:, 1:] > 0, tuct, torch.tensor(-float('inf')))
 
     # Mask positions that would exceed max_prompt_length
@@ -1960,7 +1959,8 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 else:
                                     gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch_output)
                                 log_batch_state(gen_batch_output, stage="after_generate", step=self.global_steps, round_idx=round_idx)
-                                log_sample_generations(gen_batch_output, self.tokenizer, step=self.global_steps, round_idx=round_idx)
+                                if round_idx > 1:
+                                    log_sample_generations(gen_batch_output, self.tokenizer, step=self.global_steps, round_idx=round_idx)
 
                             timing_raw.update(gen_batch_output.meta_info["timing"])
                             gen_batch_output.meta_info.pop("timing", None)
