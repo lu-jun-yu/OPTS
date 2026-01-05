@@ -1180,7 +1180,8 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
             valid_prompt_len = int(batch.batch["attention_mask"][i, :self.config.data.max_prompt_length].sum().item())
             pad_len = self.config.data.max_prompt_length - valid_prompt_len
             start_pos = pad_len + raw_prompt_len
-            full_response_ids = batch.batch["input_ids"][i, start_pos:]
+            end_pos = start_pos + self.config.data.max_response_length
+            full_response_ids = batch.batch["input_ids"][i, start_pos:end_pos]
             full_response_str = self.tokenizer.decode(full_response_ids, skip_special_tokens=True)
             batch.non_tensor_batch["extra_info"][i]["full_response_str"] = full_response_str
 
