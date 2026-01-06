@@ -823,8 +823,8 @@ def select_next_states(
     )
 
     # 3) Compute TUCT: exploitation * lam_t + exploration
-    exploration = c * torch.sqrt(torch.log(partree_branches[:, :-1] + 1)) / (subtree_branches[:, :-1] + 1e-8)
     exploitation = expected_traj_reward * lam_t[:, 1:]
+    exploration = c * torch.sqrt(torch.log(partree_branches[:, :-1] + 1)) / (subtree_branches[:, :-1] + 1e-8)
     tuct = exploitation + exploration
     tuct = torch.where(response_mask[:, 1:] > 0, tuct, torch.tensor(-float('inf')))
 
@@ -851,6 +851,8 @@ def select_next_states(
         best_tuct = max_val.item()
         best_idx = uid_indices[traj_idx]
         best_pos = pos_idx
+        original_best_pos = best_pos
+        original_best_tuct = best_tuct
 
         # Compare with root TUCT (from prompt start)
         root_indices = [i for i in uid_indices if pid[i] is None]
@@ -860,7 +862,6 @@ def select_next_states(
         if root_tuct > best_tuct:
             best_idx = root_indices[0]
             best_pos = -1
-            # Root state selected, return directly
             return (u, (best_idx, best_pos))
 
         # Non-root state selected: check if best_pos is a branch node
@@ -868,7 +869,6 @@ def select_next_states(
         branch_positions = sorted(trajectory_cid.keys())
         valid_end = response_mask[best_idx].sum().long().item() - 1
 
-        # If best_pos is a branch node, return directly
         if best_pos in branch_positions:
             return (u, (best_idx, best_pos))
 
@@ -882,18 +882,22 @@ def select_next_states(
                 next_branch = bp
                 break
 
-        # Exclude both branch nodes, start, and end
         seg_start = prev_branch + 1
         seg_end = next_branch - 1
 
         if seg_start <= seg_end:
-            seg_tuct = tuct[best_idx, seg_start:seg_end + 1]
+            seg_exploitation = exploitation[best_idx, seg_start:seg_end + 1]
             segment_len = seg_end - seg_start + 1
             middle = segment_len // 2
             seg_decay = torch.tensor([alpha ** abs(t - middle) for t in range(segment_len)])
-            weighted_tuct = seg_tuct * seg_decay
-            local_best = weighted_tuct.argmax().item()
+            weighted_exploitation = seg_exploitation * seg_decay
+            local_best = weighted_exploitation.argmax().item()
             best_pos = seg_start + local_best
+
+            # Debug log for significant position changes
+            if abs(best_pos - original_best_pos) > 100:
+                logger_batch.debug(f"[_select_for_uid] uid={u}: original_pos={original_best_pos}, original_tuct={original_best_tuct:.4f}, "
+                                   f"root_tuct={root_tuct:.4f}, seg=[{seg_start},{seg_end}], middle={middle}, final_pos={best_pos}")
 
         return (u, (best_idx, best_pos))
 
@@ -906,14 +910,19 @@ def select_next_states(
     if len(next_states) > 0:
         max_state = sorted(next_states.values(), key=lambda x: -x[1])[0]
         if max_state[1] != -1:
+            # Print tuct values around final position
             start_idx = max(max_state[1] - 5, 0)
-            end_idx = min(start_idx + 50, response_len - 1)  # Clamp to valid range for response_len-1 tensors
+            end_idx = min(start_idx + 50, response_len - 1)
             logger_batch.info(f"[select_next_states] rewards[max_state[0]]: {rewards[max_state[0]][start_idx:end_idx + 1].tolist()}")
             logger_batch.info(f"[select_next_states] advantages_mean[max_state[0]]: {advantages_mean[max_state[0]][start_idx:end_idx].tolist()}")
             logger_batch.info(f"[select_next_states] gve[max_state[0]]: {gve[max_state[0]][start_idx:end_idx].tolist()}")
             logger_batch.info(f"[select_next_states] trajectory_reward[max_state[0]][-1]: {trajectory_reward[max_state[0]][-1]}")
             logger_batch.info(f"[select_next_states] expected_traj_reward[max_state[0]]: {expected_traj_reward[max_state[0]][start_idx:end_idx].tolist()}")
-            logger_batch.info(f"[select_next_states] tuct[max_state[0]]: {tuct[max_state[0]][start_idx:end_idx].tolist()}")
+            logger_batch.info(f"[select_next_states] tuct[max_state[0]] around final_pos: {tuct[max_state[0]][start_idx:end_idx].tolist()}")
+
+            # Also print tuct values at the beginning to check original best_tuct
+            logger_batch.info(f"[select_next_states] tuct[max_state[0]] at start (0-50): {tuct[max_state[0]][0:50].tolist()}")
+            logger_batch.info(f"[select_next_states] tuct[max_state[0]] max value: {tuct[max_state[0]].max().item():.4f}, argmax: {tuct[max_state[0]].argmax().item()}")
 
             uid_indices = np.where(uid == uid[max_state[0]])[0]
             root_indices = [i for i in uid_indices if pid[i] is None]
