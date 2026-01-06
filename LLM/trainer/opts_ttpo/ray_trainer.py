@@ -824,7 +824,8 @@ def select_next_states(
 
     # 3) Compute TUCT: exploitation * lam_t + exploration
     exploration = c * torch.sqrt(torch.log(partree_branches[:, :-1] + 1)) / (subtree_branches[:, :-1] + 1e-8)
-    tuct = expected_traj_reward * lam_t[:, 1:] + exploration
+    exploitation = expected_traj_reward * lam_t[:, 1:]
+    tuct = exploitation + exploration
     tuct = torch.where(response_mask[:, 1:] > 0, tuct, torch.tensor(-float('inf')))
 
     # Mask positions that would exceed max_prompt_length
@@ -862,35 +863,34 @@ def select_next_states(
             # Root state selected, return directly
             return (u, (best_idx, best_pos))
 
-        # Non-root state selected: refine best_pos using decay_factor within chain segment
+        # Non-root state selected: check if best_pos is a branch node
         trajectory_cid = cid[best_idx]
         branch_positions = sorted(trajectory_cid.keys())
         valid_end = response_mask[best_idx].sum().long().item() - 1
 
-        # Find the segment containing best_pos (between prev_branch and next_branch)
-        prev_branch = -1  # Start of response
-        next_branch = valid_end  # End of valid response
+        # If best_pos is a branch node, return directly
+        if best_pos in branch_positions:
+            return (u, (best_idx, best_pos))
+
+        # best_pos is not a branch node: refine using decay_factor within chain segment
+        prev_branch = -1
+        next_branch = valid_end
         for bp in branch_positions:
-            if bp <= best_pos:
+            if bp < best_pos:
                 prev_branch = bp
             elif bp > best_pos:
                 next_branch = bp
                 break
 
-        # Define segment range: (prev_branch, next_branch] for selection
+        # Exclude both branch nodes, start, and end
         seg_start = prev_branch + 1
-        seg_end = next_branch
+        seg_end = next_branch - 1
 
         if seg_start <= seg_end:
-            # Get TUCT values for this segment
             seg_tuct = tuct[best_idx, seg_start:seg_end + 1]
-
-            # Compute decay_factor for this segment (peak at middle)
             segment_len = seg_end - seg_start + 1
             middle = segment_len // 2
             seg_decay = torch.tensor([alpha ** abs(t - middle) for t in range(segment_len)])
-
-            # Apply decay_factor and find best position within segment
             weighted_tuct = seg_tuct * seg_decay
             local_best = weighted_tuct.argmax().item()
             best_pos = seg_start + local_best
