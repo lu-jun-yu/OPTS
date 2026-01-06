@@ -824,6 +824,7 @@ def select_next_states(
 
     # 3) Compute TUCT: exploitation * lam_t + exploration
     exploitation = expected_traj_reward * lam_t[:, 1:]
+    exploitation = torch.where(response_mask[:, 1:] > 0, exploitation, torch.tensor(-float('inf')))
     exploration = c * torch.sqrt(torch.log(partree_branches[:, :-1])) / (subtree_branches[:, :-1] + 1e-8)
     tuct = exploitation + exploration
     tuct = torch.where(response_mask[:, 1:] > 0, tuct, torch.tensor(-float('inf')))
@@ -831,6 +832,7 @@ def select_next_states(
     # Mask positions that would exceed max_prompt_length
     pos_indices = torch.arange(response_len - 1).unsqueeze(0)
     pos_mask = (pos_indices + prompt_lengths.unsqueeze(1)) < max_prompt_length
+    exploitation = torch.where(pos_mask, exploitation, torch.tensor(-float('inf')))
     tuct = torch.where(pos_mask, tuct, torch.tensor(-float('inf')))
 
     extra_response_len = pos_mask.sum(dim=1)
@@ -851,8 +853,6 @@ def select_next_states(
         best_tuct = max_val.item()
         best_idx = uid_indices[traj_idx]
         best_pos = pos_idx
-        original_best_pos = best_pos
-        original_best_tuct = best_tuct
 
         # Compare with root TUCT (from prompt start)
         root_indices = [i for i in uid_indices if pid[i] is None]
@@ -885,14 +885,13 @@ def select_next_states(
         seg_start = prev_branch + 1
         seg_end = next_branch - 1
 
-        if seg_start <= seg_end:
-            seg_exploitation = exploitation[best_idx, seg_start:seg_end + 1]
-            segment_len = seg_end - seg_start + 1
-            middle = segment_len // 2
-            seg_decay = torch.tensor([alpha ** abs(t - middle) for t in range(segment_len)])
-            weighted_exploitation = seg_exploitation * seg_decay
-            local_best = weighted_exploitation.argmax().item()
-            best_pos = seg_start + local_best
+        seg_exploitation = exploitation[best_idx, seg_start:seg_end + 1]
+        segment_len = seg_end - seg_start + 1
+        middle = segment_len // 2
+        seg_decay = torch.tensor([alpha ** abs(t - middle) for t in range(segment_len)])
+        weighted_exploitation = seg_exploitation * seg_decay
+        local_best = weighted_exploitation.argmax().item()
+        best_pos = seg_start + local_best
 
         return (u, (best_idx, best_pos))
 
