@@ -75,7 +75,6 @@ from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 from .core_algos import (
     AdvantageEstimator,
     agg_loss,
-    compute_decay_factor,
     compute_partree_branches,
     compute_branch_weight_factors,
 )
@@ -816,13 +815,12 @@ def select_next_states(
     gve = values[:, 1:] + lam * advantages_mean
     expected_traj_reward = trajectory_reward[:, :-1] + gamma_t[:, :-1] * gve
 
-    # 2) Compute partree_branches and decay_factor
+    # 2) Compute partree_branches
     partree_branches = compute_partree_branches(
         cid=cid, pid=pid, subtree_branches=subtree_branches,
         round_idx=round_idx, n_samples_per_round=n_samples_per_round,
         rid2idx=rid2idx, parent_branch_pos=parent_branch_pos,
     )
-    decay_factor = compute_decay_factor(cid=cid, response_mask=response_mask, alpha=alpha)
 
     # 3) Compute TUCT: exploitation * lam_t + exploration
     exploration = c * torch.sqrt(torch.log(partree_branches[:, :-1] + 1)) / (subtree_branches[:, :-1] + 1e-8)
