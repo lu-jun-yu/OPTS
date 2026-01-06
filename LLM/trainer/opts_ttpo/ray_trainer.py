@@ -858,7 +858,7 @@ def select_next_states(
         root_indices = [i for i in uid_indices if pid[i] is None]
         root_advs = advantages[root_indices, 0]
         root_gve = values[root_indices[0], 0] + lam * root_advs.mean()
-        root_tuct = root_gve.item() + c
+        root_tuct = root_gve.item() + c * 1.6
         if root_tuct > best_tuct:
             best_idx = root_indices[0]
             best_pos = -1
@@ -923,7 +923,7 @@ def select_next_states(
             if len(root_indices) > 0:
                 root_advs = advantages[root_indices, 0]
                 root_gve = values[root_indices[0], 0] + lam * root_advs.mean()
-                root_tuct = root_gve.item() + c
+                root_tuct = root_gve.item() + c * 1.6
                 logger_batch.info(f"[select_next_states] root_advs: {root_advs}")
                 logger_batch.info(f"[select_next_states] root_gve: {root_gve}")
                 logger_batch.info(f"[select_next_states] root_tuct: {root_tuct}")
