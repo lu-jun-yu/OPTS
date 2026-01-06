@@ -186,6 +186,7 @@ def log_batch_state(batch: DataProto, stage: str, step: int = -1, round_idx: int
 
 
 def log_sample_generations(
+    global_batch: DataProto,
     batch: DataProto,
     tokenizer,
     step: int = 1,
@@ -194,48 +195,40 @@ def log_sample_generations(
 ) -> None:
     """Log decoded sample prompts and responses for debugging.
 
-    This function finds the parent trajectory and its children based on sorted_states,
+    This function finds the parent trajectory from global_batch and its children from batch,
     verifies that children's prompts match parent's prompt + partial response,
     and logs the parent's prompt/response and all children's responses.
 
     Args:
-        batch: The DataProto batch containing prompts, responses, rid, and pid (global_batch in OPTS_TTPO mode).
+        global_batch: The global batch containing parent trajectories from previous rounds.
+        batch: The current round's batch containing newly generated children trajectories.
         tokenizer: Tokenizer for decoding token ids to text.
         step: Global training step number.
         round_idx: OPTS round index.
         sorted_states: Sorted list of (parent_idx, branch_pos) from select_next_states,
                        sorted by descending branch_pos. If None or empty, function returns early.
     """
-    if "prompts" not in batch.batch or "responses" not in batch.batch:
-        return
+    global_rid = global_batch.non_tensor_batch.get("rid")
+    batch_pid = batch.non_tensor_batch.get("pid")
+    batch_rid = batch.non_tensor_batch.get("rid")
 
-    if sorted_states is None or len(sorted_states) == 0:
-        return
+    pad_token_id = tokenizer.pad_token_id
 
-    rid = batch.non_tensor_batch.get("rid")
-    pid = batch.non_tensor_batch.get("pid")
-
-    if rid is None or pid is None:
-        logger_batch.warning(f"[step={step}][round={round_idx}] rid or pid not found in batch")
-        return
-
-    pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
-
-    # 1. Find the trajectory corresponding to rid[sorted_states[0][0]]
+    # 1. Find the parent trajectory corresponding to rid[sorted_states[0][0]] in global_batch
     parent_idx = sorted_states[0][0]
     branch_pos = sorted_states[0][1]
-    parent_rid = rid[parent_idx]
+    parent_rid = global_rid[parent_idx]
 
-    # Find children trajectories where pid == parent_rid (exclude None values explicitly)
-    child_indices = [i for i, p in enumerate(pid) if p is not None and p == parent_rid]
+    # Find children trajectories in batch where pid == parent_rid (exclude None values explicitly)
+    child_indices = [i for i, p in enumerate(batch_pid) if p is not None and p == parent_rid]
 
     if len(child_indices) == 0:
         logger_batch.warning(f"[step={step}][round={round_idx}] No children found for parent rid={parent_rid}")
         return
 
-    # Get parent prompt and response
-    parent_prompt_ids = batch.batch["prompts"][parent_idx]
-    parent_response_ids = batch.batch["responses"][parent_idx]
+    # Get parent prompt and response from global_batch
+    parent_prompt_ids = global_batch.batch["prompts"][parent_idx]
+    parent_response_ids = global_batch.batch["responses"][parent_idx]
 
     # Remove leading pads from parent prompt (left-padded)
     nonpad_mask = parent_prompt_ids != pad_token_id
@@ -305,7 +298,7 @@ def log_sample_generations(
         f"[step={step}][round={round_idx}] Parent (idx={parent_idx}, rid={parent_rid}) RESPONSE:\n{parent_response_text}"
     )
 
-    # Log all children responses
+    # Log all children responses from batch
     for i, child_idx in enumerate(child_indices):
         child_response_ids = batch.batch["responses"][child_idx]
 
@@ -321,7 +314,7 @@ def log_sample_generations(
         if len(child_response_text) > 500:
             child_response_text = child_response_text[:250] + "...[truncated]..." + child_response_text[-250:]
 
-        child_rid = rid[child_idx]
+        child_rid = batch_rid[child_idx] if batch_rid is not None else f"child_{child_idx}"
         logger_batch.info(
             f"[step={step}][round={round_idx}] Child {i} (idx={child_idx}, rid={child_rid}) RESPONSE:\n{child_response_text}"
         )
@@ -2230,6 +2223,17 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 new_sample_indices = set_opts_ttpo_info(batch, global_batch, next_states, round_idx)
                                 batch.non_tensor_batch["new_sample_indices"] = new_sample_indices
 
+                                # Log sample generations with parent-child verification (round_idx >= 1 means children exist)
+                                if round_idx >= 1 and sorted_states is not None:
+                                    log_sample_generations(
+                                        global_batch=global_batch,
+                                        batch=batch,
+                                        tokenizer=self.tokenizer,
+                                        step=self.global_steps,
+                                        round_idx=round_idx,
+                                        sorted_states=sorted_states,
+                                    )
+
                                 # Initialize state_branches, subtree_branches as all ones
                                 batch_size, response_len = batch.batch["responses"].shape
                                 batch.batch["state_branches"] = torch.ones(batch_size, response_len)
@@ -2259,16 +2263,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 else:
                                     global_batch = merge_batches(global_batch, batch)
                                 # log_batch_state(global_batch, stage="after_merge_to_global_batch", step=self.global_steps, round_idx=round_idx)
-
-                                # Log sample generations with parent-child verification (round_idx >= 1 means children exist)
-                                if round_idx >= 1 and sorted_states is not None:
-                                    log_sample_generations(
-                                        batch=global_batch,
-                                        tokenizer=self.tokenizer,
-                                        step=self.global_steps,
-                                        round_idx=round_idx,
-                                        sorted_states=sorted_states,
-                                    )
 
                             # For OPTS_TTPO, compute advantage on global_batch; otherwise on batch
                             target_batch = global_batch if opts_ttpo_mode else batch
