@@ -124,8 +124,6 @@ def log_batch_state(batch: DataProto, stage: str, step: int = -1, round_idx: int
         step: Global training step number.
         round_idx: OPTS round index (for multi-round generation).
     """
-    if round_idx == 0:
-        return
     step_info = f"step={step}" if step >= 0 else ""
     round_info = f"round={round_idx}" if round_idx >= 0 else ""
     prefix = f"[{step_info}][{round_info}][{stage}]"
@@ -171,11 +169,6 @@ def log_batch_state(batch: DataProto, stage: str, step: int = -1, round_idx: int
         resp_lens = resp_mask.sum(dim=-1)
         logger_batch.info(f"{prefix} response_lens: min={resp_lens.min().item()}, max={resp_lens.max().item()}, mean={resp_lens.float().mean().item():.1f}")
 
-    if 'token_level_scores' in batch.batch:
-        scores = batch.batch['token_level_scores']
-        total_scores = scores.sum(dim=-1)
-        logger_batch.info(f"{prefix} total_scores: min={total_scores.min().item():.4f}, max={total_scores.max().item():.4f}, mean={total_scores.mean().item():.4f}")
-
     if 'token_level_rewards' in batch.batch:
         rewards = batch.batch['token_level_rewards']
         total_rewards = rewards.sum(dim=-1)
@@ -189,64 +182,149 @@ def log_batch_state(batch: DataProto, stage: str, step: int = -1, round_idx: int
         vals = batch.batch['values']
         logger_batch.info(f"{prefix} values: min={vals.min().item():.4f}, max={vals.max().item():.4f}, mean={vals.mean().item():.4f}")
 
-    if 'old_log_probs' in batch.batch:
-        old_lp = batch.batch['old_log_probs']
-        logger_batch.info(f"{prefix} old_log_probs: min={old_lp.min().item():.4f}, max={old_lp.max().item():.4f}, mean={old_lp.mean().item():.4f}")
-
-    if 'ref_log_prob' in batch.batch:
-        ref_lp = batch.batch['ref_log_prob']
-        logger_batch.info(f"{prefix} ref_log_prob: min={ref_lp.min().item():.4f}, max={ref_lp.max().item():.4f}, mean={ref_lp.mean().item():.4f}")
-
     logger_batch.info(f"{prefix} === End Batch State ===")
 
 
-def log_sample_generations(batch: DataProto, tokenizer, step: int = 1, round_idx: int = 1, num_samples: int = 2) -> None:
+def log_sample_generations(
+    batch: DataProto,
+    tokenizer,
+    step: int = 1,
+    round_idx: int = 1,
+    sorted_states: List[Tuple[int, int]] = None,
+) -> None:
     """Log decoded sample prompts and responses for debugging.
 
+    This function finds the parent trajectory and its children based on sorted_states,
+    verifies that children's prompts match parent's prompt + partial response,
+    and logs the parent's prompt/response and all children's responses.
+
     Args:
-        batch: The DataProto batch containing prompts and responses.
+        batch: The DataProto batch containing prompts, responses, rid, and pid (global_batch in OPTS_TTPO mode).
         tokenizer: Tokenizer for decoding token ids to text.
         step: Global training step number.
         round_idx: OPTS round index.
-        num_samples: Number of samples to log.
+        sorted_states: Sorted list of (parent_idx, branch_pos) from select_next_states,
+                       sorted by descending branch_pos. If None or empty, function returns early.
     """
     if "prompts" not in batch.batch or "responses" not in batch.batch:
         return
 
-    num_samples = min(num_samples, batch.batch["prompts"].shape[0])
-    logger_batch.info(f"[step={step}][round={round_idx}] === Sample Generations ===")
+    if sorted_states is None or len(sorted_states) == 0:
+        return
+
+    rid = batch.non_tensor_batch.get("rid")
+    pid = batch.non_tensor_batch.get("pid")
+
+    if rid is None or pid is None:
+        logger_batch.warning(f"[step={step}][round={round_idx}] rid or pid not found in batch")
+        return
 
     pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
 
-    for i in range(num_samples):
-        prompt_ids = batch.batch["prompts"][i]
-        response_ids = batch.batch["responses"][i]
+    # 1. Find the trajectory corresponding to rid[sorted_states[0][0]]
+    parent_idx = sorted_states[0][0]
+    branch_pos = sorted_states[0][1]
+    parent_rid = rid[parent_idx]
 
-        # Remove leading pads from prompt (left-padded)
-        nonpad_mask = prompt_ids != pad_token_id
+    # Find children trajectories where pid == parent_rid (exclude None values explicitly)
+    child_indices = [i for i, p in enumerate(pid) if p is not None and p == parent_rid]
+
+    if len(child_indices) == 0:
+        logger_batch.warning(f"[step={step}][round={round_idx}] No children found for parent rid={parent_rid}")
+        return
+
+    # Get parent prompt and response
+    parent_prompt_ids = batch.batch["prompts"][parent_idx]
+    parent_response_ids = batch.batch["responses"][parent_idx]
+
+    # Remove leading pads from parent prompt (left-padded)
+    nonpad_mask = parent_prompt_ids != pad_token_id
+    if nonpad_mask.any():
+        first_nonpad = nonpad_mask.nonzero()[0].item()
+        parent_prompt_ids_valid = parent_prompt_ids[first_nonpad:]
+    else:
+        parent_prompt_ids_valid = parent_prompt_ids[:0]
+
+    # Parent's expected prompt for children = parent_prompt + partial response truncated by branch_pos
+    # branch_pos is the position in response where branching happened (0-indexed)
+    expected_prompt_ids = torch.cat([parent_prompt_ids_valid, parent_response_ids[: branch_pos + 1]], dim=0)
+
+    # 2. Check if all children's prompts match the expected prompt
+    for child_idx in child_indices:
+        child_prompt_ids = batch.batch["prompts"][child_idx]
+
+        # Remove leading pads from child prompt
+        nonpad_mask = child_prompt_ids != pad_token_id
         if nonpad_mask.any():
             first_nonpad = nonpad_mask.nonzero()[0].item()
-            prompt_ids = prompt_ids[first_nonpad:]
+            child_prompt_ids_valid = child_prompt_ids[first_nonpad:]
         else:
-            prompt_ids = prompt_ids[:0]
+            child_prompt_ids_valid = child_prompt_ids[:0]
 
-        # Remove trailing pads from response (right-padded)
-        nonpad_mask = response_ids != pad_token_id
+        # Check if child's prompt matches expected prompt
+        if not torch.equal(child_prompt_ids_valid, expected_prompt_ids):
+            logger_batch.error(
+                f"[step={step}][round={round_idx}] Prompt mismatch for child index {child_idx}!"
+            )
+            logger_batch.error(
+                f"Expected prompt length: {len(expected_prompt_ids)}, actual: {len(child_prompt_ids_valid)}"
+            )
+            logger_batch.error(
+                f"Expected prompt (last 50 tokens): {expected_prompt_ids[-50:].tolist()}"
+            )
+            logger_batch.error(
+                f"Actual prompt (last 50 tokens): {child_prompt_ids_valid[-50:].tolist()}"
+            )
+            return
+
+    # 3. Log: parent trajectory's prompt and response, and all children trajectories' responses
+    logger_batch.info(f"[step={step}][round={round_idx}] === Sample Generations (Parent + Children) ===")
+
+    # Parent prompt text
+    parent_prompt_text = tokenizer.decode(parent_prompt_ids_valid, skip_special_tokens=False)
+
+    # Remove trailing pads from parent response
+    nonpad_mask = parent_response_ids != pad_token_id
+    if nonpad_mask.any():
+        last_nonpad = nonpad_mask.nonzero()[-1].item()
+        parent_response_ids_valid = parent_response_ids[: last_nonpad + 1]
+    else:
+        parent_response_ids_valid = parent_response_ids[:0]
+    parent_response_text = tokenizer.decode(parent_response_ids_valid, skip_special_tokens=False)
+
+    # Truncate if too long
+    if len(parent_prompt_text) > 500:
+        parent_prompt_text = parent_prompt_text[:250] + "...[truncated]..." + parent_prompt_text[-250:]
+    if len(parent_response_text) > 500:
+        parent_response_text = parent_response_text[:250] + "...[truncated]..." + parent_response_text[-250:]
+
+    logger_batch.info(
+        f"[step={step}][round={round_idx}] Parent (idx={parent_idx}, rid={parent_rid}, branch_pos={branch_pos}) PROMPT:\n{parent_prompt_text}"
+    )
+    logger_batch.info(
+        f"[step={step}][round={round_idx}] Parent (idx={parent_idx}, rid={parent_rid}) RESPONSE:\n{parent_response_text}"
+    )
+
+    # Log all children responses
+    for i, child_idx in enumerate(child_indices):
+        child_response_ids = batch.batch["responses"][child_idx]
+
+        # Remove trailing pads from child response
+        nonpad_mask = child_response_ids != pad_token_id
         if nonpad_mask.any():
             last_nonpad = nonpad_mask.nonzero()[-1].item()
-            response_ids = response_ids[: last_nonpad + 1]
+            child_response_ids_valid = child_response_ids[: last_nonpad + 1]
         else:
-            response_ids = response_ids[:0]
+            child_response_ids_valid = child_response_ids[:0]
 
-        prompt_text = tokenizer.decode(prompt_ids, skip_special_tokens=False)
-        response_text = tokenizer.decode(response_ids, skip_special_tokens=False)
-        # Truncate if too long
-        if len(prompt_text) > 500:
-            prompt_text = prompt_text[:250] + "...[truncated]..." + prompt_text[-250:]
-        if len(response_text) > 500:
-            response_text = response_text[:250] + "...[truncated]..." + response_text[-250:]
-        logger_batch.info(f"[step={step}][round={round_idx}] Sample {i} PROMPT:\n{prompt_text}")
-        logger_batch.info(f"[step={step}][round={round_idx}] Sample {i} RESPONSE:\n{response_text}")
+        child_response_text = tokenizer.decode(child_response_ids_valid, skip_special_tokens=False)
+        if len(child_response_text) > 500:
+            child_response_text = child_response_text[:250] + "...[truncated]..." + child_response_text[-250:]
+
+        child_rid = rid[child_idx]
+        logger_batch.info(
+            f"[step={step}][round={round_idx}] Child {i} (idx={child_idx}, rid={child_rid}) RESPONSE:\n{child_response_text}"
+        )
 
     logger_batch.info(f"[step={step}][round={round_idx}] === End Sample Generations ===")
 
@@ -768,7 +846,6 @@ def select_next_states(
 
     # 4) Select best state per uid, directly return next_states format
     unique_uids = np.unique(uid)
-    logger_uid = unique_uids[0]
 
     def _select_for_uid(u) -> Tuple[str, Tuple[int, int]]:
         """Select the best state for a single uid, return (uid, (parent_idx, branch_pos))."""
@@ -792,11 +869,6 @@ def select_next_states(
             best_idx = root_indices[0]
             best_pos = -1
 
-        if logger_uid == u:
-            logger_batch.info(f"[select_next_states] root_advs: {root_advs}")
-            logger_batch.info(f"[select_next_states] root_gve: {root_gve}")
-            logger_batch.info(f"[select_next_states] root_tuct: {root_tuct}")
-
         return (u, (best_idx, best_pos))
 
     with ThreadPoolExecutor() as executor:
@@ -805,14 +877,23 @@ def select_next_states(
     next_states = dict(results)
     max_states = sorted(next_states.values(), key=lambda x: -x[1])[0]
     if max_states[1] != -1:
-        start_idx = max(max_states[1] - 10, 0)
-        end_idx = start_idx + 100
+        start_idx = max(max_states[1] - 5, 0)
+        end_idx = start_idx + 50
         logger_batch.info(f"[select_next_states] rewards[max_states[0]]: {rewards[max_states[0]][start_idx:end_idx].tolist()}")
         logger_batch.info(f"[select_next_states] advantages_mean[max_states[0]]: {advantages_mean[max_states[0]][start_idx:end_idx].tolist()}")
         logger_batch.info(f"[select_next_states] gve[max_states[0]]: {gve[max_states[0]][start_idx:end_idx].tolist()}")
         logger_batch.info(f"[select_next_states] trajectory_reward[max_states[0]][-1]: {trajectory_reward[max_states[0]][-1]}")
         logger_batch.info(f"[select_next_states] expected_traj_reward[max_states[0]]: {expected_traj_reward[max_states[0]][start_idx:end_idx].tolist()}")
         logger_batch.info(f"[select_next_states] tuct[max_states[0]]: {tuct[max_states[0]][start_idx:end_idx].tolist()}")
+
+        uid_indices = np.where(uid == uid[max_states[0]])[0]
+        root_indices = [i for i in uid_indices if pid[i] is None]
+        root_advs = advantages[root_indices, 0]
+        root_gve = values[root_indices[0], 0] + lam * root_advs.mean()
+        root_tuct = root_gve.item() + c
+        logger_batch.info(f"[select_next_states] root_advs: {root_advs}")
+        logger_batch.info(f"[select_next_states] root_gve: {root_gve}")
+        logger_batch.info(f"[select_next_states] root_tuct: {root_tuct}")
 
     # 5) Update subtree_branches and state_branches in-place (parallel)
     def _update_branches(item: Tuple[str, Tuple[int, int]]) -> None:
@@ -1932,6 +2013,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                 opts_ttpo_mode = self.config.actor_rollout_ref.rollout.search == "opts"
                 global_batch = None
                 next_states = {}
+                sorted_states = None  # Will be set by select_next_states, used in next round for logging
 
                 # OPTS_TTPO: Initialize raw_prompt_len before round loop
                 if opts_ttpo_mode:
@@ -1964,8 +2046,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 else:
                                     gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch_output)
                                 log_batch_state(gen_batch_output, stage="after_generate", step=self.global_steps, round_idx=round_idx)
-                                if round_idx > 1:
-                                    log_sample_generations(gen_batch_output, self.tokenizer, step=self.global_steps, round_idx=round_idx)
 
                             timing_raw.update(gen_batch_output.meta_info["timing"])
                             gen_batch_output.meta_info.pop("timing", None)
@@ -2179,6 +2259,16 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 else:
                                     global_batch = merge_batches(global_batch, batch)
                                 # log_batch_state(global_batch, stage="after_merge_to_global_batch", step=self.global_steps, round_idx=round_idx)
+
+                                # Log sample generations with parent-child verification (round_idx >= 1 means children exist)
+                                if round_idx >= 1 and sorted_states is not None:
+                                    log_sample_generations(
+                                        batch=global_batch,
+                                        tokenizer=self.tokenizer,
+                                        step=self.global_steps,
+                                        round_idx=round_idx,
+                                        sorted_states=sorted_states,
+                                    )
 
                             # For OPTS_TTPO, compute advantage on global_batch; otherwise on batch
                             target_batch = global_batch if opts_ttpo_mode else batch
