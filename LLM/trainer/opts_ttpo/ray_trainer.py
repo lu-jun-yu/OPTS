@@ -894,11 +894,6 @@ def select_next_states(
             local_best = weighted_exploitation.argmax().item()
             best_pos = seg_start + local_best
 
-            # Debug log for significant position changes
-            if abs(best_pos - original_best_pos) > 100:
-                logger_batch.debug(f"[_select_for_uid] uid={u}: original_pos={original_best_pos}, original_tuct={original_best_tuct:.4f}, "
-                                   f"root_tuct={root_tuct:.4f}, seg=[{seg_start},{seg_end}], middle={middle}, final_pos={best_pos}")
-
         return (u, (best_idx, best_pos))
 
     with ThreadPoolExecutor() as executor:
