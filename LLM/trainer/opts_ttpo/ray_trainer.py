@@ -868,25 +868,29 @@ def select_next_states(
         results = list(executor.map(_select_for_uid, unique_uids))
 
     next_states = dict(results)
-    max_states = sorted(next_states.values(), key=lambda x: -x[1])[0]
-    if max_states[1] != -1:
-        start_idx = max(max_states[1] - 5, 0)
-        end_idx = start_idx + 50
-        logger_batch.info(f"[select_next_states] rewards[max_states[0]]: {rewards[max_states[0]][start_idx:end_idx].tolist()}")
-        logger_batch.info(f"[select_next_states] advantages_mean[max_states[0]]: {advantages_mean[max_states[0]][start_idx:end_idx].tolist()}")
-        logger_batch.info(f"[select_next_states] gve[max_states[0]]: {gve[max_states[0]][start_idx:end_idx].tolist()}")
-        logger_batch.info(f"[select_next_states] trajectory_reward[max_states[0]][-1]: {trajectory_reward[max_states[0]][-1]}")
-        logger_batch.info(f"[select_next_states] expected_traj_reward[max_states[0]]: {expected_traj_reward[max_states[0]][start_idx:end_idx].tolist()}")
-        logger_batch.info(f"[select_next_states] tuct[max_states[0]]: {tuct[max_states[0]][start_idx:end_idx].tolist()}")
 
-        uid_indices = np.where(uid == uid[max_states[0]])[0]
-        root_indices = [i for i in uid_indices if pid[i] is None]
-        root_advs = advantages[root_indices, 0]
-        root_gve = values[root_indices[0], 0] + lam * root_advs.mean()
-        root_tuct = root_gve.item() + c
-        logger_batch.info(f"[select_next_states] root_advs: {root_advs}")
-        logger_batch.info(f"[select_next_states] root_gve: {root_gve}")
-        logger_batch.info(f"[select_next_states] root_tuct: {root_tuct}")
+    # Log debug info for the state with maximum branch_pos
+    if len(next_states) > 0:
+        max_state = sorted(next_states.values(), key=lambda x: -x[1])[0]
+        if max_state[1] != -1:
+            start_idx = max(max_state[1] - 5, 0)
+            end_idx = min(start_idx + 50, response_len - 1)  # Clamp to valid range for response_len-1 tensors
+            logger_batch.info(f"[select_next_states] rewards[max_state[0]]: {rewards[max_state[0]][start_idx:end_idx + 1].tolist()}")
+            logger_batch.info(f"[select_next_states] advantages_mean[max_state[0]]: {advantages_mean[max_state[0]][start_idx:end_idx].tolist()}")
+            logger_batch.info(f"[select_next_states] gve[max_state[0]]: {gve[max_state[0]][start_idx:end_idx].tolist()}")
+            logger_batch.info(f"[select_next_states] trajectory_reward[max_state[0]][-1]: {trajectory_reward[max_state[0]][-1]}")
+            logger_batch.info(f"[select_next_states] expected_traj_reward[max_state[0]]: {expected_traj_reward[max_state[0]][start_idx:end_idx].tolist()}")
+            logger_batch.info(f"[select_next_states] tuct[max_state[0]]: {tuct[max_state[0]][start_idx:end_idx].tolist()}")
+
+            uid_indices = np.where(uid == uid[max_state[0]])[0]
+            root_indices = [i for i in uid_indices if pid[i] is None]
+            if len(root_indices) > 0:
+                root_advs = advantages[root_indices, 0]
+                root_gve = values[root_indices[0], 0] + lam * root_advs.mean()
+                root_tuct = root_gve.item() + c
+                logger_batch.info(f"[select_next_states] root_advs: {root_advs}")
+                logger_batch.info(f"[select_next_states] root_gve: {root_gve}")
+                logger_batch.info(f"[select_next_states] root_tuct: {root_tuct}")
 
     # 5) Update subtree_branches and state_branches in-place (parallel)
     def _update_branches(item: Tuple[str, Tuple[int, int]]) -> None:
