@@ -81,7 +81,7 @@ from .core_algos import (
 
 
 # Setup logging for batch tracking
-logger_batch = logging.getLogger("opts_ttpo.batch_tracker")
+logger_batch = logging.getLogger("opts_ttpo")
 logger_batch.setLevel(logging.DEBUG)
 logger_batch.propagate = False  # Prevent duplicate logs from propagating to root logger
 if not logger_batch.handlers:
