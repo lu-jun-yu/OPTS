@@ -762,7 +762,6 @@ def select_next_states(
     # Extract tensors from batch (these are references, modifications are in-place)
     rewards = batch.batch["token_level_rewards"]
     advantages = batch.batch["advantages"]
-    old_log_probs = batch.batch["old_log_probs"]
     lam_t = batch.batch["lam_t"]
     subtree_branches = batch.batch["subtree_branches"]
     state_branches = batch.batch["state_branches"]
@@ -790,7 +789,7 @@ def select_next_states(
     )
 
     # 2) Compute TUCT: exploitation * exploration
-    exploitation = advantages[:, :-1] / torch.exp(old_log_probs[:, :-1])
+    exploitation = advantages[:, :-1]
     exploration = torch.sqrt(torch.log(partree_branches[:, :-1] + 1)) / (subtree_branches[:, :-1] + 1e-8)
     tuct = exploitation * exploration
     tuct = torch.where(response_mask[:, 1:] > 0, tuct, torch.tensor(-float('inf')))
@@ -841,7 +840,6 @@ def select_next_states(
             end_idx = min(start_idx + 50, response_len - 1)
             logger_batch.info(f"[select_next_states] rewards[max_state[0]]: {rewards[max_state[0]][start_idx:end_idx + 1].tolist()}")
             logger_batch.info(f"[select_next_states] advantages[max_state[0]]: {advantages[max_state[0]][start_idx:end_idx].tolist()}")
-            logger_batch.info(f"[select_next_states] old_log_probs[max_state[0]]: {old_log_probs[max_state[0]][start_idx:end_idx].tolist()}")
             logger_batch.info(f"[select_next_states] exploitation[max_state[0]]: {exploitation[max_state[0]][start_idx:end_idx].tolist()}")
             logger_batch.info(f"[select_next_states] exploration[max_state[0]]: {exploration[max_state[0]][start_idx:end_idx].tolist()}")
             logger_batch.info(f"[select_next_states] tuct[max_state[0]] around final_pos: {tuct[max_state[0]][start_idx:end_idx].tolist()}")

@@ -203,7 +203,7 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 
 **tuct[t]**：Tree UCT 值
 - 公式：exploitation[t] * exploration[t]
-- 利用项：exploitation = advantages / exp(old_log_probs)，即动作优势除以动作概率
+- 利用项：exploitation = advantages，即动作优势
 - 探索项：exploration = sqrt(log(N_parent + 1)) / N_child（UCB1 风格）
 - 与常数 root_tuct 比较，决定是否从根状态重新开始
 
@@ -306,7 +306,7 @@ for epoch in ...:
                     1) 计算 partree_branches（父分支点的 subtree_branches）
 
                     2) 计算 TUCT：
-                       - exploitation = advantages / exp(old_log_probs)
+                       - exploitation = advantages
                        - exploration = sqrt(log(partree_branches + 1)) / subtree_branches
                        - tuct = exploitation * exploration
 
@@ -364,12 +364,11 @@ $$
 ### 5.2 TUCT
 
 $$
-\text{TUCT}(s_t) = \underbrace{\frac{A(s_t)}{\pi(a_t|s_t)}}_{\text{利用项}} \cdot \underbrace{\frac{\sqrt{\log (N_{\text{parent}} + 1)}}{N_{\text{child}}}}_{\text{探索项}}
+\text{TUCT}(s_t) = \underbrace{A(s_t)}_{\text{利用项}} \cdot \underbrace{\frac{\sqrt{\log (N_{\text{parent}} + 1)}}{N_{\text{child}}}}_{\text{探索项}}
 $$
 
 其中：
 - $A(s_t)$ 为状态 $t$ 的优势值
-- $\pi(a_t|s_t) = e^{\log \pi(a_t|s_t)}$ 为动作概率
 - $N_{\text{parent}}$ 为父分支点的 subtree_branches
 - $N_{\text{child}}$ 为当前状态的 subtree_branches
 - 与常数 root_tuct 比较，决定是否从根状态重新开始
