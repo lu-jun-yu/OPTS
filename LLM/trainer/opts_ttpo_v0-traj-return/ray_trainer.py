@@ -684,24 +684,29 @@ def compute_forward_values(
     batch: DataProto,
     global_batch: Optional[DataProto],
     next_states: Dict[str, Tuple[int, int]],
+    gamma: float,
     lam: float,
-) -> torch.Tensor:
-    """Compute forward values for OPTS_TTPO: lam_t.
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute forward values for OPTS_TTPO: gamma_t, lam_t, trajectory_reward.
 
     Args:
-        batch: Current round's batch containing response_mask, pid, uid.
+        batch: Current round's batch containing token_level_rewards, response_mask, pid, uid.
         global_batch: Global batch from previous rounds (None for first round).
         next_states: Dict mapping uid to (parent_idx, branch_pos).
+        gamma: Discount factor.
         lam: Lambda for GAE.
 
     Returns:
+        gamma_t: shape (batch_size, response_len)
         lam_t: shape (batch_size, response_len)
+        trajectory_reward: shape (batch_size, response_len)
     """
+    token_level_rewards = batch.batch["token_level_rewards"]
     response_mask = batch.batch["response_mask"]
     pid = batch.non_tensor_batch["pid"]
     uid = batch.non_tensor_batch["uid"]
 
-    batch_size, response_len = response_mask.shape
+    batch_size, response_len = token_level_rewards.shape
 
     # Build rid2idx from global_batch
     rid2idx = {}
@@ -718,29 +723,48 @@ def compute_forward_values(
 
     # Initialize from parent or default values
     if global_batch is not None and has_parent.any():
+        parent_gamma_t = global_batch.batch["gamma_t"]
         parent_lam_t = global_batch.batch["lam_t"]
+        parent_trajectory_reward = global_batch.batch["trajectory_reward"]
+        init_gamma = torch.where(has_parent, parent_gamma_t[parent_indices, branch_pos], torch.tensor(1.0 / gamma))
         init_lam = torch.where(has_parent, parent_lam_t[parent_indices, branch_pos], torch.tensor(1.0 / lam))
+        init_traj_reward = torch.where(has_parent, parent_trajectory_reward[parent_indices, branch_pos], torch.tensor(0.0))
     else:
+        init_gamma = torch.full((batch_size,), 1.0 / gamma)
         init_lam = torch.full((batch_size,), 1.0 / lam)
+        init_traj_reward = torch.zeros(batch_size)
 
     # Forward loop (vectorized over batch, sequential over time)
-    lam_t_list = []
-    last_lam = init_lam
+    gamma_t_list, lam_t_list, traj_reward_list = [], [], []
+    last_gamma, last_lam, last_traj = init_gamma, init_lam, init_traj_reward
 
     for t in range(response_len):
         mask_t = response_mask[:, t]
+        # Only accumulate when response_mask is 1
+        new_gamma = last_gamma * gamma
         new_lam = last_lam * lam
+        new_traj = last_traj + new_gamma * token_level_rewards[:, t]
+
+        last_gamma = torch.where(mask_t > 0, new_gamma, last_gamma)
         last_lam = torch.where(mask_t > 0, new_lam, last_lam)
+        last_traj = torch.where(mask_t > 0, new_traj, last_traj)
+
+        gamma_t_list.append(last_gamma)
         lam_t_list.append(last_lam)
+        traj_reward_list.append(last_traj)
 
+    gamma_t = torch.stack(gamma_t_list, dim=1)
     lam_t = torch.stack(lam_t_list, dim=1)
+    trajectory_reward = torch.stack(traj_reward_list, dim=1)
 
-    return lam_t
+    return gamma_t, lam_t, trajectory_reward
 
 
 def select_next_states(
     batch: DataProto,
-    root_tuct: float,
+    lam: float,
+    c: float,
+    alpha: float,
     round_idx: int,
     n_samples_per_round: int,
     max_prompt_length: int,
@@ -751,7 +775,9 @@ def select_next_states(
 
     Args:
         batch: DataProto containing all required tensors and non-tensor data
-        root_tuct: TUCT value for root state comparison (default 0.5)
+        lam: GAE lambda
+        c: TUCT exploration constant
+        alpha: Decay factor for TUCT
         round_idx: current round index
         n_samples_per_round: number of samples per round (n)
         max_prompt_length: maximum allowed prompt length
@@ -761,8 +787,11 @@ def select_next_states(
     """
     # Extract tensors from batch (these are references, modifications are in-place)
     rewards = batch.batch["token_level_rewards"]
+    values = batch.batch["values"]
     advantages = batch.batch["advantages"]
-    old_log_probs = batch.batch["old_log_probs"]
+    advantages_mean = batch.batch["advantages_mean"]
+    trajectory_reward = batch.batch["trajectory_reward"]
+    gamma_t = batch.batch["gamma_t"]
     lam_t = batch.batch["lam_t"]
     subtree_branches = batch.batch["subtree_branches"]
     state_branches = batch.batch["state_branches"]
@@ -779,31 +808,37 @@ def select_next_states(
     prompt_len = batch.batch["input_ids"].shape[1] - batch.batch["responses"].shape[1]
     prompt_lengths = batch.batch["attention_mask"][:, :prompt_len].sum(dim=1)
 
-    batch_size, response_len = advantages.shape
+    batch_size, response_len = values.shape
     rid2idx = {r: i for i, r in enumerate(rid)}
 
-    # 1) Compute partree_branches
+    # 1) Compute GVE and expected trajectory reward
+    gve = values[:, 1:] + lam * advantages_mean
+    expected_traj_reward = trajectory_reward[:, :-1] + gamma_t[:, :-1] * gve
+
+    # 2) Compute partree_branches
     partree_branches = compute_partree_branches(
         cid=cid, pid=pid, subtree_branches=subtree_branches,
         round_idx=round_idx, n_samples_per_round=n_samples_per_round,
         rid2idx=rid2idx, parent_branch_pos=parent_branch_pos,
     )
 
-    # 2) Compute TUCT: exploitation * exploration
-    exploitation = advantages[:, :-1] / torch.exp(old_log_probs[:, :-1])
-    exploration = torch.sqrt(torch.log(partree_branches[:, :-1] + 1)) / (subtree_branches[:, :-1] + 1e-8)
-    tuct = exploitation * exploration
+    # 3) Compute TUCT: exploitation * lam_t + exploration
+    exploitation = expected_traj_reward * lam_t[:, 1:]
+    exploitation = torch.where(response_mask[:, 1:] > 0, exploitation, torch.tensor(-float('inf')))
+    exploration = c * torch.sqrt(torch.log(partree_branches[:, :-1])) / (subtree_branches[:, :-1] + 1e-8)
+    tuct = exploitation + exploration
     tuct = torch.where(response_mask[:, 1:] > 0, tuct, torch.tensor(-float('inf')))
 
     # Mask positions that would exceed max_prompt_length
     pos_indices = torch.arange(response_len - 1).unsqueeze(0)
     pos_mask = (pos_indices + prompt_lengths.unsqueeze(1)) < max_prompt_length
+    exploitation = torch.where(pos_mask, exploitation, torch.tensor(-float('inf')))
     tuct = torch.where(pos_mask, tuct, torch.tensor(-float('inf')))
 
     extra_response_len = pos_mask.sum(dim=1)
     logger_batch.info(f"[select_next_states] extra_response_len: min={extra_response_len.min().item()}, max={extra_response_len.max().item()}, mean={extra_response_len.float().mean().item():.2f}")
 
-    # 3) Select best state per uid, directly return next_states format
+    # 4) Select best state per uid, directly return next_states format
     unique_uids = np.unique(uid)
 
     def _select_for_uid(u) -> Tuple[str, Tuple[int, int]]:
@@ -819,11 +854,44 @@ def select_next_states(
         best_idx = uid_indices[traj_idx]
         best_pos = pos_idx
 
-        # Compare with root TUCT (constant parameter)
+        # Compare with root TUCT (from prompt start)
         root_indices = [i for i in uid_indices if pid[i] is None]
+        root_advs = advantages[root_indices, 0]
+        root_gve = values[root_indices[0], 0] + lam * root_advs.mean()
+        root_tuct = root_gve.item() + c * 1.6
         if root_tuct > best_tuct:
             best_idx = root_indices[0]
             best_pos = -1
+            return (u, (best_idx, best_pos))
+
+        # Non-root state selected: check if best_pos is a branch node
+        trajectory_cid = cid[best_idx]
+        branch_positions = sorted(trajectory_cid.keys())
+        valid_end = response_mask[best_idx].sum().long().item() - 1
+
+        if best_pos in branch_positions:
+            return (u, (best_idx, best_pos))
+
+        # best_pos is not a branch node: refine using decay_factor within chain segment
+        prev_branch = -1
+        next_branch = valid_end
+        for bp in branch_positions:
+            if bp < best_pos:
+                prev_branch = bp
+            elif bp > best_pos:
+                next_branch = bp
+                break
+
+        seg_start = prev_branch + 1
+        seg_end = next_branch - 1
+
+        seg_exploitation = exploitation[best_idx, seg_start:seg_end + 1]
+        segment_len = seg_end - seg_start + 1
+        middle = segment_len // 2
+        seg_decay = torch.tensor([alpha ** abs(t - middle) for t in range(segment_len)])
+        weighted_exploitation = seg_exploitation * seg_decay
+        local_best = weighted_exploitation.argmax().item()
+        best_pos = seg_start + local_best
 
         return (u, (best_idx, best_pos))
 
@@ -840,17 +908,27 @@ def select_next_states(
             start_idx = max(max_state[1] - 5, 0)
             end_idx = min(start_idx + 50, response_len - 1)
             logger_batch.info(f"[select_next_states] rewards[max_state[0]]: {rewards[max_state[0]][start_idx:end_idx + 1].tolist()}")
-            logger_batch.info(f"[select_next_states] advantages[max_state[0]]: {advantages[max_state[0]][start_idx:end_idx].tolist()}")
-            logger_batch.info(f"[select_next_states] old_log_probs[max_state[0]]: {old_log_probs[max_state[0]][start_idx:end_idx].tolist()}")
-            logger_batch.info(f"[select_next_states] exploitation[max_state[0]]: {exploitation[max_state[0]][start_idx:end_idx].tolist()}")
-            logger_batch.info(f"[select_next_states] exploration[max_state[0]]: {exploration[max_state[0]][start_idx:end_idx].tolist()}")
+            logger_batch.info(f"[select_next_states] advantages_mean[max_state[0]]: {advantages_mean[max_state[0]][start_idx:end_idx].tolist()}")
+            logger_batch.info(f"[select_next_states] gve[max_state[0]]: {gve[max_state[0]][start_idx:end_idx].tolist()}")
+            logger_batch.info(f"[select_next_states] trajectory_reward[max_state[0]][-1]: {trajectory_reward[max_state[0]][-1]}")
+            logger_batch.info(f"[select_next_states] expected_traj_reward[max_state[0]]: {expected_traj_reward[max_state[0]][start_idx:end_idx].tolist()}")
             logger_batch.info(f"[select_next_states] tuct[max_state[0]] around final_pos: {tuct[max_state[0]][start_idx:end_idx].tolist()}")
 
             # Also print tuct values at the beginning to check original best_tuct
             logger_batch.info(f"[select_next_states] tuct[max_state[0]] at start (0-50): {tuct[max_state[0]][0:50].tolist()}")
             logger_batch.info(f"[select_next_states] tuct[max_state[0]] max value: {tuct[max_state[0]].max().item():.4f}, argmax: {tuct[max_state[0]].argmax().item()}")
 
-    # 4) Update subtree_branches and state_branches in-place (parallel)
+            uid_indices = np.where(uid == uid[max_state[0]])[0]
+            root_indices = [i for i in uid_indices if pid[i] is None]
+            if len(root_indices) > 0:
+                root_advs = advantages[root_indices, 0]
+                root_gve = values[root_indices[0], 0] + lam * root_advs.mean()
+                root_tuct = root_gve.item() + c * 1.6
+                logger_batch.info(f"[select_next_states] root_advs: {root_advs}")
+                logger_batch.info(f"[select_next_states] root_gve: {root_gve}")
+                logger_batch.info(f"[select_next_states] root_tuct: {root_tuct}")
+
+    # 5) Update subtree_branches and state_branches in-place (parallel)
     def _update_branches(item: Tuple[str, Tuple[int, int]]) -> None:
         u, (idx, pos) = item
         if pos >= 0:
@@ -2203,15 +2281,18 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 batch.batch["advantages_mean"] = torch.zeros(batch_size, response_len - 1)
                                 batch.batch["returns"] = torch.zeros(batch_size, response_len)
 
-                                # Compute forward values (lam_t)
+                                # Compute forward values (gamma_t, lam_t, trajectory_reward)
                                 with timed_block("compute_forward_values", step=self.global_steps, round_idx=round_idx):
-                                    lam_t = compute_forward_values(
+                                    gamma_t, lam_t, trajectory_reward = compute_forward_values(
                                         batch=batch,
                                         global_batch=global_batch,
                                         next_states=next_states,
+                                        gamma=self.config.algorithm.gamma,
                                         lam=self.config.algorithm.lam,
                                     )
+                                batch.batch["gamma_t"] = gamma_t
                                 batch.batch["lam_t"] = lam_t
+                                batch.batch["trajectory_reward"] = trajectory_reward
 
                                 # Merge local_batch to global_batch
                                 if global_batch is None:
@@ -2246,7 +2327,9 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 with timed_block("select_next_states", step=self.global_steps, round_idx=round_idx):
                                     next_states = select_next_states(
                                         batch=global_batch,
-                                        root_tuct=self.config.actor_rollout_ref.rollout.root_tuct,
+                                        lam=self.config.algorithm.lam,
+                                        c=self.config.actor_rollout_ref.rollout.c,
+                                        alpha=self.config.actor_rollout_ref.rollout.alpha,
                                         round_idx=round_idx,
                                         n_samples_per_round=self.config.actor_rollout_ref.rollout.n,
                                         max_prompt_length=self.config.data.max_prompt_length,
