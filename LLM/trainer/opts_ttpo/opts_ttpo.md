@@ -303,15 +303,16 @@ for epoch in ...:
 
             if opts_ttpo and i < g - 1:  # 仅在非最后一轮执行
                 - (全局batch) select_next_states：用 TUCT 选择下一轮扩展的状态
-                    1) 计算 partree_branches（父分支点的 subtree_branches）
+                    1) 计算 branch_weight_factors 作为探索项
 
                     2) 计算 TUCT：
                        - exploitation = advantages
-                       - exploration = sqrt(log(partree_branches + 1)) / subtree_branches
+                       - exploration = branch_weight_factors
                        - tuct = exploitation * exploration
 
                     3) 为每个 uid 选择 TUCT 最高的状态：
-                       - 与常数 root_tuct 比较，决定是否从根状态重新开始
+                       - 计算动态阈值：uid_root_tuct = max(mean(advantages[uid_indices]), root_tuct)
+                       - 与动态阈值 uid_root_tuct 比较，决定是否从根状态重新开始
                        - 返回 selected_states = [(rid, pos), ...]
 
                     4) 更新 subtree_branches：沿祖先链向上传播（+= n）
@@ -364,14 +365,14 @@ $$
 ### 5.2 TUCT
 
 $$
-\text{TUCT}(s_t) = \underbrace{A(s_t)}_{\text{利用项}} \cdot \underbrace{\frac{\sqrt{\log (N_{\text{parent}} + 1)}}{N_{\text{child}}}}_{\text{探索项}}
+\text{TUCT}(s_t) = \underbrace{A(s_t)}_{\text{利用项}} \cdot \underbrace{W_t}_{\text{探索项}}
 $$
 
 其中：
 - $A(s_t)$ 为状态 $t$ 的优势值
-- $N_{\text{parent}}$ 为父分支点的 subtree_branches
-- $N_{\text{child}}$ 为当前状态的 subtree_branches
-- 与常数 root_tuct 比较，决定是否从根状态重新开始
+- $W_t$ 为 branch_weight_factor，即祖先轨迹所有分支数的累乘
+- 与动态阈值 $\max(\bar{A}_{\text{uid}}, \text{root\_tuct})$ 比较，决定是否从根状态重新开始
+  - $\bar{A}_{\text{uid}}$ 为该 uid 下所有样本优势值的平均值
 
 ### 5.3 TTPO 策略梯度
 

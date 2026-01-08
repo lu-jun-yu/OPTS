@@ -781,16 +781,17 @@ def select_next_states(
     batch_size, response_len = advantages.shape
     rid2idx = {r: i for i, r in enumerate(rid)}
 
-    # 1) Compute partree_branches
-    partree_branches = compute_partree_branches(
-        cid=cid, pid=pid, subtree_branches=subtree_branches,
-        round_idx=round_idx, n_samples_per_round=n_samples_per_round,
-        rid2idx=rid2idx, parent_branch_pos=parent_branch_pos,
+    # 1) Compute branch_weight_factors as exploration term
+    branch_weight_factors = compute_branch_weight_factors(
+        state_branches=state_branches,
+        pid=pid,
+        rid=rid,
+        branch_pos=parent_branch_pos,
     )
 
     # 2) Compute TUCT: exploitation * exploration
     exploitation = advantages[:, :-1]
-    exploration = torch.sqrt(torch.log(partree_branches[:, :-1] + 1)) / (subtree_branches[:, :-1] + 1e-8)
+    exploration = branch_weight_factors[:, :-1]
     tuct = exploitation * exploration
     tuct = torch.where(response_mask[:, 1:] > 0, tuct, torch.tensor(-float('inf')))
 
@@ -818,9 +819,12 @@ def select_next_states(
         best_idx = uid_indices[traj_idx]
         best_pos = pos_idx
 
+        # Update root_tuct with mean advantage of this uid
+        uid_root_tuct = max(advantages[uid_indices].mean().item(), root_tuct)
+
         # Compare with root TUCT (constant parameter)
         root_indices = [i for i in uid_indices if pid[i] is None]
-        if root_tuct > best_tuct:
+        if uid_root_tuct > best_tuct:
             best_idx = root_indices[0]
             best_pos = -1
 
