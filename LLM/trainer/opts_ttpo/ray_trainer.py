@@ -75,7 +75,6 @@ from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 from .core_algos import (
     AdvantageEstimator,
     agg_loss,
-    compute_partree_branches,
     compute_branch_weight_factors,
 )
 
@@ -504,7 +503,7 @@ def compute_advantage(
         # TreeGAE for OPTS_TTPO: compute advantages on tree-structured trajectories
         from .core_algos import compute_treegae_advantage_return
 
-        advantages, returns, advantages_mean = compute_treegae_advantage_return(
+        advantages, returns = compute_treegae_advantage_return(
             token_level_rewards=data.batch["token_level_rewards"],
             values=data.batch["values"],
             response_mask=data.batch["response_mask"],
@@ -517,11 +516,9 @@ def compute_advantage(
             new_sample_indices=data.non_tensor_batch["new_sample_indices"],
             next_states=next_states,
             advantages=data.batch["advantages"],
-            advantages_mean=data.batch["advantages_mean"],
         )
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
-        data.batch["advantages_mean"] = advantages_mean
     else:
         # handle all other adv estimator type other than GAE and GRPO
         adv_estimator_fn = core_algos.get_adv_estimator_fn(adv_estimator)
@@ -654,6 +651,14 @@ def set_opts_ttpo_info(
         pid = np.array([global_rid[next_states[u][0]] if next_states[u][1] != -1 else None for u in uid], dtype=object)
         branch_pos = np.array([next_states[u][1] for u in uid], dtype=np.int32)
 
+    # Set tid and tree_branches
+    tree_branches = global_batch.meta_info.get('tree_branches', {}) if global_batch is not None else {}
+    global_tid = global_batch.non_tensor_batch.get('tid') if global_batch is not None else None
+    rid2idx = {r: i for i, r in enumerate(global_batch.non_tensor_batch['rid'])} if global_batch is not None else {}
+    tid = np.array([f"t{round_idx}_{i}" if pid[i] is None else global_tid[rid2idx[pid[i]]] for i in range(batch_size)], dtype=object)
+    for i in range(batch_size):
+        tree_branches[tid[i]] = tree_branches.get(tid[i], 0) + 1
+
     # Initialize cid as empty OrderedDict for each sample
     cid = np.array([OrderedDict() for _ in range(batch_size)], dtype=object)
 
@@ -674,68 +679,12 @@ def set_opts_ttpo_info(
     local_batch.non_tensor_batch['pid'] = pid
     local_batch.non_tensor_batch['branch_pos'] = branch_pos
     local_batch.non_tensor_batch['cid'] = cid
+    local_batch.non_tensor_batch['tid'] = tid
+    local_batch.meta_info['tree_branches'] = tree_branches
 
     # Compute new_sample_indices
     global_size = len(global_batch.non_tensor_batch['rid']) if global_batch is not None else 0
     return np.arange(global_size, global_size + batch_size)
-
-
-def compute_forward_values(
-    batch: DataProto,
-    global_batch: Optional[DataProto],
-    next_states: Dict[str, Tuple[int, int]],
-    lam: float,
-) -> torch.Tensor:
-    """Compute forward values for OPTS_TTPO: lam_t.
-
-    Args:
-        batch: Current round's batch containing response_mask, pid, uid.
-        global_batch: Global batch from previous rounds (None for first round).
-        next_states: Dict mapping uid to (parent_idx, branch_pos).
-        lam: Lambda for GAE.
-
-    Returns:
-        lam_t: shape (batch_size, response_len)
-    """
-    response_mask = batch.batch["response_mask"]
-    pid = batch.non_tensor_batch["pid"]
-    uid = batch.non_tensor_batch["uid"]
-
-    batch_size, response_len = response_mask.shape
-
-    # Build rid2idx from global_batch
-    rid2idx = {}
-    if global_batch is not None:
-        rid2idx = {r: i for i, r in enumerate(global_batch.non_tensor_batch["rid"])}
-
-    # Compute parent_branch_pos from next_states
-    parent_branch_pos = [next_states.get(u, (None, 0))[1] if u in next_states else 0 for u in uid]
-
-    # Build parent indices and mask
-    has_parent = torch.tensor([p is not None and p in rid2idx for p in pid])
-    parent_indices = torch.tensor([rid2idx.get(p, 0) if p is not None else 0 for p in pid], dtype=torch.long)
-    branch_pos = torch.tensor(parent_branch_pos, dtype=torch.long)
-
-    # Initialize from parent or default values
-    if global_batch is not None and has_parent.any():
-        parent_lam_t = global_batch.batch["lam_t"]
-        init_lam = torch.where(has_parent, parent_lam_t[parent_indices, branch_pos], torch.tensor(1.0 / lam))
-    else:
-        init_lam = torch.full((batch_size,), 1.0 / lam)
-
-    # Forward loop (vectorized over batch, sequential over time)
-    lam_t_list = []
-    last_lam = init_lam
-
-    for t in range(response_len):
-        mask_t = response_mask[:, t]
-        new_lam = last_lam * lam
-        last_lam = torch.where(mask_t > 0, new_lam, last_lam)
-        lam_t_list.append(last_lam)
-
-    lam_t = torch.stack(lam_t_list, dim=1)
-
-    return lam_t
 
 
 def select_next_states(
@@ -747,7 +696,7 @@ def select_next_states(
 ) -> Dict[str, Tuple[int, int]]:
     """Select next states for expansion using TUCT.
 
-    This function updates batch's subtree_branches and state_branches in-place.
+    This function updates batch's state_branches in-place.
 
     Args:
         batch: DataProto containing all required tensors and non-tensor data
@@ -762,8 +711,6 @@ def select_next_states(
     # Extract tensors from batch (these are references, modifications are in-place)
     rewards = batch.batch["token_level_rewards"]
     advantages = batch.batch["advantages"]
-    lam_t = batch.batch["lam_t"]
-    subtree_branches = batch.batch["subtree_branches"]
     state_branches = batch.batch["state_branches"]
     response_mask = batch.batch["response_mask"]
 
@@ -773,6 +720,8 @@ def select_next_states(
     pid = batch.non_tensor_batch["pid"]
     cid = list(batch.non_tensor_batch["cid"])
     parent_branch_pos = batch.non_tensor_batch["branch_pos"]
+    tid = batch.non_tensor_batch["tid"]
+    tree_branches = batch.meta_info["tree_branches"]
 
     # Compute prompt_lengths
     prompt_len = batch.batch["input_ids"].shape[1] - batch.batch["responses"].shape[1]
@@ -781,7 +730,7 @@ def select_next_states(
     batch_size, response_len = advantages.shape
     rid2idx = {r: i for i, r in enumerate(rid)}
 
-    # 1) Compute branch_weight_factors as exploration term
+    # 1) Compute branch_weight_factors as exploitation weight
     branch_weight_factors = compute_branch_weight_factors(
         state_branches=state_branches,
         pid=pid,
@@ -789,9 +738,12 @@ def select_next_states(
         branch_pos=parent_branch_pos,
     )
 
-    # 2) Compute TUCT: exploitation * exploration
-    exploitation = advantages[:, :-1]
-    exploration = branch_weight_factors[:, :-1]
+    # 2) Compute tree_branches_N for each response based on tid
+    tree_branches_N = torch.tensor([tree_branches[t] for t in tid], dtype=torch.float32)
+
+    # 3) Compute TUCT: exploitation * exploration
+    exploitation = advantages[:, :-1] / (branch_weight_factors[:, :-1] * state_branches[:, :-1])
+    exploration = torch.sqrt(torch.log(torch.tensor((round_idx + 1) * n_samples_per_round + 1, dtype=torch.float32))) / tree_branches_N.unsqueeze(1)
     tuct = exploitation * exploration
     tuct = torch.where(response_mask[:, 1:] > 0, tuct, torch.tensor(-float('inf')))
 
@@ -852,23 +804,12 @@ def select_next_states(
             logger_batch.info(f"[select_next_states] tuct[max_state[0]] at start (0-50): {tuct[max_state[0]][0:50].tolist()}")
             logger_batch.info(f"[select_next_states] tuct[max_state[0]] max value: {tuct[max_state[0]].max().item():.4f}, argmax: {tuct[max_state[0]].argmax().item()}")
 
-    # 4) Update subtree_branches and state_branches in-place (parallel)
-    def _update_branches(item: Tuple[str, Tuple[int, int]]) -> None:
-        u, (idx, pos) = item
-        if pos >= 0:
-            state_branches[idx, pos] += n_samples_per_round
-            current_idx = idx
-            bp = pos
-            while True:
-                subtree_branches[current_idx, :bp + 1] += n_samples_per_round
-                parent_rid = pid[current_idx]
-                if parent_rid is None or parent_rid not in rid2idx:
-                    break
-                current_idx = rid2idx[parent_rid]
-                bp = parent_branch_pos[current_idx]
-
-    with ThreadPoolExecutor() as executor:
-        list(executor.map(_update_branches, next_states.items()))
+    # 4) Update state_branches using torch operations
+    update_indices = [(idx, pos) for idx, pos in next_states.values() if pos >= 0]
+    if update_indices:
+        idx_tensor = torch.tensor([idx for idx, pos in update_indices], dtype=torch.long)
+        pos_tensor = torch.tensor([pos for idx, pos in update_indices], dtype=torch.long)
+        state_branches[idx_tensor, pos_tensor] += n_samples_per_round
 
     return next_states
     
@@ -2195,25 +2136,13 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                         sorted_states=sorted_states,
                                     )
 
-                                # Initialize state_branches, subtree_branches as all ones
+                                # Initialize state_branches as all ones
                                 batch_size, response_len = batch.batch["responses"].shape
                                 batch.batch["state_branches"] = torch.ones(batch_size, response_len)
-                                batch.batch["subtree_branches"] = torch.ones(batch_size, response_len)
 
-                                # Initialize advantages, advantages_mean, returns as all zeros
+                                # Initialize advantages and returns as all zeros
                                 batch.batch["advantages"] = torch.zeros(batch_size, response_len)
-                                batch.batch["advantages_mean"] = torch.zeros(batch_size, response_len - 1)
                                 batch.batch["returns"] = torch.zeros(batch_size, response_len)
-
-                                # Compute forward values (lam_t)
-                                with timed_block("compute_forward_values", step=self.global_steps, round_idx=round_idx):
-                                    lam_t = compute_forward_values(
-                                        batch=batch,
-                                        global_batch=global_batch,
-                                        next_states=next_states,
-                                        lam=self.config.algorithm.lam,
-                                    )
-                                batch.batch["lam_t"] = lam_t
 
                                 # Merge local_batch to global_batch
                                 if global_batch is None:

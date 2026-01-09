@@ -76,9 +76,7 @@ actor_rollout_ref:
 | 键名 | 形状 | 说明 |
 |------|------|------|
 | advantages_mean | (bs, response_len-1) | 分支节点处所有动作的平均优势 |
-| lam_t | (bs, response_len) | lam 的累乘：λ^t |
 | state_branches | (bs, response_len) | 每个状态的分支数 |
-| subtree_branches | (bs, response_len) | 子树的轨迹数 |
 | branch_weight_factor | (bs, response_len) | 策略梯度权重因子（更新阶段计算） |
 
 #### 3.1.2 non_tensor_batch（非张量数据）
@@ -94,7 +92,13 @@ actor_rollout_ref:
 - `pid`：父轨迹的 rid（第一轮为 None）
 - `cid`：子轨迹映射，ndarray of OrderedDict `{位置索引: [子轨迹rid列表]}`
 - `branch_pos`：在父轨迹中的分支位置（第一轮为 -1）
+- `tid`：树标识符，同一棵树下的所有轨迹共享相同的 tid
 - `new_sample_indices`: 新样本的索引列表
+
+#### 3.1.3 meta_info（元信息）
+
+**OPTS_TTPO 新增键：**
+- `tree_branches`：字典 `Dict[str, int]`，记录每棵树的轨迹数量（key 为 tid，value 为该树下的轨迹总数）
 
 ### 3.2 变量详解
 
@@ -121,12 +125,25 @@ cid (Children ID)
 ├── value: 从该位置出发的子轨迹 rid 列表
 └── 用于前向遍历树结构和计算分支权重
 
+tid (Tree ID)
+├── 树标识符，同一棵树下的所有轨迹共享相同的 tid
+├── 第一轮采样的轨迹（pid=None）生成新的 tid
+├── 后续轮采样的轨迹继承父轨迹的 tid
+└── 用于计算探索项中的 tree_branches
+
+tree_branches
+├── 字典 Dict[str, int]
+├── key: tid
+├── value: 该树下的轨迹总数
+├── 第一轮初始化：tree_branches[tid] = 1
+├── 后续轮更新：tree_branches[tid] += 1
+└── 用于 TUCT 探索项的分母 N
+
 branch_pos (Branch Position)
 ├── 当前轨迹在父轨迹中的分支位置
 ├── 第一轮采样的轨迹 branch_pos = -1
 ├── 用于：
-│   ├── 1. compute_forward_values：从父轨迹继承 lam_t
-│   └── 2. compute_branch_weight_factors：计算祖先轨迹的 state_branches 累乘
+│   └── compute_branch_weight_factors：计算祖先轨迹的 state_branches 累乘
 └── 由 set_opts_ttpo_info 函数生成并保存
 
 new_sample_indices
@@ -164,48 +181,33 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 - traj_3.pid = "traj_2"
 ```
 
-#### 3.2.2 时间累积量
-
-**lam_t[t]**：λ^t，用于 TUCT 中的计算
-- t=0 时：lam_t[0] = 1
-- t>0 时：lam_t[t] = lam_t[t-1] * lam
-- 若有父轨迹：从父轨迹所选状态的 lam_t 继续累乘
-
-#### 3.2.3 分支相关计数
+#### 3.2.2 分支相关计数
 
 **state_branches[t]**：状态 t 处的分支数
 - 初始化：全部为 1
-- 当状态 t 被选中进行扩展时：state_branches[t] = n + 1（+1 是因为原轨迹本身也算一个分支）
+- 当状态 t 被选中进行扩展时：state_branches[t] += n
 - 用于计算 branch_weight_factor
 
-**subtree_branches[t]**：经过状态 t 的轨迹总数
-- 初始化：全部为 1
-- 当某个下游状态被选中扩展时：祖先轨迹的 subtree_branches += n
-- 用于 TUCT 探索项的分母
+**tree_branches[tid]**：树 tid 下的轨迹总数
+- 初始化：每棵新树的 tree_branches[tid] = 1
+- 当新轨迹加入树时：tree_branches[tid] += 1
+- 用于 TUCT 探索项的分母 N
 
-**partree_branches[t]**：父分支点的 subtree_branches（临时计算量）
-- 父分支点：状态 t 上游最近的分支节点
-- 用于 TUCT 探索项的分子
-- 计算方式：
-  - 若当前 response 无状态 t 的上游分支节点：
-    - 若存在父轨迹，使用 prompt 对应的父轨迹状态的 subtree_branches
-    - 若不存在父轨迹，使用根状态的 subtree_branches：(i + 1) * n
-  - 若当前 response 有状态 t 的上游分支节点：使用该分支节点的 subtree_branches
-
-#### 3.2.4 价值估计相关
+#### 3.2.3 价值估计相关
 
 **advantages_mean[t]**：分支节点处的平均优势
 - 非分支节点：advantages_mean[t] = advantages[t+1]
 - 分支节点：所有分支第一个 token 的 advantage 的平均值
 - 用于 TreeGAE 计算
 
-#### 3.2.5 TUCT 和权重因子
+#### 3.2.4 TUCT 和权重因子
 
 **tuct[t]**：Tree UCT 值
 - 公式：exploitation[t] * exploration[t]
-- 利用项：exploitation = advantages，即动作优势
-- 探索项：exploration = sqrt(log(N_parent + 1)) / N_child（UCB1 风格）
-- 与常数 root_tuct 比较，决定是否从根状态重新开始
+- 利用项：exploitation = advantages / branch_weight_factors，即动作优势除以分支权重
+- 探索项：exploration = sqrt(log((round_idx + 1) * n + 1)) / N
+  - N = tree_branches[tid]，即当前树的轨迹总数
+- 与动态阈值 $\max(\bar{A}_{\text{uid}}, \text{root\_tuct})$ 比较，决定是否从根状态重新开始
 
 **branch_weight_factor[t]**：策略梯度权重因子
 - t=0 时：branch_weight_factor[0] = 1
@@ -278,13 +280,14 @@ for epoch in ...:
                     - (局部batch) 根据 next_states 设置 pid 和 branch_pos：
                         - 第一轮：pid=None, branch_pos=-1
                         - 后续轮：通过 uid 查询 next_states 获取父节点信息
+                    - (局部batch) 设置 tid 和更新 tree_branches：
+                        - pid=None：生成新 tid，tree_branches[tid] = 1
+                        - pid!=None：继承父轨迹的 tid，tree_branches[tid] += 1
                     - (局部batch) 初始化 cid 为空 OrderedDict
                     - (全局batch) 在父轨迹的 cid 中注册当前轨迹为子节点
                     - 返回 new_sample_indices
-                - (局部batch) 初始化 state_branches、subtree_branches 为全1
+                - (局部batch) 初始化 state_branches 为全1
                 - (局部batch) 初始化 advantages、advantages_mean、returns 为全0
-                - (局部batch) compute_forward_values：计算时间累积量
-                    - lam_t[t] = λ^t（若有父节点则从父节点位置继承后继续累乘）
                 - (局部batch) 合并到全局batch（_merge_batches）
 
             -------- b. 反向 --------
@@ -303,21 +306,21 @@ for epoch in ...:
 
             if opts_ttpo and i < g - 1:  # 仅在非最后一轮执行
                 - (全局batch) select_next_states：用 TUCT 选择下一轮扩展的状态
-                    1) 计算 branch_weight_factors 作为探索项
+                    1) 计算 branch_weight_factors 作为利用项权重
 
-                    2) 计算 TUCT：
-                       - exploitation = advantages
-                       - exploration = branch_weight_factors
+                    2) 计算 tree_branches_N：通过 tid 映射获取每条轨迹对应树的轨迹总数
+
+                    3) 计算 TUCT：
+                       - exploitation = advantages / branch_weight_factors
+                       - exploration = sqrt(log((round_idx + 1) * n + 1)) / tree_branches_N
                        - tuct = exploitation * exploration
 
-                    3) 为每个 uid 选择 TUCT 最高的状态：
+                    4) 为每个 uid 选择 TUCT 最高的状态：
                        - 计算动态阈值：uid_root_tuct = max(mean(advantages[uid_indices]), root_tuct)
                        - 与动态阈值 uid_root_tuct 比较，决定是否从根状态重新开始
                        - 返回 selected_states = [(rid, pos), ...]
 
-                    4) 更新 subtree_branches：沿祖先链向上传播（+= n）
-
-                - (全局batch) 更新 state_branches：被选中状态的分支数 += n
+                    5) 更新 state_branches：被选中状态的 state_branches[idx, pos] += n
 
                 - 构建 next_states 字典供下一轮使用：
                     - next_states = {uid: (parent_idx, branch_pos) for 每个选中状态}
@@ -365,12 +368,15 @@ $$
 ### 5.2 TUCT
 
 $$
-\text{TUCT}(s_t) = \underbrace{A(s_t)}_{\text{利用项}} \cdot \underbrace{W_t}_{\text{探索项}}
+\text{TUCT}(s_t) = \underbrace{\frac{A(s_t)}{W_t}}_{\text{利用项}} \cdot \underbrace{\frac{\sqrt{\log((i+1) \cdot n + 1)}}{N}}_{\text{探索项}}
 $$
 
 其中：
 - $A(s_t)$ 为状态 $t$ 的优势值
 - $W_t$ 为 branch_weight_factor，即祖先轨迹所有分支数的累乘
+- $i$ 为当前轮次索引（round_idx）
+- $n$ 为每轮采样数（n_samples_per_round）
+- $N$ 为当前树的轨迹总数（tree_branches[tid]）
 - 与动态阈值 $\max(\bar{A}_{\text{uid}}, \text{root\_tuct})$ 比较，决定是否从根状态重新开始
   - $\bar{A}_{\text{uid}}$ 为该 uid 下所有样本优势值的平均值
 
@@ -411,13 +417,11 @@ LLM/trainer/opts_ttpo/
 
 | 函数名 | 所在文件 | 类型 | 说明 |
 |--------|----------|------|------|
-| `set_opts_ttpo_info` | ray_trainer.py | 函数 | 设置树结构信息：rid, pid, branch_pos, cid |
+| `set_opts_ttpo_info` | ray_trainer.py | 函数 | 设置树结构信息：rid, pid, branch_pos, cid, tid, tree_branches |
 | `prepare_next_round_input` | ray_trainer.py | 函数 | 构建下一轮采样的输入 batch |
 | `merge_batches` | ray_trainer.py | 函数 | 合并局部 batch 到全局 batch |
-| `compute_forward_values` | ray_trainer.py | 函数 | 计算 lam_t |
-| `select_next_states` | ray_trainer.py | 函数 | TUCT 状态选择 |
+| `select_next_states` | ray_trainer.py | 函数 | TUCT 状态选择，更新 state_branches |
 | `compute_treegae_advantage_return` | core_algos.py | 注册函数 | 通过 `@register_adv_est(AdvantageEstimator.TreeGAE)` 注册 |
-| `compute_partree_branches` | core_algos.py | 函数 | 计算父分支点的 subtree_branches |
 | `compute_branch_weight_factors` | core_algos.py | 函数 | 计算分支权重因子 |
 | `agg_loss` | core_algos.py | 修改 | 新增 "weighted-token-mean" 模式 |
 | `compute_policy_loss_vanilla` | core_algos.py | 修改 | 新增 branch_weight_factor 参数 |

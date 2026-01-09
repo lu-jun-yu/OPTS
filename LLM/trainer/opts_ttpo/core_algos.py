@@ -228,7 +228,6 @@ def compute_treegae_advantage_return(
     new_sample_indices: Optional[np.ndarray] = None,
     next_states: Optional[dict] = None,
     advantages: Optional[torch.Tensor] = None,
-    advantages_mean: Optional[torch.Tensor] = None,
 ):
     """Compute TreeGAE advantage for tree-structured trajectories.
 
@@ -266,10 +265,6 @@ def compute_treegae_advantage_return(
         advantages: `(torch.Tensor)`
             shape is (bs, response_length). Pre-allocated advantages tensor to update in-place.
             For existing trajectories, this already contains computed advantages.
-        advantages_mean: `(torch.Tensor)`
-            shape is (bs, response_length - 1). Pre-allocated advantages_mean tensor to update in-place.
-            advantages_mean[t] stores the mean advantage at position t+1 (shifted by one).
-            For existing trajectories, this already contains computed advantages_mean.
 
     Returns:
         advantages: `(torch.Tensor)`
@@ -302,13 +297,12 @@ def compute_treegae_advantage_return(
 
         new_advantages = torch.stack(advantages_reversed[::-1], dim=1)
         advantages[new_sample_indices] = new_advantages
-        advantages_mean[new_sample_indices] = new_advantages[:, 1:].clone() # Shape: (n_new, gen_len-1)
 
         # ========== Second loop: Propagate to ancestors using next_states ==========
         if next_states is None or len(next_states) == 0:
             # No parent trajectories to update
             returns = advantages + values
-            return advantages, returns, advantages_mean
+            return advantages, returns
 
         def _process_parent(p_idx: int, branch_pos: int) -> Optional[Tuple[int, int]]:
             """Process a single parent trajectory for TreeGAE advantage propagation.
@@ -324,11 +318,9 @@ def compute_treegae_advantage_return(
                 if t in cid_positions:
                     child_indices = [rid2idx[c_rid] for c_rid in parent_cid[t]]
                     lastgaelam_mean = (advantages[child_indices, 0].sum() + advantages[p_idx, t + 1]) / state_branches[p_idx, t]
-                    advantages_mean[p_idx, t] = lastgaelam_mean
                     delta = token_level_rewards[p_idx, t] + gamma * values[p_idx, t + 1] - values[p_idx, t]
                     lastgaelam_ = delta + gamma * lam * lastgaelam_mean
                 else:
-                    advantages_mean[p_idx, t] = lastgaelam
                     delta = token_level_rewards[p_idx, t] + gamma * values[p_idx, t + 1] - values[p_idx, t]
                     lastgaelam_ = delta + gamma * lam * lastgaelam
 
@@ -363,7 +355,7 @@ def compute_treegae_advantage_return(
         # rounds are used in subsequent TreeGAE calculations. Whitening should be done
         # after all g rounds complete, before policy update.
 
-    return advantages, returns, advantages_mean
+    return advantages, returns
 
 
 @register_adv_est(AdvantageEstimator.GAE)  # or simply: @register_adv_est("gae")
@@ -2005,72 +1997,6 @@ def compute_policy_loss_bypass_mode(
 # ============================================================================
 # OPTS_TTPO Specific Functions
 # ============================================================================
-
-def compute_partree_branches(
-    cid: List[Dict],
-    pid: np.ndarray,
-    subtree_branches: torch.Tensor,
-    round_idx: int,
-    n_samples_per_round: int,
-    rid2idx: Optional[Dict[str, int]] = None,
-    parent_branch_pos: Optional[List[int]] = None,
-) -> torch.Tensor:
-    """Compute partree_branches for each state.
-
-    partree_branches[t] is the subtree_branches of the parent branch point of state t.
-    The parent branch point is the nearest upstream branch node of state t.
-
-    Args:
-        cid: Children ID mapping for each trajectory (dict, keys are branch positions).
-        pid: Parent IDs for each trajectory.
-        subtree_branches: subtree_branches values, shape (batch_size, response_len).
-        round_idx: Current round index (0-based).
-        n_samples_per_round: Number of samples per round (n).
-        rid2idx: Mapping from rid to index.
-        parent_branch_pos: Branch positions in parent trajectories.
-
-    Returns:
-        partree_branches: shape (batch_size, response_len)
-    """
-    batch_size, response_len = subtree_branches.shape
-    partree_branches = torch.zeros(batch_size, response_len)
-
-    def _process_trajectory(i: int) -> None:
-        """Process a single trajectory to compute its partree_branches."""
-        trajectory_cid = cid[i]
-        p_rid = pid[i]
-        branch_positions = sorted(trajectory_cid.keys())
-
-        # Determine the default value (from parent or root)
-        if p_rid is not None:
-            p_idx = rid2idx[p_rid]
-            bp = parent_branch_pos[i]
-            default_value = subtree_branches[p_idx, bp].item()
-        else:
-            default_value = (round_idx + 1) * n_samples_per_round
-
-        if not branch_positions:
-            partree_branches[i, :] = default_value
-        else:
-            # Positions before first branch point: use default
-            first_branch = branch_positions[0]
-            partree_branches[i, :first_branch + 1] = default_value
-
-            # Positions between branch points
-            for j in range(len(branch_positions) - 1):
-                curr_branch = branch_positions[j]
-                next_branch = branch_positions[j + 1]
-                partree_branches[i, curr_branch + 1:next_branch + 1] = subtree_branches[i, curr_branch]
-
-            # Positions after last branch point
-            last_branch = branch_positions[-1]
-            partree_branches[i, last_branch + 1:] = subtree_branches[i, last_branch]
-
-    with ThreadPoolExecutor() as executor:
-        list(executor.map(_process_trajectory, range(batch_size)))
-
-    return partree_branches
-
 
 def compute_branch_weight_factors(
     state_branches: torch.Tensor,
