@@ -6,7 +6,7 @@ import datasets
 
 
 
-SYSTEM_PROMPT = """You are a helpful assistant. When solving problems, you must first think step by step within <think> </think> tags, then provide your final answer within <answer> </answer> tags.
+SYSTEM_PROMPT = """You are a helpful assistant. When solving problems, you must first think step by step within <think> </think> tags, then provide your final answer using \\boxed{}.
 
 Example:
 User: What is 2 + 3?
@@ -14,9 +14,7 @@ Assistant: <think>
 I need to add 2 and 3 together.
 2 + 3 = 5
 </think>
-<answer>
-5
-</answer>"""
+The answer is \\boxed{5}."""
 
 
 def extract_solution(solution_str):
