@@ -1,63 +1,168 @@
 """
 绘制相同 task 下不同算法的 episodic_return 收敛曲线
-从 ./results/ 目录中读取数据文件，格式：{task}_{算法名}_{日期}_{seed}.txt
+从 ./results/ 目录中读取数据文件，格式：{task}_{算法名}_{日期}_{seed}.json
 对于相同任务和相同算法，聚合 seed 1-10 的结果，计算同一行的均值
+支持平滑曲线和 max/min_return 阴影区域绘制
 """
 import os
 import glob
+import json
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 from collections import defaultdict
+from scipy.ndimage import uniform_filter1d
 
 
-def load_episodic_returns(filepath):
-    """从文件中读取 episodic_return 值（每行一个值）"""
+# 要绘制的5个任务
+TARGET_TASKS = ["Ant-v4", "HalfCheetah-v4", "Hopper-v4", "Humanoid-v4", "Walker2d-v4"]
+
+# 指定任务的平滑窗口大小（其他任务使用默认值）
+TASK_SMOOTH_WINDOWS = {
+    "Ant-v4": 9,
+    "Humanoid-v4": 9,
+}
+
+# 冷暖色穿插的调色板（冷色在前，暖色在后）
+COOL_COLORS = [
+    "#1f77b4",  # 蓝
+    "#2ca02c",  # 绿
+    "#9467bd",  # 紫
+    "#17becf",  # 青
+]
+WARM_COLORS = [
+    "#d62728",  # 红
+    "#ff7f0e",  # 橙
+    "#8c564b",  # 棕
+    "#e377c2",  # 粉
+]
+
+
+def get_alternating_colors(n):
+    """
+    生成冷暖色交替的颜色序列。
+    例如 n=2 时为 冷、暖；n=3 时为 冷、暖、冷。
+    """
+    colors = []
+    for i in range(n):
+        if i % 2 == 0:
+            idx = i // 2
+            colors.append(COOL_COLORS[idx % len(COOL_COLORS)])
+        else:
+            idx = i // 2
+            colors.append(WARM_COLORS[idx % len(WARM_COLORS)])
+    return colors
+
+
+def assign_algo_colors(algo_keys):
+    """
+    为算法分配冷暖色交替的颜色，保证顺序稳定。
+    """
+    sorted_keys = sorted(algo_keys)
+    colors = get_alternating_colors(len(sorted_keys))
+    return {algo_key: colors[i] for i, algo_key in enumerate(sorted_keys)}
+
+
+def get_task_smooth_window(task_name, default_window):
+    """
+    获取指定任务的平滑窗口大小。
+    """
+    return TASK_SMOOTH_WINDOWS.get(task_name, default_window)
+
+
+def smooth_data(data, window_size=5):
+    """
+    使用移动平均对数据进行平滑
+    
+    Args:
+        data: 输入数据列表或数组
+        window_size: 平滑窗口大小
+    
+    Returns:
+        平滑后的数据数组
+    """
+    if len(data) < window_size:
+        return np.array(data)
+    return uniform_filter1d(np.array(data), size=window_size, mode='nearest')
+
+
+def load_episodic_returns(filepath, algo_type="ppo"):
+    """
+    从 JSON 文件中读取 episodic_return 值
+    
+    Args:
+        filepath: JSON文件路径
+        algo_type: 算法类型，"ppo" 或 "opts"
+    
+    Returns:
+        (step值列表, mean_return值列表, max_return值列表, min_return值列表) 元组
+    """
     try:
-        with open(filepath, 'r') as f:
-            values = [float(line.strip()) for line in f if line.strip()]
-        return values
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        step_values = []
+        mean_return_values = []
+        max_return_values = []
+        min_return_values = []
+
+        for item in data:
+            if isinstance(item, dict) and 'mean_return' in item:
+                if 'step' in item:
+                    step_values.append(float(item['step']))
+                else:
+                    continue
+
+                mean_return_values.append(float(item['mean_return']))
+
+                if 'max_return' in item:
+                    max_return_values.append(float(item['max_return']))
+                else:
+                    max_return_values.append(float(item['mean_return']))
+
+                if 'min_return' in item:
+                    min_return_values.append(float(item['min_return']))
+                else:
+                    min_return_values.append(float(item['mean_return']))
+
+        return step_values, mean_return_values, max_return_values, min_return_values
     except Exception as e:
         print(f"Error reading {filepath}: {e}")
-        return []
+        return [], [], [], []
 
 
 def parse_filename(filename):
     """
     解析文件名，提取 task、算法名、日期和 seed
-    格式：{task}_{算法名}_{日期}_{seed}.txt
-    例如：HalfCheetah-v4_opts_ttpo_continuous_action_20260117_1.txt
-    
+    格式：{task}_{算法名}_{日期}_{seed}.json
+    例如：HalfCheetah-v4_opts_ttpo_continuous_action_20260117_1.json
+        
     Returns:
         (task, algo_name, date, seed) 或 None
     """
     import re
-    name_without_ext = filename.replace('.txt', '')
+    if filename.endswith('-.json'):
+        return None
     
-    # 匹配格式：task_algo_date_seed
-    # task 可能包含 -，如 HalfCheetah-v4
-    # seed 是最后一个数字
+    name_without_ext = filename.replace('.json', '')
     
-    # 先找到最后一个下划线后的数字（seed）
+    if name_without_ext.endswith('_el'):
+        name_without_ext = name_without_ext[:-3]
+    
     seed_match = re.search(r'_(\d+)$', name_without_ext)
     if not seed_match:
         return None
     
     seed = int(seed_match.group(1))
-    remaining = name_without_ext[:seed_match.start()]  # 移除 _seed 部分
+    remaining = name_without_ext[:seed_match.start()]
     
-    # 现在 remaining 格式是：task_algo_date
-    # 找到日期（8位数字）
     date_match = re.search(r'_(\d{8})$', remaining)
     if not date_match:
         return None
     
     date = date_match.group(1)
-    remaining = remaining[:date_match.start()]  # 移除 _date 部分
+    remaining = remaining[:date_match.start()]
     
-    # 现在 remaining 格式是：task_algo
-    # task 是第一部分（可能包含 -）
-    # 算法名是剩余部分
     parts = remaining.split('_', 1)
     if len(parts) < 2:
         return None
@@ -70,188 +175,412 @@ def parse_filename(filename):
 
 def aggregate_seed_results(all_seed_data):
     """
-    聚合多个 seed 的结果，对同一行（相同 iteration）计算均值
+    聚合多个 seed 的结果，对同一行计算均值
     
     Args:
-        all_seed_data: 字典，key 是 seed，value 是该 seed 的所有 return 值列表
+        all_seed_data: 字典，key 是 seed，value 是 (step列表, mean_return列表, max_return列表, min_return列表) 元组
     
     Returns:
-        aggregated_values: 聚合后的均值列表
+        (aggregated_steps, aggregated_mean_return, aggregated_max_return, aggregated_min_return) 元组
     """
     if not all_seed_data:
-        return []
+        return [], [], [], []
     
-    # 找到最长的序列长度
-    max_length = max(len(values) for values in all_seed_data.values() if values)
+    max_length = max(
+        len(values[0]) if isinstance(values, tuple) and len(values) >= 4 else 0
+        for values in all_seed_data.values()
+    )
     
     if max_length == 0:
-        return []
+        return [], [], [], []
     
-    # 对每一行计算均值
-    aggregated_values = []
+    first_seed_data = next(iter(all_seed_data.values()))
+    if isinstance(first_seed_data, tuple) and len(first_seed_data) >= 4:
+        aggregated_steps = list(first_seed_data[0])
+    else:
+        aggregated_steps = []
+    
+    aggregated_mean_values = []
+    aggregated_max_values = []
+    aggregated_min_values = []
+    
     for i in range(max_length):
-        # 收集所有 seed 在第 i 行的值（如果该 seed 有这一行）
-        row_values = []
-        for seed, values in all_seed_data.items():
-            if i < len(values):
-                row_values.append(values[i])
+        row_mean_values = []
+        row_max_values = []
+        row_min_values = []
         
-        # 计算均值
-        if row_values:
-            mean_value = np.mean(row_values)
-            aggregated_values.append(mean_value)
+        for seed, values in all_seed_data.items():
+            if isinstance(values, tuple) and len(values) >= 4:
+                steps, mean_returns, max_returns, min_returns = values[0], values[1], values[2], values[3]
+                if i < len(mean_returns):
+                    row_mean_values.append(mean_returns[i])
+                if i < len(max_returns):
+                    row_max_values.append(max_returns[i])
+                if i < len(min_returns):
+                    row_min_values.append(min_returns[i])
+        
+        if row_mean_values:
+            aggregated_mean_values.append(np.mean(row_mean_values))
         else:
-            break  # 如果没有 seed 有这一行，停止
+            break
+        
+        if row_max_values:
+            aggregated_max_values.append(np.mean(row_max_values))
+        else:
+            aggregated_max_values.append(aggregated_mean_values[-1])
+            
+        if row_min_values:
+            aggregated_min_values.append(np.mean(row_min_values))
+        else:
+            aggregated_min_values.append(aggregated_mean_values[-1])
     
-    return aggregated_values
+    aggregated_steps = aggregated_steps[:len(aggregated_mean_values)]
+    
+    return aggregated_steps, aggregated_mean_values, aggregated_max_values, aggregated_min_values
 
 
-def plot_convergence_curves(task_name, results_dir="./results", output_dir="./visual"):
+def load_algo_filters_from_config(task_name, config_filename="algo_select.json"):
     """
-    绘制相同 task 下不同算法的收敛曲线
-    对于相同任务和相同算法，聚合 seed 1-10 的结果，计算同一行的均值
+    从配置文件中读取指定 task 的算法名列表。
+    """
+    try:
+        script_dir = Path(__file__).resolve().parent
+        config_path = script_dir / config_filename
+        if not config_path.exists():
+            return None
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        algo_list = cfg.get(task_name)
+        if isinstance(algo_list, list):
+            return [str(a) for a in algo_list]
+    except Exception as e:
+        print(f"Warning: failed to load algo filters from config '{config_filename}': {e}")
+    return None
+
+
+def get_display_name(algo_name, date=None):
+    """
+    获取算法的显示名称
+    PPO 显示简短名称，其他算法显示完整名称（包含日期）
+    """
+    # PPO 使用简短名称
+    if algo_name == "ppo_continuous_action":
+        return "PPO"
+    
+    # 其他算法显示完整名称（包含日期）
+    if date:
+        return f"{algo_name}_{date}"
+    return algo_name
+
+
+def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir="./visual", 
+                                algo_filters=None, smooth_window=5):
+    """
+    绘制所有5个任务的收敛曲线在一张图上（2行3列布局）
     
     Args:
-        task_name: 任务名称（如 "HalfCheetah-v4" 或 "BreakoutNoFrameskip-v4"）
         results_dir: results 目录路径
         output_dir: 输出图片的目录路径
+        algo_filters: 要可视化的算法标识列表
+        smooth_window: 平滑窗口大小
     """
-    # 查找该 task 的所有结果文件
-    pattern = os.path.join(results_dir, f"{task_name}_*.txt")
+    # 收集所有任务的数据
+    all_tasks_data = {}
+    
+    for task_name in TARGET_TASKS:
+        pattern = os.path.join(results_dir, f"{task_name}_*.json")
+        files = glob.glob(pattern)
+        
+        if not files:
+            print(f"No results files found for task: {task_name}")
+            continue
+        
+        algorithms_data = defaultdict(lambda: defaultdict(list))
+        algo_is_opts = {}
+
+        for filepath in files:
+            filename = os.path.basename(filepath)
+            parsed = parse_filename(filename)
+
+            if parsed is None:
+                continue
+
+            task, algo_name, date, seed = parsed
+
+            if task != task_name:
+                continue
+
+            if algo_filters is not None:
+                algo_id = algo_name
+                algo_id_with_date = f"{algo_name}_{date}"
+                if (algo_id not in algo_filters) and (algo_id_with_date not in algo_filters):
+                    continue
+
+            if seed < 1 or seed > 10:
+                continue
+
+            algo_key = (algo_name, date)
+
+            if algo_key not in algo_is_opts:
+                algo_is_opts[algo_key] = "opts" in algo_name.lower()
+
+            is_opts = algo_is_opts[algo_key]
+
+            step_values, mean_return_values, max_return_values, min_return_values = load_episodic_returns(
+                filepath, algo_type="opts" if is_opts else "ppo"
+            )
+            if mean_return_values:
+                algorithms_data[algo_key][seed] = (step_values, mean_return_values, max_return_values, min_return_values)
+
+        if algorithms_data:
+            aggregated_data = {}
+            for algo_key, seed_data in algorithms_data.items():
+                aggregated_steps, aggregated_mean, aggregated_max, aggregated_min = aggregate_seed_results(seed_data)
+                if aggregated_mean:
+                    aggregated_data[algo_key] = {
+                        'steps': aggregated_steps,
+                        'mean': aggregated_mean,
+                        'max': aggregated_max,
+                        'min': aggregated_min,
+                        'is_opts': algo_is_opts.get(algo_key, False)
+                    }
+            all_tasks_data[task_name] = aggregated_data
+    
+    if not all_tasks_data:
+        print("No data found for any task")
+        return
+    
+    # 收集所有算法，为每个算法分配颜色
+    all_algos = set()
+    for task_data in all_tasks_data.values():
+        for algo_key in task_data.keys():
+            all_algos.add(algo_key)
+    
+    # 冷暖色交替分配颜色
+    algo_colors = assign_algo_colors(all_algos)
+    
+    # 创建2行3列的子图布局
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    axes = axes.flatten()
+    
+    # 绘制每个任务
+    for idx, task_name in enumerate(TARGET_TASKS):
+        ax = axes[idx]
+        
+        if task_name not in all_tasks_data:
+            ax.set_title(task_name.replace('-v4', '-v1'), fontsize=12)
+            ax.set_xlabel('')
+            ax.set_ylabel('')
+            continue
+        
+        task_data = all_tasks_data[task_name]
+        
+        task_smooth_window = get_task_smooth_window(task_name, smooth_window)
+        for algo_key, data in task_data.items():
+            algo_name, date = algo_key
+            color = algo_colors[algo_key]
+            display_name = get_display_name(algo_name, date)
+            
+            steps = np.array(data['steps'])
+            mean_values = smooth_data(data['mean'], task_smooth_window)
+            max_values = smooth_data(data['max'], task_smooth_window)
+            min_values = smooth_data(data['min'], task_smooth_window)
+            
+            # 绘制阴影区域（max和min之间）
+            ax.fill_between(steps[:len(mean_values)], min_values, max_values, 
+                          color=color, alpha=0.2)
+            
+            # 绘制均值曲线
+            ax.plot(steps[:len(mean_values)], mean_values,
+                   color=color, label=display_name, linewidth=1.5)
+
+        # 设置子图标题和标签
+        ax.set_title(task_name, fontsize=12)
+        
+        # 设置x轴范围和刻度（只显示0和终点）
+        if task_data:
+            all_steps = []
+            for data in task_data.values():
+                all_steps.extend(data['steps'])
+            if all_steps:
+                max_step = max(all_steps)
+                # 四舍五入到最近的1000000整数倍
+                max_step_rounded = int(round(max_step / 1000000) * 1000000)
+                if max_step_rounded == 0:
+                    max_step_rounded = 1000000
+                ax.set_xlim(0, max_step_rounded)
+                ax.set_xticks([0, max_step_rounded])
+                ax.set_xticklabels(['0', f'{int(max_step_rounded)}'])
+        
+        ax.grid(True, alpha=0.3)
+    
+    # 隐藏第6个子图（只有5个任务）
+    axes[5].axis('off')
+    
+    # 在第6个位置添加图例
+    handles, labels = [], []
+    for algo_key in sorted(algo_colors.keys()):
+        algo_name, date = algo_key
+        display_name = get_display_name(algo_name, date)
+        handles.append(plt.Line2D([0], [0], color=algo_colors[algo_key], linewidth=2))
+        labels.append(display_name)
+    
+    # 不去重，因为不同日期的同一算法需要分开显示
+    axes[5].legend(handles, labels, loc='center', fontsize=9, frameon=True)
+    
+    plt.tight_layout()
+    
+    # 保存图片
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, "all_tasks_convergence.png")
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"Combined convergence curves saved to: {output_path}")
+    plt.close()
+
+
+def plot_convergence_curves(task_name, results_dir="./results", output_dir="./visual", 
+                            algo_filters=None, smooth_window=5):
+    """
+    绘制单个 task 下不同算法的收敛曲线（保留原有功能）
+    
+    Args:
+        task_name: 任务名称
+        results_dir: results 目录路径
+        output_dir: 输出图片的目录路径
+        algo_filters: 要可视化的算法标识列表
+        smooth_window: 平滑窗口大小
+    """
+    pattern = os.path.join(results_dir, f"{task_name}_*.json")
     files = glob.glob(pattern)
     
     if not files:
         print(f"No results files found for task: {task_name}")
-        print(f"Searched pattern: {pattern}")
         return
     
-    # 按 (task, algo_name) 分组，收集所有 seed 的数据
-    # 结构：algorithms_data[algo_name] = {seed: [values]}
     algorithms_data = defaultdict(lambda: defaultdict(list))
-    
+    algo_is_opts = {}
+
     for filepath in files:
         filename = os.path.basename(filepath)
         parsed = parse_filename(filename)
-        
+
         if parsed is None:
-            print(f"Warning: Could not parse filename: {filename}")
             continue
-        
+
         task, algo_name, date, seed = parsed
-        
-        # 只处理指定 task 和 seed 1-10 的文件
+
         if task != task_name:
             continue
-        
+
+        if algo_filters is not None:
+            algo_id = algo_name
+            algo_id_with_date = f"{algo_name}_{date}"
+            if (algo_id not in algo_filters) and (algo_id_with_date not in algo_filters):
+                continue
+
         if seed < 1 or seed > 10:
             continue
-        
-        # 加载数据
-        values = load_episodic_returns(filepath)
-        if values:
-            algorithms_data[algo_name][seed] = values
+
+        algo_key = (algo_name, date)
+
+        if algo_key not in algo_is_opts:
+            algo_is_opts[algo_key] = "opts" in algo_name.lower()
+
+        is_opts = algo_is_opts[algo_key]
+
+        step_values, mean_return_values, max_return_values, min_return_values = load_episodic_returns(
+            filepath, algo_type="opts" if is_opts else "ppo"
+        )
+        if mean_return_values:
+            algorithms_data[algo_key][seed] = (step_values, mean_return_values, max_return_values, min_return_values)
     
     if not algorithms_data:
         print(f"Could not find valid data for task: {task_name}")
-        print(f"Files found: {files[:5]}...")  # 只显示前5个文件
         return
     
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(12, 7))
+    task_smooth_window = get_task_smooth_window(task_name, smooth_window)
     
-    # 对每种算法，聚合所有 seed 的结果
-    aggregated_data = {}
-    for algo_name, seed_data in algorithms_data.items():
-        # 聚合 seed 1-10 的结果
-        aggregated_values = aggregate_seed_results(seed_data)
-        if aggregated_values:
-            aggregated_data[algo_name] = aggregated_values
+    algo_keys = sorted(algorithms_data.keys())
+    algo_colors = assign_algo_colors(algo_keys)
     
-    if not aggregated_data:
-        print(f"No aggregated data available for task: {task_name}")
-        return
-    
-    # 计算横坐标（假设每个值对应一次 iteration）
-    max_iterations = max(len(values) for values in aggregated_data.values())
-    total_timesteps = 1000000
-    # 假设步数均匀分布
-    x_values = np.linspace(0, total_timesteps, max_iterations)
-    
-    # 绘制每种算法的曲线
-    for algo_name, values in aggregated_data.items():
-        if len(values) < max_iterations:
-            # 线性插值到 max_iterations 个点
-            y_interp = np.interp(x_values, np.linspace(0, total_timesteps, len(values)), values)
-            plt.plot(x_values, y_interp, label=algo_name, linewidth=2)
-        else:
-            plt.plot(x_values[:len(values)], values, label=algo_name, linewidth=2)
-    
+    for algo_key in algo_keys:
+        seed_data = algorithms_data[algo_key]
+        algo_name, date = algo_key
+        color = algo_colors[algo_key]
+        display_name = get_display_name(algo_name, date)
+        
+        aggregated_steps, aggregated_mean, aggregated_max, aggregated_min = aggregate_seed_results(seed_data)
+
+        if not aggregated_mean:
+            continue
+
+        steps = np.array(aggregated_steps)
+        mean_values = smooth_data(aggregated_mean, task_smooth_window)
+        max_values = smooth_data(aggregated_max, task_smooth_window)
+        min_values = smooth_data(aggregated_min, task_smooth_window)
+        
+        # 绘制阴影区域
+        plt.fill_between(steps[:len(mean_values)], min_values, max_values, 
+                        color=color, alpha=0.2)
+        
+        # 绘制均值曲线
+        plt.plot(steps[:len(mean_values)], mean_values,
+                color=color, label=display_name, linewidth=2)
+
     plt.xlabel('Timesteps', fontsize=12)
     plt.ylabel('Mean Episodic Return (Averaged over seeds)', fontsize=12)
-    plt.title(f'Convergence Curves for {task_name} (Aggregated over seeds 1-10)', fontsize=14)
+    plt.title(f'Convergence Curves for {task_name}', fontsize=14)
     plt.legend(fontsize=10)
     plt.grid(True, alpha=0.3)
     
-    # 设置横坐标范围 0-1000000，只显示 0 和 1000000
-    plt.xlim(0, total_timesteps)
-    plt.xticks([0, total_timesteps], ['0', '1000000'])
+    # 设置x轴刻度（只显示0和终点）
+    ax = plt.gca()
+    xlim = ax.get_xlim()
+    max_step = xlim[1]
+    # 四舍五入到最近的1000000整数倍
+    max_step_rounded = int(round(max_step / 1000000) * 1000000)
+    if max_step_rounded == 0:
+        max_step_rounded = 1000000
+    ax.set_xlim(0, max_step_rounded)
+    ax.set_xticks([0, max_step_rounded])
+    ax.set_xticklabels(['0', f'{int(max_step_rounded)}'])
     
-    # 保存图片
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, f"{task_name}_convergence.png")
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     print(f"Convergence curve saved to: {output_path}")
-    print(f"  Algorithms: {list(aggregated_data.keys())}")
-    for algo_name, values in aggregated_data.items():
-        num_seeds = len(algorithms_data[algo_name])
-        print(f"    {algo_name}: {num_seeds} seeds, {len(values)} iterations")
     plt.close()
 
 
 def main():
-    """主函数：可以为多个 task 绘制收敛曲线
+    """主函数：绘制5个MuJoCo任务的收敛曲线合并图
     
     用法：
-        python plot_convergence.py                                    # 自动检测所有 task 并绘制
-        python plot_convergence.py HalfCheetah-v4                     # 绘制指定 task 的收敛曲线
-        python plot_convergence.py HalfCheetah-v4 ../cleanrl/results  # 指定 results 目录
-        
-    注意：results_dir 默认为 "./results"，如果从 visual 目录运行，需要指定正确的路径，
-         例如 "../cleanrl/results" 或使用绝对路径
+        python plot_convergence.py
+            # 使用默认的 ../cleanrl/results 目录
+            # 绘制 Ant、HalfCheetah、Hopper、Humanoid、Walker2d 五个任务的合并图
+
+        python plot_convergence.py ../cleanrl/results
+            # 指定 results 目录
+
+        python plot_convergence.py ../cleanrl/results algo1 algo2 ...
+            # 指定 results 目录，并按算法名过滤
     """
     import sys
     
-    # 默认 results 目录为当前目录下的 results
-    # 如果从 visual 目录运行，可以指定 ../cleanrl/results
-    if len(sys.argv) > 2:
-        results_dir = sys.argv[2]
-    else:
-        results_dir = "./results"
-    
-    # 如果提供了命令行参数，只绘制指定的 task
+    results_dir = "../cleanrl/results"
+    global_algo_filters = None
+
     if len(sys.argv) > 1:
-        task_name = sys.argv[1]
-        plot_convergence_curves(task_name, results_dir)
-        return
+        results_dir = sys.argv[1]
+        if len(sys.argv) > 2:
+            global_algo_filters = sys.argv[2:]
     
-    # 自动检测所有 task
     if os.path.exists(results_dir):
-        files = glob.glob(os.path.join(results_dir, "*.txt"))
-        tasks = set()
-        for filepath in files:
-            filename = os.path.basename(filepath)
-            parsed = parse_filename(filename)
-            if parsed is not None:
-                task, algo_name, date, seed = parsed
-                tasks.add(task)
-        
-        if tasks:
-            print(f"Found tasks: {tasks}")
-            for task in sorted(tasks):
-                print(f"\nPlotting convergence curve for {task}...")
-                plot_convergence_curves(task, results_dir)
-        else:
-            print(f"No task files found in {results_dir}")
+        print(f"Plotting combined convergence curves for: {TARGET_TASKS}")
+        plot_all_tasks_convergence(results_dir, algo_filters=global_algo_filters)
     else:
         print(f"Results directory {results_dir} does not exist")
         print("Please run training first to generate results files.")
