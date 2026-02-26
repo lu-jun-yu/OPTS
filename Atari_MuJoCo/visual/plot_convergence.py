@@ -1,11 +1,11 @@
 """
 绘制相同 task 下不同算法的 episodic_return 收敛曲线
-从 ./results/ 目录中读取数据文件，格式：{task}_{算法名}_{日期}_{seed}.json
+从 ./results/ 目录中读取数据文件
+新格式目录结构：results/{num_envs}_{num_steps}/{algo_name}_{date}/{env_id}_{seed}.json
 对于相同任务和相同算法，聚合 seed 1-10 的结果，计算同一行的均值
 支持平滑曲线和 max/min_return 阴影区域绘制
 """
 import os
-import glob
 import json
 import matplotlib.pyplot as plt
 import numpy as np
@@ -86,14 +86,13 @@ def smooth_data(data, window_size=5):
     return uniform_filter1d(np.array(data), size=window_size, mode='nearest')
 
 
-def load_episodic_returns(filepath, algo_type="ppo"):
+def load_episodic_returns(filepath):
     """
     从 JSON 文件中读取 episodic_return 值
-    
+
     Args:
         filepath: JSON文件路径
-        algo_type: 算法类型，"ppo" 或 "opts"
-    
+
     Returns:
         (step值列表, mean_return值列表, max_return值列表, min_return值列表) 元组
     """
@@ -131,45 +130,34 @@ def load_episodic_returns(filepath, algo_type="ppo"):
         return [], [], [], []
 
 
-def parse_filename(filename):
+def parse_result_path(filepath):
     """
-    解析文件名，提取 task、算法名、日期和 seed
-    格式：{task}_{算法名}_{日期}_{seed}.json
-    例如：HalfCheetah-v4_opts_ttpo_continuous_action_20260117_1.json
-        
+    解析新格式的结果文件路径
+    目录结构：results/{num_envs}_{num_steps}/{algo_name}_{date}/{env_id}_{seed}.json
+    例如：results/1_2048/opts_ttpo_continuous_action_20260225/HalfCheetah-v4_1.json
+
     Returns:
         (task, algo_name, date, seed) 或 None
     """
     import re
-    if filename.endswith('-.json'):
-        return None
-    
-    name_without_ext = filename.replace('.json', '')
-    
-    if name_without_ext.endswith('_el'):
-        name_without_ext = name_without_ext[:-3]
-    
-    seed_match = re.search(r'_(\d+)$', name_without_ext)
+    path = Path(filepath)
+    filename = path.stem  # e.g., "HalfCheetah-v4_1"
+    algo_dir = path.parent.name  # e.g., "opts_ttpo_continuous_action_20260225"
+
+    # Parse seed from filename: {env_id}_{seed}
+    seed_match = re.search(r'_(\d+)$', filename)
     if not seed_match:
         return None
-    
     seed = int(seed_match.group(1))
-    remaining = name_without_ext[:seed_match.start()]
-    
-    date_match = re.search(r'_(\d{8})$', remaining)
+    task = filename[:seed_match.start()]  # e.g., "HalfCheetah-v4"
+
+    # Parse algo_name and date from directory name: {algo_name}_{date}
+    date_match = re.search(r'_(\d{8})$', algo_dir)
     if not date_match:
         return None
-    
     date = date_match.group(1)
-    remaining = remaining[:date_match.start()]
-    
-    parts = remaining.split('_', 1)
-    if len(parts) < 2:
-        return None
-    
-    task = parts[0]
-    algo_name = parts[1]
-    
+    algo_name = algo_dir[:date_match.start()]  # e.g., "opts_ttpo_continuous_action"
+
     return (task, algo_name, date, seed)
 
 
@@ -288,19 +276,17 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir="./v
     all_tasks_data = {}
     
     for task_name in TARGET_TASKS:
-        pattern = os.path.join(results_dir, f"{task_name}_*.json")
-        files = glob.glob(pattern)
-        
+        # 递归查找所有 JSON 文件
+        files = list(Path(results_dir).rglob("*.json"))
+
         if not files:
             print(f"No results files found for task: {task_name}")
             continue
-        
+
         algorithms_data = defaultdict(lambda: defaultdict(list))
-        algo_is_opts = {}
 
         for filepath in files:
-            filename = os.path.basename(filepath)
-            parsed = parse_filename(filename)
+            parsed = parse_result_path(filepath)
 
             if parsed is None:
                 continue
@@ -321,14 +307,7 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir="./v
 
             algo_key = (algo_name, date)
 
-            if algo_key not in algo_is_opts:
-                algo_is_opts[algo_key] = "opts" in algo_name.lower()
-
-            is_opts = algo_is_opts[algo_key]
-
-            step_values, mean_return_values, max_return_values, min_return_values = load_episodic_returns(
-                filepath, algo_type="opts" if is_opts else "ppo"
-            )
+            step_values, mean_return_values, max_return_values, min_return_values = load_episodic_returns(filepath)
             if mean_return_values:
                 algorithms_data[algo_key][seed] = (step_values, mean_return_values, max_return_values, min_return_values)
 
@@ -342,7 +321,6 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir="./v
                         'mean': aggregated_mean,
                         'max': aggregated_max,
                         'min': aggregated_min,
-                        'is_opts': algo_is_opts.get(algo_key, False)
                     }
             all_tasks_data[task_name] = aggregated_data
     
@@ -450,19 +428,17 @@ def plot_convergence_curves(task_name, results_dir="./results", output_dir="./vi
         algo_filters: 要可视化的算法标识列表
         smooth_window: 平滑窗口大小
     """
-    pattern = os.path.join(results_dir, f"{task_name}_*.json")
-    files = glob.glob(pattern)
-    
+    # 递归查找所有 JSON 文件
+    files = list(Path(results_dir).rglob("*.json"))
+
     if not files:
         print(f"No results files found for task: {task_name}")
         return
-    
+
     algorithms_data = defaultdict(lambda: defaultdict(list))
-    algo_is_opts = {}
 
     for filepath in files:
-        filename = os.path.basename(filepath)
-        parsed = parse_filename(filename)
+        parsed = parse_result_path(filepath)
 
         if parsed is None:
             continue
@@ -483,14 +459,7 @@ def plot_convergence_curves(task_name, results_dir="./results", output_dir="./vi
 
         algo_key = (algo_name, date)
 
-        if algo_key not in algo_is_opts:
-            algo_is_opts[algo_key] = "opts" in algo_name.lower()
-
-        is_opts = algo_is_opts[algo_key]
-
-        step_values, mean_return_values, max_return_values, min_return_values = load_episodic_returns(
-            filepath, algo_type="opts" if is_opts else "ppo"
-        )
+        step_values, mean_return_values, max_return_values, min_return_values = load_episodic_returns(filepath)
         if mean_return_values:
             algorithms_data[algo_key][seed] = (step_values, mean_return_values, max_return_values, min_return_values)
     
