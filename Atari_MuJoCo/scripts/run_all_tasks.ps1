@@ -10,12 +10,28 @@ $taskConfigs_ttpo = @(
     @{ Name = "Humanoid-v4"; Steps = 3000000 }
 )
 
-Write-Host "Running opts_ttpo_adv_continuous_action for all tasks..." -ForegroundColor Green
+Write-Host "Running opts_ttpo_continuous_action for all tasks..." -ForegroundColor Green
 foreach ($config in $taskConfigs_ttpo) {
     $task = $config.Name
     $steps = $config.Steps
     Write-Host "Running task: $task ($($steps / 1000000)M steps)" -ForegroundColor Yellow
-    python cleanrl/opts_ttpo_adv_continuous_action.py `
+    python cleanrl/opts_ttpo_continuous_action.py `
+        --env-id $task `
+        --total-timesteps $steps `
+        --num-steps 2048 `
+        --num-envs 2
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Error running task $task" -ForegroundColor Red
+        exit $LASTEXITCODE
+    }
+}
+
+Write-Host "Running opts_ttpo_continuous_action for all tasks..." -ForegroundColor Green
+foreach ($config in $taskConfigs_ttpo) {
+    $task = $config.Name
+    $steps = $config.Steps
+    Write-Host "Running task: $task ($($steps / 1000000)M steps)" -ForegroundColor Yellow
+    python cleanrl/opts_ttpo_continuous_action.py `
         --env-id $task `
         --total-timesteps $steps `
         --num-steps 2048 `

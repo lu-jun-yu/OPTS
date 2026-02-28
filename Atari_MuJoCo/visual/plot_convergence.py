@@ -163,68 +163,53 @@ def parse_result_path(filepath):
 
 def aggregate_seed_results(all_seed_data):
     """
-    聚合多个 seed 的结果，对同一行计算均值
-    
+    聚合多个 seed 的结果，对同一行计算 mean 和 std
+
     Args:
         all_seed_data: 字典，key 是 seed，value 是 (step列表, mean_return列表, max_return列表, min_return列表) 元组
-    
+
     Returns:
-        (aggregated_steps, aggregated_mean_return, aggregated_max_return, aggregated_min_return) 元组
+        (aggregated_steps, aggregated_mean, aggregated_std) 元组
+        其中 std 是跨 seed 的 mean_return 的标准差
     """
     if not all_seed_data:
-        return [], [], [], []
-    
+        return [], [], []
+
     max_length = max(
         len(values[0]) if isinstance(values, tuple) and len(values) >= 4 else 0
         for values in all_seed_data.values()
     )
-    
+
     if max_length == 0:
-        return [], [], [], []
-    
+        return [], [], []
+
     first_seed_data = next(iter(all_seed_data.values()))
     if isinstance(first_seed_data, tuple) and len(first_seed_data) >= 4:
         aggregated_steps = list(first_seed_data[0])
     else:
         aggregated_steps = []
-    
+
     aggregated_mean_values = []
-    aggregated_max_values = []
-    aggregated_min_values = []
-    
+    aggregated_std_values = []
+
     for i in range(max_length):
-        row_mean_values = []
-        row_max_values = []
-        row_min_values = []
-        
+        row_values = []
+
         for seed, values in all_seed_data.items():
             if isinstance(values, tuple) and len(values) >= 4:
-                steps, mean_returns, max_returns, min_returns = values[0], values[1], values[2], values[3]
+                mean_returns = values[1]
                 if i < len(mean_returns):
-                    row_mean_values.append(mean_returns[i])
-                if i < len(max_returns):
-                    row_max_values.append(max_returns[i])
-                if i < len(min_returns):
-                    row_min_values.append(min_returns[i])
-        
-        if row_mean_values:
-            aggregated_mean_values.append(np.mean(row_mean_values))
+                    row_values.append(mean_returns[i])
+
+        if row_values:
+            aggregated_mean_values.append(np.mean(row_values))
+            aggregated_std_values.append(np.std(row_values))
         else:
             break
-        
-        if row_max_values:
-            aggregated_max_values.append(np.mean(row_max_values))
-        else:
-            aggregated_max_values.append(aggregated_mean_values[-1])
-            
-        if row_min_values:
-            aggregated_min_values.append(np.mean(row_min_values))
-        else:
-            aggregated_min_values.append(aggregated_mean_values[-1])
-    
+
     aggregated_steps = aggregated_steps[:len(aggregated_mean_values)]
-    
-    return aggregated_steps, aggregated_mean_values, aggregated_max_values, aggregated_min_values
+
+    return aggregated_steps, aggregated_mean_values, aggregated_std_values
 
 
 def load_algo_filters_from_config(task_name, config_filename="algo_select.json"):
@@ -314,13 +299,12 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir="./v
         if algorithms_data:
             aggregated_data = {}
             for algo_key, seed_data in algorithms_data.items():
-                aggregated_steps, aggregated_mean, aggregated_max, aggregated_min = aggregate_seed_results(seed_data)
+                aggregated_steps, aggregated_mean, aggregated_std = aggregate_seed_results(seed_data)
                 if aggregated_mean:
                     aggregated_data[algo_key] = {
                         'steps': aggregated_steps,
                         'mean': aggregated_mean,
-                        'max': aggregated_max,
-                        'min': aggregated_min,
+                        'std': aggregated_std,
                     }
             all_tasks_data[task_name] = aggregated_data
     
@@ -361,13 +345,14 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir="./v
             
             steps = np.array(data['steps'])
             mean_values = smooth_data(data['mean'], task_smooth_window)
-            max_values = smooth_data(data['max'], task_smooth_window)
-            min_values = smooth_data(data['min'], task_smooth_window)
-            
-            # 绘制阴影区域（max和min之间）
-            ax.fill_between(steps[:len(mean_values)], min_values, max_values, 
+            std_values = smooth_data(data['std'], task_smooth_window)
+
+            # 绘制阴影区域（mean ± std）
+            ax.fill_between(steps[:len(mean_values)],
+                          mean_values - std_values,
+                          mean_values + std_values,
                           color=color, alpha=0.2)
-            
+
             # 绘制均值曲线
             ax.plot(steps[:len(mean_values)], mean_values,
                    color=color, label=display_name, linewidth=1.5)
@@ -479,20 +464,21 @@ def plot_convergence_curves(task_name, results_dir="./results", output_dir="./vi
         color = algo_colors[algo_key]
         display_name = get_display_name(algo_name, date)
         
-        aggregated_steps, aggregated_mean, aggregated_max, aggregated_min = aggregate_seed_results(seed_data)
+        aggregated_steps, aggregated_mean, aggregated_std = aggregate_seed_results(seed_data)
 
         if not aggregated_mean:
             continue
 
         steps = np.array(aggregated_steps)
         mean_values = smooth_data(aggregated_mean, task_smooth_window)
-        max_values = smooth_data(aggregated_max, task_smooth_window)
-        min_values = smooth_data(aggregated_min, task_smooth_window)
-        
-        # 绘制阴影区域
-        plt.fill_between(steps[:len(mean_values)], min_values, max_values, 
+        std_values = smooth_data(aggregated_std, task_smooth_window)
+
+        # 绘制阴影区域（mean ± std）
+        plt.fill_between(steps[:len(mean_values)],
+                        mean_values - std_values,
+                        mean_values + std_values,
                         color=color, alpha=0.2)
-        
+
         # 绘制均值曲线
         plt.plot(steps[:len(mean_values)], mean_values,
                 color=color, label=display_name, linewidth=2)
