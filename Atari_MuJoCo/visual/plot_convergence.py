@@ -246,7 +246,7 @@ def get_display_name(algo_name, date=None):
     return algo_name
 
 
-def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir="./visual", 
+def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".", 
                                 algo_filters=None, smooth_window=5):
     """
     绘制所有5个任务的收敛曲线在一张图上（2行3列布局）
@@ -401,7 +401,7 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir="./v
     plt.close()
 
 
-def plot_convergence_curves(task_name, results_dir="./results", output_dir="./visual", 
+def plot_convergence_curves(task_name, results_dir="./results", output_dir=".", 
                             algo_filters=None, smooth_window=5):
     """
     绘制单个 task 下不同算法的收敛曲线（保留原有功能）
