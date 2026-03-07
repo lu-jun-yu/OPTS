@@ -45,6 +45,7 @@ from .opts_ttpo.core_algos import (
     compute_treegae_advantage_return,
 )
 from .opts_ttpo.ray_trainer import (
+    compute_episodic_returns,
     compute_response_mask,
     merge_batches,
     prepare_next_round_input,
@@ -181,6 +182,7 @@ def main_task(config):
 
             new_sample_indices = set_opts_ttpo_info(output, global_batch, next_states, round_idx)
             output.non_tensor_batch["new_sample_indices"] = new_sample_indices
+            output.non_tensor_batch["episodic_returns"] = compute_episodic_returns(output, global_batch)
             batch_size, response_len = output.batch["responses"].shape
             output.batch["state_branches"] = torch.ones(batch_size, response_len)
             output.batch["advantages"] = torch.zeros(batch_size, response_len)

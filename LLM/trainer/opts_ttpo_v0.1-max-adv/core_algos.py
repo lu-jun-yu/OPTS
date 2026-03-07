@@ -2002,21 +2002,17 @@ def compute_branch_weight_factors(
     state_branches: torch.Tensor,
     pid: np.ndarray,
     rid: np.ndarray,
-    uid: np.ndarray,
     branch_pos: np.ndarray,
 ) -> torch.Tensor:
     """Compute branch weight factors for TTPO gradient correction.
 
     branch_weight_factor[t] = product of all ancestor state_branches up to position t.
-    Traces the full ancestor chain back to the root, accumulating state_branches
-    products along the way. At the root, multiplies by the number of root trajectories
-    under the same uid (tree).
+    Used to correct policy gradient for unbiased estimation on tree structures.
 
     Args:
         state_branches: shape (batch_size, response_len)
-        pid: Parent IDs for each trajectory (None for root)
+        pid: Parent IDs for each trajectory
         rid: Response IDs for each trajectory
-        uid: Tree IDs (uid = tree identifier) for each trajectory
         branch_pos: Branch position in parent trajectory (-1 if no parent)
 
     Returns:
@@ -2025,31 +2021,28 @@ def compute_branch_weight_factors(
     batch_size, response_len = state_branches.shape
     rid2idx = {r: i for i, r in enumerate(rid)}
 
-    # Count root trajectories per uid (root_branch_counts)
-    root_counts = defaultdict(int)
-    for i in range(batch_size):
-        if pid[i] is None:
-            root_counts[uid[i]] += 1
-
-    # Compute initial weight by tracing the full ancestor chain to the root
+    # Step 1: Compute initial weight for each sample (ancestor chain product)
     def _compute_init_weight(i: int) -> torch.Tensor:
+        """Compute initial weight for a single sample."""
         weight = torch.tensor(1.0, dtype=state_branches.dtype)
         current_idx, current_bp = i, branch_pos[i]
-        # Iteratively trace parent -> grandparent -> ... -> root
         while pid[current_idx] is not None and pid[current_idx] in rid2idx:
             parent_idx = rid2idx[pid[current_idx]]
             weight *= state_branches[parent_idx, :current_bp + 1].prod()
             current_idx, current_bp = parent_idx, branch_pos[parent_idx]
-        # At root: multiply by root trajectory count for this tree
-        weight *= float(root_counts[uid[current_idx]])
         return weight
 
-    init_weights = torch.stack([_compute_init_weight(i) for i in range(batch_size)])
+    # Process all samples in parallel
+    with ThreadPoolExecutor() as executor:
+        weights = list(executor.map(_compute_init_weight, range(batch_size)))
+    init_weights = torch.stack(weights)
 
-    # Within-trajectory propagation: weight[t] = weight[t-1] * state_branches[t-1]
-    # This is init_weight * cumprod(state_branches[:, :-1])
+    # Step 2: Forward cumulative product using cumprod
+    # Prepend 1 to state_branches for correct alignment, then cumprod
     padded = torch.cat([torch.ones(batch_size, 1), state_branches[:, :-1]], dim=1)
     cumulative = torch.cumprod(padded, dim=1)
+
+    # Multiply by initial weights
     branch_weight_factor = init_weights.unsqueeze(1) * cumulative
 
     return branch_weight_factor
