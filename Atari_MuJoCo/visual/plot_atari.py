@@ -164,6 +164,9 @@ def parse_result_path(filepath):
     return (task, algo_name, date, seed)
 
 
+USE_SHORT_NAME = False
+
+
 def get_display_name(algo_name, date=None):
     if algo_name == "ppo_atari":
         return "PPO"
@@ -171,7 +174,9 @@ def get_display_name(algo_name, date=None):
         return "A2C"
     if algo_name == "rpo_atari":
         return "RPO"
-    # OPTS_TTPO 等其他算法显示完整名称（包含日期）
+    if algo_name.startswith("opts_ttpo") and USE_SHORT_NAME:
+        return "OPTS-TTPO"
+    # 默认显示完整名称（包含日期）
     if date:
         return f"{algo_name}_{date}"
     return algo_name
@@ -318,17 +323,18 @@ def plot_all_tasks(results_dir="../cleanrl/results", output_dir=".",
 def main():
     """
     用法：
-        python plot_atari.py
-        python plot_atari.py ../cleanrl/results
-        python plot_atari.py ../cleanrl/results algo1 algo2 ...
-    """
-    results_dir = "../cleanrl/results"
-    algo_filters = None
+        python plot_atari.py [--short-name] [results_dir] [algo1 algo2 ...]
 
-    if len(sys.argv) > 1:
-        results_dir = sys.argv[1]
-        if len(sys.argv) > 2:
-            algo_filters = sys.argv[2:]
+        --short-name    OPTS_TTPO 使用简称 "OPTS-TTPO"（默认显示全称）
+    """
+    global USE_SHORT_NAME
+
+    args = [a for a in sys.argv[1:] if a != "--short-name"]
+    if "--short-name" in sys.argv:
+        USE_SHORT_NAME = True
+
+    results_dir = args[0] if args else "../cleanrl/results"
+    algo_filters = args[1:] if len(args) > 1 else None
 
     if os.path.exists(results_dir):
         print(f"Plotting Atari convergence curves for {len(TARGET_TASKS)} tasks...")

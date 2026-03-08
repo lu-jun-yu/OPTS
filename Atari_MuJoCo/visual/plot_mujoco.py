@@ -231,10 +231,14 @@ def load_algo_filters_from_config(task_name, config_filename="algo_select.json")
     return None
 
 
+USE_SHORT_NAME = False
+
+
 def get_display_name(algo_name, date=None):
     """
     获取算法的显示名称
-    PPO/A2C/RPO 使用简短名称，OPTS_TTPO 显示完整名称（包含日期）
+    PPO/A2C/RPO 使用简短名称
+    OPTS_TTPO 根据 USE_SHORT_NAME 决定是否显示简称
     """
     if algo_name == "ppo_continuous_action":
         return "PPO"
@@ -242,8 +246,10 @@ def get_display_name(algo_name, date=None):
         return "A2C"
     if algo_name == "rpo_continuous_action":
         return "RPO"
+    if algo_name.startswith("opts_ttpo") and USE_SHORT_NAME:
+        return "OPTS-TTPO"
 
-    # OPTS_TTPO 等其他算法显示完整名称（包含日期）
+    # 默认显示完整名称（包含日期）
     if date:
         return f"{algo_name}_{date}"
     return algo_name
@@ -514,28 +520,22 @@ def plot_convergence_curves(task_name, results_dir="./results", output_dir=".",
 
 def main():
     """主函数：绘制5个MuJoCo任务的收敛曲线合并图
-    
+
     用法：
-        python plot_convergence.py
-            # 使用默认的 ../cleanrl/results 目录
-            # 绘制 Ant、HalfCheetah、Hopper、Humanoid、Walker2d 五个任务的合并图
+        python plot_convergence.py [--short-name] [results_dir] [algo1 algo2 ...]
 
-        python plot_convergence.py ../cleanrl/results
-            # 指定 results 目录
-
-        python plot_convergence.py ../cleanrl/results algo1 algo2 ...
-            # 指定 results 目录，并按算法名过滤
+        --short-name    OPTS_TTPO 使用简称 "OPTS-TTPO"（默认显示全称）
     """
     import sys
-    
-    results_dir = "../cleanrl/results"
-    global_algo_filters = None
+    global USE_SHORT_NAME
 
-    if len(sys.argv) > 1:
-        results_dir = sys.argv[1]
-        if len(sys.argv) > 2:
-            global_algo_filters = sys.argv[2:]
-    
+    args = [a for a in sys.argv[1:] if a != "--short-name"]
+    if "--short-name" in sys.argv:
+        USE_SHORT_NAME = True
+
+    results_dir = args[0] if args else "../cleanrl/results"
+    global_algo_filters = args[1:] if len(args) > 1 else None
+
     if os.path.exists(results_dir):
         print(f"Plotting combined convergence curves for: {TARGET_TASKS}")
         plot_all_tasks_convergence(results_dir, algo_filters=global_algo_filters)
