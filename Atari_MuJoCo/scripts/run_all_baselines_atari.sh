@@ -81,20 +81,3 @@ for seed in "${SEEDS[@]}"; do
 done
 
 echo "All PPO done"
-
-
-# A2C
-for seed in "${SEEDS[@]}"; do
-    echo "A2C seed=$seed starting..."
-    for task in "${ATARI_GAMES[@]}"; do
-        python cleanrl/a2c_atari.py \
-            --env-id $task \
-            --total-timesteps 10000000 \
-            --no-cuda \
-            --seed $seed &
-    done
-    wait
-    echo "A2C seed=$seed done"
-done
-
-echo "All A2C done"
