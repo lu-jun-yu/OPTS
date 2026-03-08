@@ -6,8 +6,6 @@ export MKL_NUM_THREADS=1
 SEEDS=(1 2 3)
 
 ATARI_GAMES=(
-    AdventureNoFrameskip-v4
-    AirRaidNoFrameskip-v4
     AlienNoFrameskip-v4
     AmidarNoFrameskip-v4
     AssaultNoFrameskip-v4
