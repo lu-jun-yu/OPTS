@@ -234,13 +234,16 @@ def load_algo_filters_from_config(task_name, config_filename="algo_select.json")
 def get_display_name(algo_name, date=None):
     """
     获取算法的显示名称
-    PPO 显示简短名称，其他算法显示完整名称（包含日期）
+    PPO/A2C/RPO 使用简短名称，OPTS_TTPO 显示完整名称（包含日期）
     """
-    # PPO 使用简短名称
     if algo_name == "ppo_continuous_action":
         return "PPO"
-    
-    # 其他算法显示完整名称（包含日期）
+    if algo_name == "a2c_continuous_action":
+        return "A2C"
+    if algo_name == "rpo_continuous_action":
+        return "RPO"
+
+    # OPTS_TTPO 等其他算法显示完整名称（包含日期）
     if date:
         return f"{algo_name}_{date}"
     return algo_name

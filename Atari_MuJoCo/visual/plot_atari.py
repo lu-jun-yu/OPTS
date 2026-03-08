@@ -169,6 +169,9 @@ def get_display_name(algo_name, date=None):
         return "PPO"
     if algo_name == "a2c_atari":
         return "A2C"
+    if algo_name == "rpo_atari":
+        return "RPO"
+    # OPTS_TTPO 等其他算法显示完整名称（包含日期）
     if date:
         return f"{algo_name}_{date}"
     return algo_name
