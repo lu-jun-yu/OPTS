@@ -21,6 +21,8 @@ so the response should be: "...thinking...</think>\n...\\boxed{answer}..."
 import re
 from typing import Optional, Tuple
 
+from math_verify import parse, verify
+
 
 def check_format(response_str: str) -> bool:
     """Check if the response follows the strict format: ...思考内容...</think>\n...\\boxed{答案}...
@@ -59,30 +61,35 @@ def extract_answer(response_str: str) -> Optional[str]:
     return None
 
 
-def normalize_answer(answer: str) -> str:
-    """Normalize the answer for comparison.
+def validate_answer(answer: str, ground_truth: str) -> bool:
+    """Validate if the extracted answer matches the ground truth.
 
-    Args:
-        answer: The answer string to normalize.
+    Uses math-verify for robust mathematical equivalence checking,
+    with a fallback to simple string comparison.
 
-    Returns:
-        Normalized answer string.
+    Supported match types (via math-verify):
+    - Plain numbers: 42 == 42.0
+    - LaTeX fractions: \\frac{1}{2} == 0.5 == 1/2
+    - LaTeX expressions: \\sqrt{2}, x^{2}+1, etc.
+    - Sets: {1,3} \\cup {2,4} == {1,2,3,4}
+    - Percentages: 10\\% == 0.1
+    - Text/multiple choice: A, B, C, D
     """
-    answer = answer.strip()
-    # Remove $, commas, and spaces
-    answer = re.sub(r'[\$,\s]', '', answer)
-    # Handle boxed answers: \boxed{...}
-    boxed_match = re.search(r'\\boxed\{(.*?)\}', answer)
-    if boxed_match:
-        answer = boxed_match.group(1)
-    return answer
+    try:
+        parsed_answer = parse(answer)
+        parsed_gt = parse(ground_truth)
+        return verify(parsed_gt, parsed_answer)
+    except Exception:
+        # Fallback: simple string comparison
+        norm = lambda s: re.sub(r'[\$,\s]', '', s.strip())
+        return norm(answer) == norm(ground_truth)
 
 
 def compute_score(
     solution_str: str,
     ground_truth: str,
-    format_reward: float = 0.5,
-    correct_reward: float = 0.5,
+    format_reward: float = 0.1,
+    correct_reward: float = 0.9,
     extra_info: Optional[dict] = None,
 ) -> float:
     """Compute the score for a response.
@@ -109,12 +116,10 @@ def compute_score(
     if check_format(solution_str):
         total_score += format_reward
 
-    # Check answer correctness
+    # Check answer correctness (using math-verify for robust matching)
     answer_content = extract_answer(solution_str)
     if answer_content is not None:
-        normalized_answer = normalize_answer(answer_content)
-        normalized_ground_truth = normalize_answer(ground_truth)
-        if normalized_answer == normalized_ground_truth:
+        if validate_answer(answer_content, ground_truth):
             total_score += correct_reward
 
     return total_score
