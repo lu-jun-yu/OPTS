@@ -81,10 +81,10 @@ def filter_dataset(dataset, max_problem_len: int, max_solution_len: int):
     after_solution = len(dataset)
     print(f"  Solution length filter (<={max_solution_len}): {after_problem} -> {after_solution}")
 
-    # 4. Only keep pure number answers
-    dataset = dataset.filter(lambda x: is_pure_number(x["answer"]))
-    after_answer = len(dataset)
-    print(f"  Answer filter: {after_solution} -> {after_answer}")
+    # # 4. Only keep pure number answers
+    # dataset = dataset.filter(lambda x: is_pure_number(x["answer"]))
+    # after_answer = len(dataset)
+    # print(f"  Answer filter: {after_solution} -> {after_answer}")
 
     return dataset
 

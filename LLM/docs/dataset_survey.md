@@ -17,8 +17,8 @@
 | 数据集 | 数量 | 难度 | 来源 |
 |--------|------|------|------|
 | **MATH (math12k)** | 12k | 高中级 | `hiyouga/math12k` |
-| **NuminaMath-1.5-RL-Verifiable** (竞赛子集筛选) | 3-5k | 竞赛级 | `nlile/NuminaMath-1.5-RL-Verifiable` |
-| **总计** | **15-17k** | | |
+| **NuminaMath-1.5-RL-Verifiable** (竞赛子集筛选) | 5k (amc_aime: 3000, olympiads: 1500, aops_forum: 500) | 竞赛级 | `nlile/NuminaMath-1.5-RL-Verifiable` |
+| **总计** | **~17k** | | |
 
 ### 2.2 测试集
 
@@ -56,10 +56,11 @@
 - 竞赛级难题来源：olympiads (92k) + cn_contest (16k) + aops_forum (15k) + amc_aime (5k)
 
 **筛选策略（启发式规则）：**
-1. 只保留 answer 为纯数字的（正则 `^-?\d+(\.\d+)?$`）
+1. 只保留竞赛级来源：`olympiads`、`amc_aime`、`aops_forum`
 2. 去掉超长 problem（>2000 字符）
 3. 去掉超长 solution（>5000 字符，通常对应过难的题）
-4. 按 source 分层采样：amc_aime 全留，olympiads 采样 1-2k，aops_forum 采样 500-1k
+4. 去除与测试集重叠的题目（对比 AIME25、AMC23，防止数据污染）
+5. 按 source 分层采样：amc_aime: 3000，olympiads: 1500，aops_forum: 500
 
 ## 4. NuminaMath-CoT 子集分析
 
