@@ -1,19 +1,9 @@
 import argparse
 import os
-import re
 
 import datasets
 
-
-SYSTEM_PROMPT = """You are a helpful assistant. When solving problems, you must first think step by step within <think> </think> tags, then provide your final answer using \\boxed{}.
-
-Example:
-User: What is 2 + 3?
-Assistant: <think>
-I need to add 2 and 3 together.
-2 + 3 = 5
-</think>
-The answer is \\boxed{5}."""
+from prompts import SYSTEM_PROMPT
 
 
 if __name__ == "__main__":

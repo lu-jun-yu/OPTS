@@ -5,16 +5,16 @@ import pandas as pd
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Merge GSM8K and Math12K training datasets.")
-    parser.add_argument(
-        "--gsm8k_path",
-        default="data/gsm8k/train.parquet",
-        help="Path to GSM8K train.parquet file.",
-    )
+    parser = argparse.ArgumentParser(description="Merge Math12K and NuminaMath training datasets.")
     parser.add_argument(
         "--math12k_path",
         default="data/math12k/train.parquet",
         help="Path to Math12K train.parquet file.",
+    )
+    parser.add_argument(
+        "--numinamath_path",
+        default="data/numinamath/train.parquet",
+        help="Path to NuminaMath train.parquet file.",
     )
     parser.add_argument(
         "--output_path",
@@ -37,21 +37,21 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Expand paths
-    gsm8k_path = os.path.expanduser(args.gsm8k_path)
     math12k_path = os.path.expanduser(args.math12k_path)
+    numinamath_path = os.path.expanduser(args.numinamath_path)
     output_path = os.path.expanduser(args.output_path)
 
     # Read datasets
-    print(f"Reading GSM8K from: {gsm8k_path}")
-    gsm8k_df = pd.read_parquet(gsm8k_path)
-    print(f"  GSM8K samples: {len(gsm8k_df)}")
-
     print(f"Reading Math12K from: {math12k_path}")
     math12k_df = pd.read_parquet(math12k_path)
     print(f"  Math12K samples: {len(math12k_df)}")
 
+    print(f"Reading NuminaMath from: {numinamath_path}")
+    numinamath_df = pd.read_parquet(numinamath_path)
+    print(f"  NuminaMath samples: {len(numinamath_df)}")
+
     # Merge datasets
-    merged_df = pd.concat([gsm8k_df, math12k_df], ignore_index=True)
+    merged_df = pd.concat([math12k_df, numinamath_df], ignore_index=True)
     print(f"Merged samples: {len(merged_df)}")
 
     # Shuffle if requested
