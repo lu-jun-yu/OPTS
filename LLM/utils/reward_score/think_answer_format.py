@@ -43,9 +43,10 @@ def check_format(response_str: str) -> bool:
 
 
 def extract_answer(response_str: str) -> Optional[str]:
-    """Extract the answer from \\boxed{...}.
+    """Extract the answer from \\boxed{...} after </think>.
 
-    If there are multiple \\boxed{} in the response, only the first one is taken.
+    Only searches in the content after the last </think> tag to avoid
+    picking up intermediate \\boxed{} attempts inside the thinking block.
 
     Args:
         response_str: The response string.
@@ -53,9 +54,15 @@ def extract_answer(response_str: str) -> Optional[str]:
     Returns:
         The answer content, or None if not found.
     """
+    # Strip thinking block: only look after </think>
+    think_end = response_str.rfind("</think>")
+    if think_end != -1:
+        answer_part = response_str[think_end + len("</think>"):]
+    else:
+        answer_part = response_str
+
     # Match \boxed{...}, handling nested braces
-    # Use findall to find all matches, then take the first one
-    matches = re.findall(r'\\boxed\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', response_str, re.DOTALL)
+    matches = re.findall(r'\\boxed\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', answer_part, re.DOTALL)
     if matches:
         return matches[0].strip()
     return None

@@ -41,11 +41,7 @@ def default_compute_score(
     Raises:
         NotImplementedError: If the reward function is not implemented for the given data source.
     """
-    if data_source == "openai/gsm8k":
-        from . import think_answer_format
-
-        res = think_answer_format.compute_score(solution_str, ground_truth, extra_info=extra_info)
-    elif data_source == "hiyouga/math12k":
+    if data_source in ["hiyouga/math12k", "nlile/NuminaMath-1.5-RL-Verifiable"]:
         from . import think_answer_format
 
         res = think_answer_format.compute_score(solution_str, ground_truth, extra_info=extra_info)
