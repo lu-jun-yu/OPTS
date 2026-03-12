@@ -18,8 +18,6 @@ from scipy.ndimage import uniform_filter1d
 
 # 57个 Atari 任务（按字母序，与 run_all_baselines_atari.sh 一致）
 TARGET_TASKS = [
-    "AdventureNoFrameskip-v4",
-    "AirRaidNoFrameskip-v4",
     "AlienNoFrameskip-v4",
     "AmidarNoFrameskip-v4",
     "AssaultNoFrameskip-v4",
@@ -172,8 +170,6 @@ def get_display_name(algo_name, date=None):
         return "PPO"
     if algo_name == "a2c_atari":
         return "A2C"
-    if algo_name == "rpo_atari":
-        return "RPO"
     if algo_name.startswith("opts_ttpo") and USE_SHORT_NAME:
         return "OPTS-TTPO"
     # 默认显示完整名称（包含日期）
@@ -199,7 +195,7 @@ def load_algo_filters_from_config(task_name, config_filename="algo_select_atari.
 
 
 def plot_all_tasks(results_dir="../cleanrl/results", output_dir=".",
-                   algo_filters=None, smooth_window=5):
+                   algo_filters=None, smooth_window=200):
     """
     绘制57个 Atari 任务的收敛曲线（10行6列布局）
     每个算法的不同种子以相同颜色画出（不聚合 mean/std）
