@@ -1,3 +1,5 @@
+<!-- Copyright 2025 Junyu Lu (Julian Lou). All rights reserved. -->
+
 # OPTS Generation 详细设计文档
 
 > **代码实现状态**：已完成。代码位于 `LLM/trainer/main_opts_generation.py`。

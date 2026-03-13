@@ -1,3 +1,5 @@
+# Copyright 2025 Junyu Lu (Julian Lou). All rights reserved.
+
 """
 Offline evaluation for math reasoning benchmarks.
 

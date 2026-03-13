@@ -1,3 +1,5 @@
+<!-- Copyright 2025 Junyu Lu (Julian Lou). All rights reserved. -->
+
 # OPTS_TTPO 详细设计文档
 
 > **代码实现状态**：已完成。代码位于 `LLM/trainer/opts_ttpo/` 目录下。
