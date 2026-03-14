@@ -97,12 +97,12 @@ def compute_score(
     Args:
         solution_str: The response string (without <think> prefix, which is in prompt).
         ground_truth: The expected answer.
-        format_reward: Reward for correct format (0.5).
-        correct_reward: Reward for correct answer (0.5).
+        format_reward: Reward for correct format (0.1).
+        correct_reward: Reward for correct answer (0.9).
         extra_info: Optional extra info dict, may contain 'full_response_str' for tree search.
 
     Returns:
-        The computed score (0, 0.5, or 1.0).
+        The computed score (0, 0.1, 0.9, or 1.0).
     """
     # OPTS_TTPO: Use full response string if available (for tree search)
     if extra_info and "full_response_str" in extra_info:

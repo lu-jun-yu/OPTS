@@ -64,6 +64,12 @@ if __name__ == "__main__":
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
+    # Normalize mixed-type columns to string to avoid PyArrow serialization errors
+    for col in merged_df.columns:
+        if merged_df[col].dtype == object:
+            merged_df[col] = merged_df[col].astype(str).where(merged_df[col].notna(), None)
+
+
     # Save merged dataset
     merged_df.to_parquet(output_path)
     print(f"Saved merged dataset to: {output_path}")
