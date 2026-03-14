@@ -501,6 +501,7 @@ def select_next_states(
     return_threshold: Optional[float],
     max_prompt_length: int,
     batch_size: int,
+    tokenizer=None,
 ) -> Dict[str, Tuple[int, int]]:
     """Select next states for expansion using TUCT (aligned with reference).
 
@@ -554,6 +555,22 @@ def select_next_states(
 
     batch_size, response_len = advantages.shape
     rid2idx = {r: i for i, r in enumerate(rid)}
+
+    # Compute think_end_pos: position of first token of "</think>" per trajectory
+    # Positions at or after think_end_pos are masked to ensure branching stays in think phase
+    responses = batch.batch["responses"]
+    think_end_pos = torch.full((batch_size,), response_len, dtype=torch.long)
+    if tokenizer is not None:
+        think_token_ids = tokenizer.encode("</think>", add_special_tokens=False)
+        think_len = len(think_token_ids)
+        think_ids_tensor = torch.tensor(think_token_ids, device=responses.device)
+        for i in range(batch_size):
+            valid_len = int(response_mask[i].sum().item())
+            think_end_pos[i] = valid_len  # Default: end of response (no masking)
+            for pos in range(valid_len - think_len + 1):
+                if torch.equal(responses[i, pos:pos + think_len], think_ids_tensor):
+                    think_end_pos[i] = pos
+                    break
 
     # Compute tree_max_reward per uid (from pre-computed episodic_returns)
     tree_max_reward = {}
@@ -670,6 +687,10 @@ def select_next_states(
             ti, tp = path[k]
             # Check prompt length constraint (conservative: checked at selected node)
             if prompt_lengths[ti].item() + tp > max_prompt_length:
+                valid_mask[k] = False
+            # Mask positions after </think> to keep branching in think phase
+            # Allowing tp == think_end_pos: selected_to_branch_points maps it to tp-1, still before </think>
+            if tp > think_end_pos[ti].item():
                 valid_mask[k] = False
 
         # Set masked positions to -inf
@@ -1916,6 +1937,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
         batch_size = self.config.data.get("gen_batch_size", self.config.data.train_batch_size)
 
         for epoch in range(current_epoch, self.config.trainer.total_epochs):
+            epoch_returns = []  # Collect per-step returns for epoch-level threshold
             for batch_idx in range(len(self.train_dataloader)):
                 if hasattr(self.actor_rollout_wg, "async_calls_finalize_fn_exec"):
                     self.actor_rollout_wg.async_calls_finalize_fn_exec(blocking=False)
@@ -2194,6 +2216,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                     return_threshold=prev_mean_return,
                                     max_prompt_length=self.config.data.max_prompt_length,
                                     batch_size=batch_size,
+                                    tokenizer=self.tokenizer,
                                 )
                                 # Convert selected nodes to parent branch points
                                 # (also updates state_branches in-place)
@@ -2224,9 +2247,11 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                         )
                         batch.batch["branch_weight_factor"] = branch_weight_factor
 
-                        # Compute aggregated returns for next iteration's threshold
-                        prev_mean_return = compute_aggregated_returns(batch)
-                        metrics["opts_ttpo/return_threshold"] = prev_mean_return
+                        # Collect step-level return; prev_mean_return updated at epoch end
+                        step_mean_return = compute_aggregated_returns(batch)
+                        epoch_returns.append(step_mean_return)
+                        metrics["opts_ttpo/return_threshold"] = prev_mean_return if prev_mean_return is not None else 0.0
+                        metrics["opts_ttpo/step_mean_return"] = step_mean_return
 
                         log_batch_state(batch, stage="opts_ttpo_final_batch_before_update", step=self.global_steps)
 
@@ -2354,3 +2379,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                 if hasattr(self.train_dataset, "on_batch_end"):
                     # The dataset may be changed after each training batch
                     self.train_dataset.on_batch_end(batch=batch)
+
+            # End of epoch: update prev_mean_return as mean of all steps in this epoch
+            if epoch_returns:
+                prev_mean_return = sum(epoch_returns) / len(epoch_returns)
