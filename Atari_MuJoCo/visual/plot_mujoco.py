@@ -255,8 +255,8 @@ def get_display_name(algo_name, date=None):
     return algo_name
 
 
-def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".", 
-                                algo_filters=None, smooth_window=5):
+def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
+                                algo_filters=None, smooth_window=5, seed_filters=None):
     """
     绘制所有5个任务的收敛曲线在一张图上（2行3列布局）
     
@@ -296,8 +296,12 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
                 if (algo_id not in algo_filters) and (algo_id_with_date not in algo_filters):
                     continue
 
-            if seed < 1 or seed > 10:
-                continue
+            if seed_filters is not None:
+                if seed not in seed_filters:
+                    continue
+            else:
+                if seed < 1 or seed > 10:
+                    continue
 
             algo_key = (algo_name, date)
 
@@ -404,14 +408,14 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
     
     # 保存图片
     os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, "all_tasks_convergence.png")
+    output_path = os.path.join(output_dir, "all_tasks_mujoco.png")
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     print(f"Combined convergence curves saved to: {output_path}")
     plt.close()
 
 
-def plot_convergence_curves(task_name, results_dir="./results", output_dir=".", 
-                            algo_filters=None, smooth_window=5):
+def plot_convergence_curves(task_name, results_dir="./results", output_dir=".",
+                            algo_filters=None, smooth_window=5, seed_filters=None):
     """
     绘制单个 task 下不同算法的收敛曲线（保留原有功能）
     
@@ -448,8 +452,12 @@ def plot_convergence_curves(task_name, results_dir="./results", output_dir=".",
             if (algo_id not in algo_filters) and (algo_id_with_date not in algo_filters):
                 continue
 
-        if seed < 1 or seed > 10:
-            continue
+        if seed_filters is not None:
+            if seed not in seed_filters:
+                continue
+        else:
+            if seed < 1 or seed > 10:
+                continue
 
         algo_key = (algo_name, date)
 
@@ -522,23 +530,40 @@ def main():
     """主函数：绘制5个MuJoCo任务的收敛曲线合并图
 
     用法：
-        python plot_convergence.py [--short-name] [results_dir] [algo1 algo2 ...]
+        python plot_convergence.py [--short-name] [--seeds 1,2,3] [results_dir] [algo1 algo2 ...]
 
-        --short-name    OPTS_TTPO 使用简称 "OPTS-TTPO"（默认显示全称）
+        --short-name        OPTS_TTPO 使用简称 "OPTS-TTPO"（默认显示全称）
+        --seeds 1,2,3       只可视化指定随机种子的数据（逗号分隔，默认 seed 1-10）
     """
     import sys
     global USE_SHORT_NAME
 
-    args = [a for a in sys.argv[1:] if a != "--short-name"]
-    if "--short-name" in sys.argv:
-        USE_SHORT_NAME = True
+    seed_filters = None
+    raw_args = sys.argv[1:]
+    filtered_args = []
+    i = 0
+    while i < len(raw_args):
+        if raw_args[i] == "--short-name":
+            USE_SHORT_NAME = True
+        elif raw_args[i] == "--seeds":
+            if i + 1 < len(raw_args):
+                seed_filters = set(int(s) for s in raw_args[i + 1].split(","))
+                i += 1
+            else:
+                print("Error: --seeds requires an argument (e.g., --seeds 1,2,3)")
+                return
+        else:
+            filtered_args.append(raw_args[i])
+        i += 1
 
-    results_dir = args[0] if args else "../cleanrl/results"
-    global_algo_filters = args[1:] if len(args) > 1 else None
+    results_dir = filtered_args[0] if filtered_args else "../cleanrl/results"
+    global_algo_filters = filtered_args[1:] if len(filtered_args) > 1 else None
 
     if os.path.exists(results_dir):
-        print(f"Plotting combined convergence curves for: {TARGET_TASKS}")
-        plot_all_tasks_convergence(results_dir, algo_filters=global_algo_filters)
+        seed_info = f" (seeds: {sorted(seed_filters)})" if seed_filters else ""
+        print(f"Plotting combined convergence curves for: {TARGET_TASKS}{seed_info}")
+        plot_all_tasks_convergence(results_dir, algo_filters=global_algo_filters,
+                                   seed_filters=seed_filters)
     else:
         print(f"Results directory {results_dir} does not exist")
         print("Please run training first to generate results files.")

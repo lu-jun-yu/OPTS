@@ -195,7 +195,7 @@ def load_algo_filters_from_config(task_name, config_filename="algo_select_atari.
 
 
 def plot_all_tasks(results_dir="../cleanrl/results", output_dir=".",
-                   algo_filters=None, smooth_window=200):
+                   algo_filters=None, smooth_window=200, seed_filters=None):
     """
     绘制57个 Atari 任务的收敛曲线（10行6列布局）
     每个算法的不同种子以相同颜色画出（不聚合 mean/std）
@@ -223,6 +223,9 @@ def plot_all_tasks(results_dir="../cleanrl/results", output_dir=".",
             algo_id_with_date = f"{algo_name}_{date}"
             if (algo_id not in algo_filters) and (algo_id_with_date not in algo_filters):
                 continue
+
+        if seed_filters is not None and seed not in seed_filters:
+            continue
 
         algo_key = (algo_name, date)
         step_values, mean_return_values = load_episodic_returns(filepath)
@@ -310,7 +313,7 @@ def plot_all_tasks(results_dir="../cleanrl/results", output_dir=".",
     plt.tight_layout()
 
     os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, "atari_all_tasks.png")
+    output_path = os.path.join(output_dir, "all_tasks_atari.png")
     plt.savefig(output_path, dpi=200, bbox_inches='tight')
     print(f"Atari convergence curves saved to: {output_path}")
     plt.close()
@@ -319,22 +322,38 @@ def plot_all_tasks(results_dir="../cleanrl/results", output_dir=".",
 def main():
     """
     用法：
-        python plot_atari.py [--short-name] [results_dir] [algo1 algo2 ...]
+        python plot_atari.py [--short-name] [--seeds 1,2,3] [results_dir] [algo1 algo2 ...]
 
-        --short-name    OPTS_TTPO 使用简称 "OPTS-TTPO"（默认显示全称）
+        --short-name        OPTS_TTPO 使用简称 "OPTS-TTPO"（默认显示全称）
+        --seeds 1,2,3       只可视化指定随机种子的数据（逗号分隔，默认全部）
     """
     global USE_SHORT_NAME
 
-    args = [a for a in sys.argv[1:] if a != "--short-name"]
-    if "--short-name" in sys.argv:
-        USE_SHORT_NAME = True
+    seed_filters = None
+    raw_args = sys.argv[1:]
+    filtered_args = []
+    i = 0
+    while i < len(raw_args):
+        if raw_args[i] == "--short-name":
+            USE_SHORT_NAME = True
+        elif raw_args[i] == "--seeds":
+            if i + 1 < len(raw_args):
+                seed_filters = set(int(s) for s in raw_args[i + 1].split(","))
+                i += 1
+            else:
+                print("Error: --seeds requires an argument (e.g., --seeds 1,2,3)")
+                return
+        else:
+            filtered_args.append(raw_args[i])
+        i += 1
 
-    results_dir = args[0] if args else "../cleanrl/results"
-    algo_filters = args[1:] if len(args) > 1 else None
+    results_dir = filtered_args[0] if filtered_args else "../cleanrl/results"
+    algo_filters = filtered_args[1:] if len(filtered_args) > 1 else None
 
     if os.path.exists(results_dir):
-        print(f"Plotting Atari convergence curves for {len(TARGET_TASKS)} tasks...")
-        plot_all_tasks(results_dir, algo_filters=algo_filters)
+        seed_info = f" (seeds: {sorted(seed_filters)})" if seed_filters else ""
+        print(f"Plotting Atari convergence curves for {len(TARGET_TASKS)} tasks{seed_info}...")
+        plot_all_tasks(results_dir, algo_filters=algo_filters, seed_filters=seed_filters)
     else:
         print(f"Results directory {results_dir} does not exist")
 
