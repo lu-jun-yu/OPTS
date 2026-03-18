@@ -71,6 +71,8 @@ for seed in "${SEEDS[@]}"; do
         python cleanrl/opts_ttpo_atari.py \
             --env-id $task \
             --total-timesteps 10000000 \
+            --num-steps 4096 \
+            --num-envs 1 \
             --no-cuda \
             --seed $seed &
     done

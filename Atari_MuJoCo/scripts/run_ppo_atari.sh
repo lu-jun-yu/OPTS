@@ -73,11 +73,11 @@ for seed in "${SEEDS[@]}"; do
         python cleanrl/ppo_atari.py \
             --env-id $task \
             --total-timesteps 10000000 \
+            --num-steps 4096 \
+            --num-envs 1 \
             --no-cuda \
             --seed $seed &
     done
     wait
     echo "PPO seed=$seed done"
 done
-
-echo "All PPO done"

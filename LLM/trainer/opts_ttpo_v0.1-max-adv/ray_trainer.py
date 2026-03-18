@@ -58,7 +58,7 @@ from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 from .core_algos import (
     AdvantageEstimator,
     agg_loss,
-    compute_branch_weight_factors,
+    compute_branch_weight,
 )
 from ...utils.logger_batch import *
 
@@ -473,8 +473,8 @@ def select_next_states(
     batch_size, response_len = advantages.shape
     rid2idx = {r: i for i, r in enumerate(rid)}
 
-    # 1) Compute branch_weight_factors as exploitation weight
-    branch_weight_factors = compute_branch_weight_factors(
+    # 1) Compute branch_weight as exploitation weight
+    branch_weight = compute_branch_weight(
         state_branches=state_branches,
         pid=pid,
         rid=rid,
@@ -485,7 +485,7 @@ def select_next_states(
     tree_branches_N = torch.tensor([tree_branches[t] for t in tid], dtype=torch.float32)
 
     # 3) Compute TUCT: exploitation * exploration
-    exploitation = advantages[:, :-1] / (branch_weight_factors[:, :-1] * state_branches[:, :-1])
+    exploitation = advantages[:, :-1] / (branch_weight[:, :-1] * state_branches[:, :-1])
     exploration = torch.sqrt(torch.log(torch.tensor((round_idx + 1) * n_samples_per_round + 1, dtype=torch.float32))) / tree_branches_N.unsqueeze(1)
     tuct = exploitation * exploration
     tuct = torch.where(response_mask[:, 1:] > 0, tuct, torch.tensor(-float('inf')))
@@ -1945,14 +1945,14 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                             batch = global_batch
                             batch.batch["advantages"] = verl_F.masked_whiten(batch.batch["advantages"], batch.batch["response_mask"])
 
-                            # Compute branch_weight_factor for TTPO gradient correction
-                            branch_weight_factor = compute_branch_weight_factors(
+                            # Compute branch_weight for TTPO gradient correction
+                            branch_weight = compute_branch_weight(
                                 state_branches=batch.batch["state_branches"],
                                 pid=batch.non_tensor_batch["pid"],
                                 rid=batch.non_tensor_batch["rid"],
                                 branch_pos=batch.non_tensor_batch["branch_pos"],
                             )
-                            batch.batch["branch_weight_factor"] = branch_weight_factor
+                            batch.batch["branch_weight"] = branch_weight
                             log_batch_state(batch, stage="opts_ttpo_final_batch_before_update", step=self.global_steps)
 
                     # update critic

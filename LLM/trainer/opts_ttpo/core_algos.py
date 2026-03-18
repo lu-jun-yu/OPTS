@@ -914,7 +914,7 @@ def agg_loss(
     batch_num_tokens: Optional[int] = None,
     global_batch_size: Optional[int] = None,
     loss_scale_factor: Optional[int] = None,
-    branch_weight_factor: Optional[torch.Tensor] = None,
+    branch_weight: Optional[torch.Tensor] = None,
 ):
     """
     Aggregate the loss across global batch to ensure the loss is invariant to fsdp/megatron parallelism.
@@ -938,7 +938,7 @@ def agg_loss(
         global_batch_size: global batch size
         loss_scale_factor: scale factor for "seq-mean-token-sum-norm" mode. If None, uses loss_mask.shape[-1].
             Set this to a constant value to ensure consistent normalization throughout training.
-        branch_weight_factor: weight factor for "weighted-token-mean" mode, shape (bs, response_length).
+        branch_weight: weight factor for "weighted-token-mean" mode, shape (bs, response_length).
             Required when loss_agg_mode is "weighted-token-mean".
 
     Returns:
@@ -946,15 +946,15 @@ def agg_loss(
             aggregated loss
     """
     # NOTE: `masked_sum` is more robust than multiplying the `mask`.
-    if branch_weight_factor is not None:
+    if branch_weight is not None:
         loss_agg_mode = "weighted-token-mean"
     if loss_agg_mode == "token-mean":
         if batch_num_tokens is None:
             batch_num_tokens = loss_mask.sum()
         loss = verl_F.masked_sum(loss_mat, loss_mask) / batch_num_tokens * dp_size
     elif loss_agg_mode == "weighted-token-mean":
-        inv_weight = 1.0 / branch_weight_factor
-        loss_mat = loss_mat / branch_weight_factor
+        inv_weight = 1.0 / branch_weight
+        loss_mat = loss_mat / branch_weight
         loss = verl_F.masked_sum(loss_mat, loss_mask) / verl_F.masked_sum(inv_weight, loss_mask) * dp_size
     elif loss_agg_mode.startswith("seq-mean"):
         # TODO: Correct and unify the denominator logic.
@@ -1073,7 +1073,7 @@ def compute_policy_loss_vanilla(
     loss_agg_mode: str = "token-mean",
     config: Optional[ActorConfig] = None,
     rollout_is_weights: torch.Tensor | None = None,
-    branch_weight_factor: torch.Tensor | None = None,
+    branch_weight: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """
     Compute the clipped policy objective and related metrics for PPO.
@@ -1096,7 +1096,7 @@ def compute_policy_loss_vanilla(
             config for the actor.
         rollout_log_probs: `(torch.Tensor)`:
             log probabilities of actions under the rollout policy, shape (batch_size, response_length).
-        branch_weight_factor: `(torch.Tensor)`:
+        branch_weight: `(torch.Tensor)`:
             Weight factor for TTPO gradient correction, shape (batch_size, response_length).
             When provided, uses "weighted-token-mean" aggregation mode.
     """
@@ -1151,12 +1151,12 @@ def compute_policy_loss_vanilla(
         pg_losses = pg_losses * rollout_is_weights
 
     # Apply branch weight factor for TTPO gradient correction
-    if branch_weight_factor is not None:
+    if branch_weight is not None:
         pg_loss = agg_loss(
             loss_mat=pg_losses,
             loss_mask=response_mask,
             loss_agg_mode="weighted-token-mean",
-            branch_weight_factor=branch_weight_factor,
+            branch_weight=branch_weight,
             **config.global_batch_info,
         )
     else:
@@ -1986,7 +1986,7 @@ def compute_policy_loss_bypass_mode(
 # OPTS_TTPO Specific Functions
 # ============================================================================
 
-def compute_branch_weight_factors(
+def compute_branch_weight(
     state_branches: torch.Tensor,
     pid: np.ndarray,
     rid: np.ndarray,
@@ -1995,7 +1995,7 @@ def compute_branch_weight_factors(
 ) -> torch.Tensor:
     """Compute branch weight factors for TTPO gradient correction.
 
-    branch_weight_factor[t] = product of all ancestor state_branches up to position t.
+    branch_weight[t] = product of all ancestor state_branches up to position t.
     Traces the full ancestor chain back to the root, accumulating state_branches
     products along the way. At the root, multiplies by the number of root trajectories
     under the same uid (tree).
@@ -2008,7 +2008,7 @@ def compute_branch_weight_factors(
         branch_pos: Branch position in parent trajectory (-1 if no parent)
 
     Returns:
-        branch_weight_factor: shape (batch_size, response_len)
+        branch_weight: shape (batch_size, response_len)
     """
     batch_size, response_len = state_branches.shape
     rid2idx = {r: i for i, r in enumerate(rid)}
@@ -2038,6 +2038,6 @@ def compute_branch_weight_factors(
     # This is init_weight * cumprod(state_branches[:, :-1])
     padded = torch.cat([torch.ones(batch_size, 1), state_branches[:, :-1]], dim=1)
     cumulative = torch.cumprod(padded, dim=1)
-    branch_weight_factor = init_weights.unsqueeze(1) * cumulative
+    branch_weight = init_weights.unsqueeze(1) * cumulative
 
-    return branch_weight_factor
+    return branch_weight

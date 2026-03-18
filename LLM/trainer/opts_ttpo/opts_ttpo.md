@@ -14,7 +14,7 @@ OPTS_TTPO（On-policy Parallel Tree Search + Tree Trajectory Policy Optimization
 
 **1. OPTS（同策略并行树搜索）**
 - 不同于传统 MCTS 的完全扩展方式，OPTS 采用采样实例树的形式
-- 每轮并行采样 `n` 条轨迹，通过 `g` 轮循环构建树结构
+- 每步（step）进行 `n_rounds` 轮循环采样，每轮生成一个 batch 的轨迹，逐步构建树结构
 - 使用 TUCT（Trajectory-level Upper Confidence bound for Trees）选择下一轮扩展的最优状态
 - 支持回溯到早期状态进行重新扩展，这在语言场景中是有益的
 
@@ -27,7 +27,7 @@ OPTS_TTPO（On-policy Parallel Tree Search + Tree Trajectory Policy Optimization
 
 | 特性 | MCTS | OPTS |
 |------|------|------|
-| 扩展方式 | 完全扩展所有可能动作 | 采样扩展，每轮 n 条轨迹 |
+| 扩展方式 | 完全扩展所有可能动作 | 采样扩展，每轮一个 batch 的轨迹 |
 | 策略类型 | 异策略（树策略 vs 默认策略） | 同策略（采样策略即优化策略） |
 | 状态选择 | 仅选择子节点 | 可选择树中任意状态 |
 | 回溯机制 | 每次模拟后回溯更新 | 支持回溯到早期状态重新扩展 |
@@ -40,15 +40,15 @@ OPTS_TTPO 在 PPO 的基础上，新增以下参数：
 ```yaml
 actor_rollout_ref:
   rollout:
-    g: 8          # 循环采样的轮数（总采样数 = n * g）
-    root_tuct: 0.5  # 根状态的 TUCT 值，用于与树中状态竞争
-    search: opts  # 搜索算法：null 为标准 PPO，"opts" 为 On-Policy Parallel Tree Search
+    n: 8                    # 循环采样的轮数
+    max_search_per_tree: 4  # 每棵树每个训练迭代最大搜索次数
+    c: 1.0                  # TUCT 探索项系数
 ```
 
 **参数说明：**
-- `g`：总共进行的采样轮数，决定树的深度和广度
-- `root_tuct`：根状态的 TUCT 常数值，用于与树中状态竞争（大于 0）
-- `search`：搜索算法类型，设为 "opts" 启用 OPTS_TTPO 模式
+- `n`（n_rounds）：总共进行的采样轮数，决定树的深度和广度
+- `max_search_per_tree`：每棵树（uid）在一个训练 step 内允许的最大搜索次数，达到上限后该树不再被 TUCT 选中
+- `c`：TUCT 公式中 exploration 项的系数，控制利用与探索的平衡
 
 
 ## 3 数据结构详解
@@ -77,43 +77,40 @@ actor_rollout_ref:
 **OPTS_TTPO 新增键：**
 | 键名 | 形状 | 说明 |
 |------|------|------|
-| advantages_mean | (bs, response_len-1) | 分支节点处所有动作的平均优势 |
 | state_branches | (bs, response_len) | 每个状态的分支数 |
-| branch_weight_factor | (bs, response_len) | 策略梯度权重因子（更新阶段计算） |
+| branch_weight | (bs, response_len) | 策略梯度权重因子（更新阶段计算） |
 
 #### 3.1.2 non_tensor_batch（非张量数据）
 
 **原有键：**
 - `data_source`：数据来源标识
 - `reward_model`：奖励模型配置
-- `uid`：prompt 的唯一标识符
+- `uid`：prompt 的唯一标识符，同时作为树标识符（tree ID）
 - `extra_info`：额外信息
+- `raw_prompt_len`：原始 prompt 长度
 
 **OPTS_TTPO 新增键：**
-- `rid`：每条 response 的唯一标识
+- `rid`：每条 response 的唯一标识，格式为 `r{round_idx}_{batch_idx}`
 - `pid`：父轨迹的 rid（第一轮为 None）
 - `cid`：子轨迹映射，ndarray of OrderedDict `{位置索引: [子轨迹rid列表]}`
 - `branch_pos`：在父轨迹中的分支位置（第一轮为 -1）
-- `tid`：树标识符，同一棵树下的所有轨迹共享相同的 tid
-- `new_sample_indices`: 新样本的索引列表
-
-#### 3.1.3 meta_info（元信息）
-
-**OPTS_TTPO 新增键：**
-- `tree_branches`：字典 `Dict[str, int]`，记录每棵树的轨迹数量（key 为 tid，value 为该树下的轨迹总数）
+- `new_sample_indices`：新样本在全局 batch 中的索引
+- `episodic_returns`：每条轨迹的完整 episodic return（含祖先奖励）
 
 ### 3.2 变量详解
 
 #### 3.2.1 轨迹标识符
 
 ```
-uid (Unique ID)
-├── 标识原始 prompt
+uid (Unique ID / Tree ID)
+├── 标识原始 prompt，同时作为树标识符
 ├── 同一 uid 下的所有轨迹共享同一个树结构
-└── 用于按 prompt 分组进行状态选择
+├── 第一轮采样时由 uuid.uuid4() 生成
+└── 用于按 prompt 分组进行 TUCT 状态选择
 
 rid (Response ID)
 ├── 每条 response 轨迹的唯一标识
+├── 格式：r{round_idx}_{batch_idx}
 └── 用于建立父子关系
 
 pid (Parent ID)
@@ -125,52 +122,35 @@ cid (Children ID)
 ├── 有序字典 OrderedDict[int, List[str]]
 ├── key: 分支发生的 token 位置索引
 ├── value: 从该位置出发的子轨迹 rid 列表
-└── 用于前向遍历树结构和计算分支权重
-
-tid (Tree ID)
-├── 树标识符，同一棵树下的所有轨迹共享相同的 tid
-├── 第一轮采样的轨迹（pid=None）生成新的 tid
-├── 后续轮采样的轨迹继承父轨迹的 tid
-└── 用于计算探索项中的 tree_branches
-
-tree_branches
-├── 字典 Dict[str, int]
-├── key: tid
-├── value: 该树下的轨迹总数
-├── 第一轮初始化：tree_branches[tid] = 1
-├── 后续轮更新：tree_branches[tid] += 1
-└── 用于 TUCT 探索项的分母 N
+└── 由 set_opts_ttpo_info 在父轨迹上注册
 
 branch_pos (Branch Position)
 ├── 当前轨迹在父轨迹中的分支位置
 ├── 第一轮采样的轨迹 branch_pos = -1
-├── 用于：
-│   └── compute_branch_weight_factors：计算祖先轨迹的 state_branches 累乘
-└── 由 set_opts_ttpo_info 函数生成并保存
+└── 由 selected_to_branch_points 转换得到
 
-new_sample_indices
-├── 标识新样本的索引
-└── 用于在计算 TreeGAE 时快速定位新样本
+episodic_returns
+├── 每条轨迹的完整 episodic return
+├── 沿祖先链累加奖励：own_rewards + ancestor_rewards[:branch_pos+1] + ...
+├── 由 compute_episodic_returns 计算
+└── 用于 TUCT 的树跳过判断（tree_max_reward）
 
 next_states（函数参数，不存储在 non_tensor_batch 中）
 ├── 字典 Dict[str, Tuple[int, int]]
-├── key: uid（子轨迹的 uid，与父轨迹 uid 相同）
+├── key: uid
 ├── value: (parent_index, branch_pos)
-│   ├── parent_index: 父轨迹在全局batch中的索引
+│   ├── parent_index: 父轨迹在全局 batch 中的索引
 │   └── branch_pos: 父轨迹中被选中状态的 token 位置索引
-├── 用于：
-│   ├── 1. set_opts_ttpo_info：通过 uid 直接查找父节点信息，设置 pid 和 branch_pos
-│   ├── 2. compute_treegae_advantage_return：将子轨迹的优势值传播回父轨迹
-│   └── 3. 构建下一轮的局部batch
-└── 每轮选择后更新，标识本轮被选中进行扩展的状态
+├── 由 selected_to_branch_points 从 TUCT 选择结果转换得到
+└── 用于 set_opts_ttpo_info 和 prepare_next_round_input
 ```
 
 **示例：**
 ```
 假设有如下树结构：
-       root (prompt)
+       root (prompt, uid="abc")
       /    \
-   traj_0  traj_1    (第1轮，从 prompt 出发，无 pid)
+   traj_0  traj_1    (第1轮，从 prompt 出发，pid=None)
      |
    traj_2            (第2轮，从 traj_0 的位置 5 出发)
     / \
@@ -179,42 +159,26 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 则：
 - traj_0.cid = {5: ["traj_2"]}
 - traj_2.cid = {8: ["traj_3", "traj_4"]}
-- traj_2.pid = "traj_0"
-- traj_3.pid = "traj_2"
+- traj_2.pid = "traj_0", traj_2.branch_pos = 5
+- traj_3.pid = "traj_2", traj_3.branch_pos = 8
+- 所有轨迹的 uid = "abc"
 ```
 
 #### 3.2.2 分支相关计数
 
-**state_branches[t]**：状态 t 处的分支数
+**state_branches[i, t]**：轨迹 i 的状态 t 处的分支数
 - 初始化：全部为 1
-- 当状态 t 被选中进行扩展时：state_branches[t] += n
-- 用于计算 branch_weight_factor
+- 当 TUCT 选择从状态 (i, t) 分支时：`state_branches[i, t] += 1`
+- 更新在 `selected_to_branch_points` 中完成
+- 用于计算 branch_weight
 
-**tree_branches[tid]**：树 tid 下的轨迹总数
-- 初始化：每棵新树的 tree_branches[tid] = 1
-- 当新轨迹加入树时：tree_branches[tid] += 1
-- 用于 TUCT 探索项的分母 N
+#### 3.2.3 权重因子
 
-#### 3.2.3 价值估计相关
-
-**advantages_mean[t]**：分支节点处的平均优势
-- 非分支节点：advantages_mean[t] = advantages[t+1]
-- 分支节点：所有分支第一个 token 的 advantage 的平均值
-- 用于 TreeGAE 计算
-
-#### 3.2.4 TUCT 和权重因子
-
-**tuct[t]**：Tree UCT 值
-- 公式：exploitation[t] * exploration[t]
-- 利用项：exploitation = advantages / branch_weight_factors，即动作优势除以分支权重
-- 探索项：exploration = sqrt(log((round_idx + 1) * n + 1)) / N
-  - N = tree_branches[tid]，即当前树的轨迹总数
-- 与动态阈值 $\max(\bar{A}_{\text{uid}}, \text{root\_tuct})$ 比较，决定是否从根状态重新开始
-
-**branch_weight_factor[t]**：策略梯度权重因子
-- t=0 时：branch_weight_factor[0] = 1
-- t>0 时：branch_weight_factor[t] = branch_weight_factor[t-1] * state_branches[t-1]
-- 含义：祖先轨迹分支数的累乘
+**branch_weight[i, t]**：轨迹 i 位置 t 的策略梯度权重因子
+- 计算过程分两步：
+  1. **初始权重**：沿祖先链从当前轨迹追溯到根，累乘每段祖先轨迹上 `state_branches[:branch_pos+1]` 的乘积，最后乘以根处同 uid 的根轨迹数
+  2. **轨迹内传播**：`weight[t] = init_weight * cumprod(state_branches[0:t])`
+- 含义：从根到当前节点路径上所有祖先分支数的累乘
 - 用于校正策略梯度，保证无偏估计
 
 
@@ -226,128 +190,113 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 ┌─────────────────────────────────────────────────────────────┐
 │                      for epoch in epochs:                    │
 │  ┌───────────────────────────────────────────────────────┐  │
-│  │                  for batch in batches:                 │  │
+│  │                  for step in steps:                     │  │
 │  │                                                        │  │
 │  │  ┌──────────────────────────────────────────────────┐ │  │
-│  │  │  1. 数据准备                                      │ │  │
+│  │  │  采样循环：for round_idx in range(n_rounds):      │ │  │
+│  │  │     a. 构建本轮 batch                             │ │  │
+│  │  │     b. 前向：生成轨迹，计算各种值                  │ │  │
+│  │  │     c. 设置树结构信息，合并到全局 batch             │ │  │
+│  │  │     d. 反向：TreeGAE 计算优势                     │ │  │
+│  │  │     e. 选择：TUCT 选择下一轮扩展状态（非最后一轮）  │ │  │
 │  │  └──────────────────────────────────────────────────┘ │  │
 │  │                          ↓                             │  │
 │  │  ┌──────────────────────────────────────────────────┐ │  │
-│  │  │  2. 采样循环：for i in range(g):                  │ │  │
-│  │  │     a. 前向：生成轨迹，计算各种值                  │ │  │
-│  │  │     b. 反向：TreeGAE / GAE 计算优势               │ │  │
-│  │  │     c. 选择：TUCT 选择下一轮扩展状态（仅OPTS_TTPO）│ │  │
+│  │  │  后处理：白化优势，计算 branch_weight               │ │  │
+│  │  │  计算 aggregated_returns，记录 epoch_returns       │ │  │
 │  │  └──────────────────────────────────────────────────┘ │  │
 │  │                          ↓                             │  │
 │  │  ┌──────────────────────────────────────────────────┐ │  │
-│  │  │  3. 更新：更新 Actor 和 Critic                    │ │  │
+│  │  │  更新：更新 Critic 和 Actor                       │ │  │
 │  │  └──────────────────────────────────────────────────┘ │  │
 │  │                                                        │  │
 │  └───────────────────────────────────────────────────────┘  │
+│  epoch 结束：prev_mean_return = mean(epoch_returns)          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ### 4.2 训练流程伪代码
 
 ```
+prev_mean_return = None
+prompt_buffer = PromptBuffer(train_dataloader)
+
 for epoch in ...:
+    epoch_returns = []  # 收集各 uid 的 aggregated_return
 
-    for batch in ...:
+    for step in ...:
+        初始化 global_batch、next_states、search_count
 
-        ======== 1. 数据准备 ========
+        ======== 采样循环 ========
 
-        if opts_ttpo:
-            - 全局batch：保存每一轮的局部batch，用于生成下一轮的局部batch
-            - 局部batch：每轮动态变化，由"prompt+部分已采样结果"构建后重复n遍
-        else (PPO模式):
-            - 无全局/局部batch区分，直接使用原始batch
-            - g = 1
+        for round_idx in range(n_rounds):
 
-        ======== 2. 采样循环 ========
+            -------- a. 构建本轮 batch --------
 
-        for i in range(g):
+            if 第一轮:
+                从 prompt_buffer 中抽取 batch_size 个样本
+                为每个样本分配新的 uid
+            else:
+                k = 继续搜索的树数量（next_states 的大小）
+                若 k > 0，用 prepare_next_round_input 从 global_batch 构建续写输入
+                若 k < batch_size，从 prompt_buffer 补充新 prompt 并分配新 uid
+                合并为本轮 batch
 
-            -------- a. 前向 --------
+            -------- b. 前向 --------
 
-            - (局部batch) 重复样本
-            - (局部batch) 生成序列
-            - (局部batch) 计算奖励
-            - (局部batch) 计算旧策略log概率
-            - (局部batch) 计算参考策略log概率
-            - (局部batch) 计算values
+            生成轨迹（支持续写模式），计算 reward、old_log_probs、ref_log_prob、values
 
-            if opts_ttpo:
-                - _set_opts_ttpo_info：建立树结构关系
-                    - (局部batch) 为每条轨迹生成唯一 rid
-                    - (局部batch) 根据 next_states 设置 pid 和 branch_pos：
-                        - 第一轮：pid=None, branch_pos=-1
-                        - 后续轮：通过 uid 查询 next_states 获取父节点信息
-                    - (局部batch) 设置 tid 和更新 tree_branches：
-                        - pid=None：生成新 tid，tree_branches[tid] = 1
-                        - pid!=None：继承父轨迹的 tid，tree_branches[tid] += 1
-                    - (局部batch) 初始化 cid 为空 OrderedDict
-                    - (全局batch) 在父轨迹的 cid 中注册当前轨迹为子节点
-                    - 返回 new_sample_indices
-                - (局部batch) 初始化 state_branches 为全1
-                - (局部batch) 初始化 advantages、advantages_mean、returns 为全0
-                - (局部batch) 合并到全局batch（_merge_batches）
+            -------- c. 设置树结构，合并到全局 batch --------
 
-            -------- b. 反向 --------
+            set_opts_ttpo_info：为本轮 batch 设置树结构信息
+              - 生成 rid
+              - 根据 next_states 设置 pid 和 branch_pos
+              - 在父轨迹的 cid 中注册子节点
 
-            - 使用原有的 compute_advantage 函数，通过 adv_estimator 参数选择计算方式：
-                - if adv_estimator == AdvantageEstimator.TreeGAE:
-                    - 调用 compute_treegae_advantage_return：
-                        - 第一个循环：对新样本执行标准 GAE（从后向前计算优势值）
-                        - 第二个循环：向祖先轨迹传播优势值（使用线程池并行）
-                            - 非分支位置：正常 GAE 传播
-                            - 分支位置：取所有子分支首 token 优势的均值再传播
-                - elif adv_estimator == AdvantageEstimator.GAE:
-                    - 调用原有的 compute_gae_advantage_return
+            compute_episodic_returns：沿祖先链累加奖励，得到完整 episodic return
 
-            -------- c. 选择 --------
+            初始化 state_branches 为全 1，advantages 和 returns 为全 0
+            将本轮 batch 合并到 global_batch
 
-            if opts_ttpo and i < g - 1:  # 仅在非最后一轮执行
-                - (全局batch) select_next_states：用 TUCT 选择下一轮扩展的状态
-                    1) 计算 branch_weight_factors 作为利用项权重
+            -------- d. 反向：TreeGAE --------
 
-                    2) 计算 tree_branches_N：通过 tid 映射获取每条轨迹对应树的轨迹总数
+            compute_treegae_advantage_return：在 global_batch 上计算 TreeGAE 优势
+              - 第一个循环：对新样本执行标准 GAE
+              - 第二个循环：向祖先轨迹传播优势值（线程池并行）
+                - 非分支位置：正常 GAE 传播
+                - 分支位置：取所有子分支首 token 优势的均值再传播
 
-                    3) 计算 TUCT：
-                       - exploitation = advantages / branch_weight_factors
-                       - exploration = sqrt(log((round_idx + 1) * n + 1)) / tree_branches_N
-                       - tuct = exploitation * exploration
+            -------- e. 选择（非最后一轮） --------
 
-                    4) 为每个 uid 选择 TUCT 最高的状态：
-                       - 计算动态阈值：uid_root_tuct = max(mean(advantages[uid_indices]), root_tuct)
-                       - 与动态阈值 uid_root_tuct 比较，决定是否从根状态重新开始
-                       - 返回 selected_states = [(rid, pos), ...]
+            if 非最后一轮:
+                select_next_states：用 TUCT 选择下一轮扩展状态
+                  - 跳过搜索次数已达上限的树
+                  - 跳过最大 reward 超过 return_threshold 的树
+                  - 沿最优路径计算 TUCT，选择 argmax
+                  - 应用 prompt 长度约束和 </think> 位置掩码
+                  - 全局排序，取 top batch_size 个候选
 
-                    5) 更新 state_branches：被选中状态的 state_branches[idx, pos] += n
+                selected_to_branch_points：将选中节点转换为其父节点作为分支点，更新 state_branches
 
-                - 构建 next_states 字典供下一轮使用：
-                    - next_states = {uid: (parent_idx, branch_pos) for 每个选中状态}
+        ======== 后处理 ========
 
-                - _prepare_next_round_input：构建下一轮输入
-                    - 提取 prompt + 部分响应（到选中位置）作为新的 input_ids
-                    - 重新构建 left-padded 的输入张量
-                    - 从根节点继承 data_source、reward_model、extra_info 等元信息
+        对 global_batch 的 advantages 进行白化（masked_whiten）
 
-        ======== 3. 更新 ========
+        compute_branch_weight：沿祖先链追溯到根，累乘 state_branches，根节点乘以同 uid 的根轨迹数
 
-        if opts_ttpo:
-            - 使用全局 batch 进行更新（包含完整的树）
-            - 对优势进行白化（whiten）
-            - compute_branch_weight_factors：计算策略梯度的权重校正因子
-                - W_t = 祖先轨迹所有分支数的累乘（保证树结构上的无偏梯度估计）
+        计算 aggregated_returns：按 uid 分组，组内用 weight 倒数加权平均 episodic_returns
+        将各 uid 的 aggregated_return 收集到 epoch_returns
 
-        - 更新 Critic：Loss 计算与 PPO 一致
+        ======== 更新 ========
 
-        - 更新 Actor：
-            - 若存在 branch_weight_factor：
-                - pg_loss = pg_loss / W_t
-                - 使用 "weighted-token-mean" 聚合模式：
-                    loss = masked_sum(loss_mat) / masked_sum(1/W_t) * dp_size
-            - 否则使用标准 PPO loss
+        更新 Critic：Loss 计算与 PPO 一致
+
+        更新 Actor：
+          - branch_weight 存在时使用 "weighted-token-mean" 聚合：
+            loss = masked_sum(loss_mat / W) / masked_sum(1 / W) * dp_size
+
+    -------- epoch 结束 --------
+    prev_mean_return = mean(epoch_returns)
 ```
 
 
@@ -364,23 +313,81 @@ $$
 
 其中：
 - $\delta_t = r_t + \gamma V(s_{t+1}) - V(s_t)$ 为 TD 误差
-- $B_t$ 为从状态 $t$ 分出的所有子轨迹集合
+- $B_t$ 为从状态 $t$ 分出的所有子轨迹集合（包括当前轨迹自身的延续）
 - $\hat{A}_b^{(0)}$ 为子轨迹 $b$ 的第一个 token 的优势值
+- 分支节点的均值计算：`(sum(child_advantages[:, 0]) + continuation_advantage) / state_branches[t]`
+
+**实现细节**：
+1. 第一个循环对新样本执行标准 GAE（从后向前）
+2. 第二个循环从 next_states 指定的父轨迹开始，从 branch_pos 向前传播优势值
+3. 传播过程中，遇到分支位置时取所有子分支首 token 优势的均值
+4. 使用 ThreadPoolExecutor 并行处理同一层级的多个父轨迹
+5. 逐层向上传播直到根（while current_level 不为空）
 
 ### 5.2 TUCT
 
+#### 5.2.1 最优路径追踪
+
+对每棵树（uid），从 advantage 最大的根轨迹出发，沿树贪心行走：
+- 在每个位置检查是否存在子分支（通过 cid）
+- 若有子分支，比较子分支首 token 的 advantage 与当前轨迹下一个 token 的 advantage
+- 选择 advantage 更大的方向继续
+
+#### 5.2.2 exploitation（期望改善量）
+
+沿最优路径从后向前累积：
+
 $$
-\text{TUCT}(s_t) = \underbrace{\frac{A(s_t)}{W_t}}_{\text{利用项}} \cdot \underbrace{\frac{\sqrt{\log((i+1) \cdot n + 1)}}{N}}_{\text{探索项}}
+\text{exploitation}[k] = -\hat{A}_k + \gamma \cdot \text{exploitation}[k+1]
+$$
+
+即 $\text{exploitation}[k] = -\sum_{t=k}^{T} \gamma^{t-k} \hat{A}_t$。正值表示从节点 k 分支有改善空间。
+
+**数学推导**：
+
+定义 TD error $\delta_t = r_t + \gamma V(s_{t+1}) - V(s_t)$。通过 telescoping 恒等式：
+
+$$
+V^{\pi}(s_k) - G_k = -\sum_{t=k}^{T} \gamma^{t-k} \delta_t
+$$
+
+此式对任意 V 成立。用 GAE 优势估计器逐项替代 $\delta_t$：
+
+$$
+V^{\pi}(s_k) - G_k \approx -\sum_{t=k}^{T} \gamma^{t-k} \hat{A}_t^{GAE}
+$$
+
+exploitation 为正值表示原轨迹的实际回报低于策略期望，有改善空间。
+
+**注意**：与 Atari/MuJoCo 版本不同，LLM 版本不除以路径长度 $(n-k)$。
+
+#### 5.2.3 exploration（搜索惩罚）
+
+$$
+\text{exploration}[k] = (\text{sibling\_count}[k] - 1) \cdot \max_{j}|\text{exploitation}[j]|
 $$
 
 其中：
-- $A(s_t)$ 为状态 $t$ 的优势值
-- $W_t$ 为 branch_weight_factor，即祖先轨迹所有分支数的累乘
-- $i$ 为当前轮次索引（round_idx）
-- $n$ 为每轮采样数（n_samples_per_round）
-- $N$ 为当前树的轨迹总数（tree_branches[tid]）
-- 与动态阈值 $\max(\bar{A}_{\text{uid}}, \text{root\_tuct})$ 比较，决定是否从根状态重新开始
-  - $\bar{A}_{\text{uid}}$ 为该 uid 下所有样本优势值的平均值
+- $\text{sibling\_count}[k]$ = `state_branches[path[k-1]]`，即路径上前一个节点的分支数（第一个节点的 sibling_count 为 1）
+- $\max|\text{exploitation}|$ 是整条路径上 exploitation 绝对值的最大值（若为 0 则设为 1.0），用于将 exploration 项标准化到与 exploitation 同一量级
+
+#### 5.2.4 TUCT 与选择
+
+$$
+\text{TUCT}[k] = \text{exploitation}[k] - c \cdot \text{exploration}[k]
+$$
+
+选择流程：
+1. 跳过 `search_count >= max_search_per_tree` 的树
+2. 跳过 `tree_max_reward > return_threshold` 的树（return_threshold = prev_mean_return）
+3. 对每棵树沿最优路径计算 TUCT，取 argmax
+4. 应用掩码：prompt 长度约束 + `</think>` 位置约束（确保分支在思考阶段内）
+5. 跨所有树全局排序，取 top batch_size 个候选
+6. 通过 `selected_to_branch_points` 将选中节点转换为其父节点作为分支点
+
+**return_threshold 更新机制**：
+- 首次迭代 prev_mean_return 为 None，此时 select_next_states 直接返回空字典，所有样本从新 prompt 开始
+- 每个 epoch 结束时，prev_mean_return 更新为该 epoch 内所有 uid 的 aggregated_return 的均值
 
 ### 5.3 TTPO 策略梯度
 
@@ -388,158 +395,123 @@ $$
 \nabla_\theta J(\theta) = \mathbb{E}\left[ \sum_t \frac{1}{W_t} \nabla_\theta \log \pi_\theta(a_t|s_t) \hat{A}_t \right]
 $$
 
-其中 $W_t = \prod_{i=0}^{t-1} |B_i|$ 为 branch_weight_factor。
+**branch_weight 的计算**：
+
+$$
+W_{i,t} = \text{init\_weight}_i \cdot \prod_{j=0}^{t-1} \text{state\_branches}[i, j]
+$$
+
+其中 $\text{init\_weight}_i$ 通过沿祖先链追溯计算：从当前轨迹开始，依次找到父轨迹、祖父轨迹直到根轨迹，将每段祖先轨迹上从位置 0 到 branch_pos 的所有 state_branches 值相乘累积到 weight 中，最后再乘以同 uid 下根轨迹的数量。
+
+**Loss 聚合**：当 branch_weight 存在时，自动切换为 "weighted-token-mean" 模式。policy loss 和 value loss 均除以 branch_weight 后加权求和，而非简单均值：
+
+$$
+\text{loss} = \frac{\sum_t \text{loss}_t / W_t \cdot \text{mask}_t}{\sum_t (1/W_t) \cdot \text{mask}_t} \cdot \text{dp\_size}
+$$
+
+当 branch_weight 不存在时（非 OPTS_TTPO 模式），退化为标准聚合模式。
+
+### 5.4 Aggregated Returns
+
+每个 step 结束后，计算 aggregated_returns：
+
+1. 取每条轨迹最后一个有效 token 位置的 branch_weight 作为权重
+2. 按 uid 分组，对组内 episodic_returns 用 weight 倒数加权平均，得到每个 uid 的 aggregated_return
+3. 将各 uid 的 aggregated_return 收集到 epoch_returns 列表中
+
+epoch 结束时，prev_mean_return 更新为 epoch_returns 中所有 aggregated_return 的均值，作为下一 epoch TUCT 的 return_threshold。
+
+### 5.5 Episodic Returns
+
+每条轨迹的 episodic return 由 `compute_episodic_returns` 计算，沿祖先链累加：
+
+$$
+\text{episodic\_return}_i = \sum_t r_{i,t} \cdot m_{i,t} + \sum_t r_{p,t} \cdot m_{p,t} \cdot \mathbb{1}[t \leq \text{branch\_pos}_i] + \cdots
+$$
+
+即当前轨迹的全部奖励 + 父轨迹分支点之前的奖励 + 祖父轨迹分支点之前的奖励 + ... 一直追溯到根。
 
 
-## 6 实现要求
+## 6 实现要点
 
-1. **代码位置**：所有改动不应出现在 `LLM/verl` 中，需要修改的文件复制到 `LLM/` 下并保持目录结构
-2. **代码风格**：与原文件风格保持一致
-3. **日志输出**：不需要打印调试信息
-4. **优化建议**：如有更好的实现方式，优先采用
-5. **最小化改动原则**：
-   - 优先通过注册机制扩展（如 `@register_adv_est`）而非创建独立函数
-   - 优先在现有函数中添加条件分支而非创建新的并行函数
-   - 新增参数应设置合理默认值，确保对 PPO 模式的兼容性
-
-
-## 7 附录：核心函数清单
-
-### 7.1 代码文件结构
+### 6.1 代码文件结构
 
 ```
 LLM/trainer/opts_ttpo/
+├── __init__.py
 ├── main_opts_ttpo.py     # 入口文件
-├── ray_trainer.py        # RayOPTSTTPOTrainer 类
-├── core_algos.py         # 核心算法函数
-└── opts_ttpo_v1.md       # 本文档
+├── ray_trainer.py        # RayOPTSTTPOTrainer 类及辅助函数
+├── core_algos.py         # 核心算法函数（TreeGAE、branch_weight、loss 聚合等）
+└── opts_ttpo.md          # 本文档
 ```
 
-### 7.2 核心函数列表
+### 6.2 核心函数列表
 
-| 函数名 | 所在文件 | 类型 | 说明 |
-|--------|----------|------|------|
-| `set_opts_ttpo_info` | ray_trainer.py | 函数 | 设置树结构信息：rid, pid, branch_pos, cid, tid, tree_branches |
-| `prepare_next_round_input` | ray_trainer.py | 函数 | 构建下一轮采样的输入 batch |
-| `merge_batches` | ray_trainer.py | 函数 | 合并局部 batch 到全局 batch |
-| `select_next_states` | ray_trainer.py | 函数 | TUCT 状态选择，更新 state_branches |
-| `compute_treegae_advantage_return` | core_algos.py | 注册函数 | 通过 `@register_adv_est(AdvantageEstimator.TreeGAE)` 注册 |
-| `compute_branch_weight_factors` | core_algos.py | 函数 | 计算分支权重因子 |
-| `agg_loss` | core_algos.py | 修改 | 新增 "weighted-token-mean" 模式 |
-| `compute_policy_loss_vanilla` | core_algos.py | 修改 | 新增 branch_weight_factor 参数 |
-| `AdvantageEstimator` | core_algos.py | 枚举扩展 | 新增 `TreeGAE = "treegae"` |
+| 函数名 | 所在文件 | 说明 |
+|--------|----------|------|
+| `set_opts_ttpo_info` | ray_trainer.py | 设置树结构信息：rid, pid, branch_pos, cid；在父轨迹 cid 中注册子节点 |
+| `compute_episodic_returns` | ray_trainer.py | 沿祖先链累加奖励，计算完整 episodic return |
+| `select_next_states` | ray_trainer.py | TUCT 状态选择：最优路径追踪、exploitation/exploration 计算、全局排序 |
+| `selected_to_branch_points` | ray_trainer.py | 将 TUCT 选中节点转换为父节点作为分支点，更新 state_branches |
+| `prepare_next_round_input` | ray_trainer.py | 构建下一轮采样的输入：提取 prompt + 部分响应，重新 left-pad |
+| `merge_batches` | ray_trainer.py | 合并两个 DataProto batch |
+| `compute_aggregated_returns` | ray_trainer.py | 按 uid 分组计算 weight 加权平均 episodic return |
+| `PromptBuffer` | ray_trainer.py | 从 dataloader 按需抽取 prompt 的缓冲区 |
+| `compute_treegae_advantage_return` | core_algos.py | TreeGAE 优势估计：新样本 GAE + 祖先传播 |
+| `compute_branch_weight` | core_algos.py | 计算分支权重因子：祖先链追溯 + 轨迹内 cumprod |
+| `agg_loss` | core_algos.py | Loss 聚合，新增 "weighted-token-mean" 模式 |
+| `compute_policy_loss_vanilla` | core_algos.py | PPO policy loss，新增 branch_weight 参数 |
+| `AdvantageEstimator` | core_algos.py | 枚举扩展：新增 `TreeGAE = "treegae"` |
+| `compute_advantage` | ray_trainer.py | 优势计算入口，根据 adv_estimator 参数分发到 TreeGAE 或 GAE |
 
-### 7.3 配置参数
+### 6.3 配置参数
 
 在 verl 配置文件中新增以下参数：
 
 ```yaml
 actor_rollout_ref:
   rollout:
-    g: 8            # 循环采样的轮数（总采样数 = n * g）
-    root_tuct: 0.5  # 根状态的 TUCT 常数值
-    search: opts    # 搜索算法："opts" 启用 OPTS_TTPO
+    n: 8                    # 循环采样的轮数
+    max_search_per_tree: 4  # 每棵树每迭代最大搜索次数
+    c: 1.0                  # TUCT 探索系数
 
 algorithm:
-  adv_estimator: treegae  # 使用 TreeGAE 优势估计
-  gamma: 1.0              # 折扣因子
-  lam: 0.95               # GAE lambda
+  adv_estimator: treegae    # 使用 TreeGAE 优势估计
+  gamma: 1.0                # 折扣因子
+  lam: 0.95                 # GAE lambda
 ```
 
-### 7.4 verl 框架修改
+### 6.4 verl 框架修改
 
-为支持 OPTS_TTPO，需要对 verl 框架进行以下修改：
-
-#### 7.4.1 配置文件修改
-
-**`LLM/verl/verl/trainer/config/rollout/rollout.yaml`**：
-```yaml
-# This controls the third loop inside fit() for TTPO algorithm
-g: 1
-
-# OPTS parameters
-root_tuct: 0.5
-
-# Search algorithm: null for standard PPO, "opts" for OPTS
-search: null
-```
-
-**`LLM/verl/verl/workers/config/rollout.py`**：
-```python
-@dataclass
-class RolloutConfig(BaseConfig):
-    # ...
-    g: int = 1
-    root_tuct: float = 0.5
-    search: str = None
-```
-
-#### 7.4.2 Agent Loop 续写模式
+#### 6.4.1 Agent Loop 续写模式
 
 OPTS_TTPO 需要从已有的 `input_ids` 续写生成，而不是从 `raw_prompt` 重新生成。
 
 **`LLM/verl/verl/experimental/agent_loop/agent_loop.py`**：
 
-1. **`AgentLoopBase` 基类**：新增 `run_from_input_ids` 抽象方法，定义续写模式接口，接收 `prompt_ids` 参数而非从 `raw_prompt` 解析
-
-2. **`generate_sequences` 方法**：添加续写模式分支，当 `batch.meta_info["round_idx"] >= 1` 时调用 `_generate_from_input_ids`
-
-3. **`_run_agent_loop_from_input_ids` 方法**（新增）：仿照 `_run_agent_loop` 实现，创建 agent loop 实例后调用其 `run_from_input_ids` 方法，最后通过 `_agent_loop_postprocess` 进行后处理
-
-4. **`_generate_from_input_ids` 方法**：仿照 `generate_sequences` 的完整模式实现
-   - 设置 sampling_params、agent_name、index、traced_indices 等
-   - 提取有效 token（移除 left padding）
-   - 为每个样本创建异步任务调用 `_run_agent_loop_from_input_ids`
-   - 使用 `_postprocess(outputs)` 进行后处理，与原有流程对齐
+1. **`AgentLoopBase` 基类**：新增 `run_from_input_ids` 抽象方法，定义续写模式接口
+2. **`generate_sequences` 方法**：当 `batch.meta_info["round_idx"] >= 1` 时调用 `_generate_from_input_ids`
+3. **`_run_agent_loop_from_input_ids` 方法**（新增）：创建 agent loop 实例后调用其 `run_from_input_ids`
+4. **`_generate_from_input_ids` 方法**：仿照 `generate_sequences` 实现续写逻辑
 
 **`LLM/verl/verl/experimental/agent_loop/single_turn_agent_loop.py`**：
 
-5. **`SingleTurnAgentLoop` 类**：实现 `run_from_input_ids` 方法，接收 `prompt_ids` 直接调用 `server_manager.generate` 生成新 token，返回 `AgentLoopOutput`
+5. **`SingleTurnAgentLoop` 类**：实现 `run_from_input_ids` 方法，接收 `prompt_ids` 直接调用 `server_manager.generate`
 
-**关键改动说明**：
-
-- 通过 `run_from_input_ids` 抽象方法，各 AgentLoop 子类可以自定义续写逻辑
-- `_generate_from_input_ids` 直接复用 `_postprocess` 和 `_agent_loop_postprocess`，保证与原有流程输出格式完全一致
-
-#### 7.4.3 Actor 策略损失修改
+#### 6.4.2 Actor 策略损失修改
 
 **`LLM/verl/verl/workers/actor/dp_actor.py`**：
 
-1. **导入本地 `core_algos`**：优先使用 OPTS_TTPO 的 `core_algos` 以支持 `branch_weight_factor`
-   ```python
-   try:
-       from trainer.opts_ttpo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
-   except ImportError:
-       from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
-   ```
+1. **导入本地 `core_algos`**：优先使用 OPTS_TTPO 的 `core_algos` 以支持 `branch_weight`
+2. **提取并传递 `branch_weight`**：当 batch 中存在 `branch_weight` 时传递给 policy loss 函数
+3. **自动切换聚合模式**：`agg_loss` 检测到 `branch_weight is not None` 时自动使用 `"weighted-token-mean"` 模式
 
-2. **提取并传递 `branch_weight_factor`**：
-   ```python
-   # Include branch_weight_factor for OPTS_TTPO gradient correction
-   if "branch_weight_factor" in data.batch.keys():
-       select_keys.append("branch_weight_factor")
-
-   # Extract branch_weight_factor for OPTS_TTPO gradient correction
-   branch_weight_factor = model_inputs.get("branch_weight_factor", None)
-
-   # Compute policy loss with branch_weight_factor
-   if branch_weight_factor is not None:
-       pg_loss, pg_metrics = policy_loss_fn(..., branch_weight_factor=branch_weight_factor)
-   ```
-
-#### 7.4.4 Critic Value Head 激活函数
-
-为支持 0-1 范围的规则奖励，在 verl 的 critic 配置中新增 `value_head_activation` 参数，可选值为 `none`、`sigmoid`、`tanh`。设为 `sigmoid` 时，critic 输出将被限制到 (0, 1) 范围，与规则奖励的范围对齐。
-
-修改文件：
-- `verl/workers/config/critic.py`：新增 `value_head_activation` 配置项
-- `verl/trainer/config/critic/critic.yaml`：新增对应的 yaml 配置
-- `verl/workers/critic/dp_critic.py`：在 `_forward_micro_batch` 中根据配置应用激活函数
-
-#### 7.4.5 注意事项
+#### 6.4.3 注意事项
 
 1. **Tensor 布尔判断**：使用 `if tensor is not None:` 而非 `if tensor:`，避免多元素 Tensor 的歧义错误
 2. **`non_tensor_batch` 类型约束**：`DataProto.non_tensor_batch` 的所有值必须是 `np.ndarray` 类型
-   - `cid` 存储为 `np.array([OrderedDict() for ...], dtype=object)`（正确）
+   - `cid` 存储为 `np.array([OrderedDict() for ...], dtype=object)`
    - `next_states` 是 `Dict[str, Tuple[int, int]]`，不能存入 `non_tensor_batch`，应作为函数参数传递
-
+3. **return_threshold 更新粒度**：在 epoch 级别更新（非 step 级别），epoch_returns 收集每个 step 中各 uid 的 aggregated_return，epoch 结束时取均值
+4. **TUCT 分支点转换**：`select_next_states` 返回的是 TUCT 选中的节点本身，需要通过 `selected_to_branch_points` 转换为其父节点，因为分支是从父节点重新采样新动作
+5. **`</think>` 掩码**：TUCT 选择时掩盖 `</think>` 之后的位置，确保分支发生在思考阶段内

@@ -77,7 +77,7 @@ actor_rollout_ref:
 |------|------|------|
 | advantages_mean | (bs, response_len-1) | 分支节点处所有动作的平均优势 |
 | state_branches | (bs, response_len) | 每个状态的分支数 |
-| branch_weight_factor | (bs, response_len) | 策略梯度权重因子（更新阶段计算） |
+| branch_weight | (bs, response_len) | 策略梯度权重因子（更新阶段计算） |
 
 #### 3.1.2 non_tensor_batch（非张量数据）
 
@@ -143,7 +143,7 @@ branch_pos (Branch Position)
 ├── 当前轨迹在父轨迹中的分支位置
 ├── 第一轮采样的轨迹 branch_pos = -1
 ├── 用于：
-│   └── compute_branch_weight_factors：计算祖先轨迹的 state_branches 累乘
+│   └── compute_branch_weight：计算祖先轨迹的 state_branches 累乘
 └── 由 set_opts_ttpo_info 函数生成并保存
 
 new_sample_indices
@@ -186,7 +186,7 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 **state_branches[t]**：状态 t 处的分支数
 - 初始化：全部为 1
 - 当状态 t 被选中进行扩展时：state_branches[t] += n
-- 用于计算 branch_weight_factor
+- 用于计算 branch_weight
 
 **tree_branches[tid]**：树 tid 下的轨迹总数
 - 初始化：每棵新树的 tree_branches[tid] = 1
@@ -204,14 +204,14 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 
 **tuct[t]**：Tree UCT 值
 - 公式：exploitation[t] * exploration[t]
-- 利用项：exploitation = advantages / branch_weight_factors，即动作优势除以分支权重
+- 利用项：exploitation = advantages / branch_weight，即动作优势除以分支权重
 - 探索项：exploration = sqrt(log((round_idx + 1) * n + 1)) / N
   - N = tree_branches[tid]，即当前树的轨迹总数
 - 与动态阈值 $\max(\bar{A}_{\text{uid}}, \text{root\_tuct})$ 比较，决定是否从根状态重新开始
 
-**branch_weight_factor[t]**：策略梯度权重因子
-- t=0 时：branch_weight_factor[0] = 1
-- t>0 时：branch_weight_factor[t] = branch_weight_factor[t-1] * state_branches[t-1]
+**branch_weight[t]**：策略梯度权重因子
+- t=0 时：branch_weight[0] = 1
+- t>0 时：branch_weight[t] = branch_weight[t-1] * state_branches[t-1]
 - 含义：祖先轨迹分支数的累乘
 - 用于校正策略梯度，保证无偏估计
 
@@ -306,12 +306,12 @@ for epoch in ...:
 
             if opts_ttpo and i < g - 1:  # 仅在非最后一轮执行
                 - (全局batch) select_next_states：用 TUCT 选择下一轮扩展的状态
-                    1) 计算 branch_weight_factors 作为利用项权重
+                    1) 计算 branch_weight 作为利用项权重
 
                     2) 计算 tree_branches_N：通过 tid 映射获取每条轨迹对应树的轨迹总数
 
                     3) 计算 TUCT：
-                       - exploitation = advantages / branch_weight_factors
+                       - exploitation = advantages / branch_weight
                        - exploration = sqrt(log((round_idx + 1) * n + 1)) / tree_branches_N
                        - tuct = exploitation * exploration
 
@@ -335,13 +335,13 @@ for epoch in ...:
         if opts_ttpo:
             - 使用全局 batch 进行更新（包含完整的树）
             - 对优势进行白化（whiten）
-            - compute_branch_weight_factors：计算策略梯度的权重校正因子
+            - compute_branch_weight：计算策略梯度的权重校正因子
                 - W_t = 祖先轨迹所有分支数的累乘（保证树结构上的无偏梯度估计）
 
         - 更新 Critic：Loss 计算与 PPO 一致
 
         - 更新 Actor：
-            - 若存在 branch_weight_factor：
+            - 若存在 branch_weight：
                 - pg_loss = pg_loss / W_t
                 - 使用 "weighted-token-mean" 聚合模式：
                     loss = masked_sum(loss_mat) / masked_sum(1/W_t) * dp_size
@@ -373,7 +373,7 @@ $$
 
 其中：
 - $A(s_t)$ 为状态 $t$ 的优势值
-- $W_t$ 为 branch_weight_factor，即祖先轨迹所有分支数的累乘
+- $W_t$ 为 branch_weight，即祖先轨迹所有分支数的累乘
 - $i$ 为当前轮次索引（round_idx）
 - $n$ 为每轮采样数（n_samples_per_round）
 - $N$ 为当前树的轨迹总数（tree_branches[tid]）
@@ -386,7 +386,7 @@ $$
 \nabla_\theta J(\theta) = \mathbb{E}\left[ \sum_t \frac{1}{W_t} \nabla_\theta \log \pi_\theta(a_t|s_t) \hat{A}_t \right]
 $$
 
-其中 $W_t = \prod_{i=0}^{t-1} |B_i|$ 为 branch_weight_factor。
+其中 $W_t = \prod_{i=0}^{t-1} |B_i|$ 为 branch_weight。
 
 
 ## 6 实现要求
@@ -422,9 +422,9 @@ LLM/trainer/opts_ttpo/
 | `merge_batches` | ray_trainer.py | 函数 | 合并局部 batch 到全局 batch |
 | `select_next_states` | ray_trainer.py | 函数 | TUCT 状态选择，更新 state_branches |
 | `compute_treegae_advantage_return` | core_algos.py | 注册函数 | 通过 `@register_adv_est(AdvantageEstimator.TreeGAE)` 注册 |
-| `compute_branch_weight_factors` | core_algos.py | 函数 | 计算分支权重因子 |
+| `compute_branch_weight` | core_algos.py | 函数 | 计算分支权重因子 |
 | `agg_loss` | core_algos.py | 修改 | 新增 "weighted-token-mean" 模式 |
-| `compute_policy_loss_vanilla` | core_algos.py | 修改 | 新增 branch_weight_factor 参数 |
+| `compute_policy_loss_vanilla` | core_algos.py | 修改 | 新增 branch_weight 参数 |
 | `AdvantageEstimator` | core_algos.py | 枚举扩展 | 新增 `TreeGAE = "treegae"` |
 
 ### 7.3 配置参数
@@ -503,7 +503,7 @@ OPTS_TTPO 需要从已有的 `input_ids` 续写生成，而不是从 `raw_prompt
 
 **`LLM/verl/verl/workers/actor/dp_actor.py`**：
 
-1. **导入本地 `core_algos`**：优先使用 OPTS_TTPO 的 `core_algos` 以支持 `branch_weight_factor`
+1. **导入本地 `core_algos`**：优先使用 OPTS_TTPO 的 `core_algos` 以支持 `branch_weight`
    ```python
    try:
        from trainer.opts_ttpo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
@@ -511,18 +511,18 @@ OPTS_TTPO 需要从已有的 `input_ids` 续写生成，而不是从 `raw_prompt
        from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
    ```
 
-2. **提取并传递 `branch_weight_factor`**：
+2. **提取并传递 `branch_weight`**：
    ```python
-   # Include branch_weight_factor for OPTS_TTPO gradient correction
-   if "branch_weight_factor" in data.batch.keys():
-       select_keys.append("branch_weight_factor")
+   # Include branch_weight for OPTS_TTPO gradient correction
+   if "branch_weight" in data.batch.keys():
+       select_keys.append("branch_weight")
 
-   # Extract branch_weight_factor for OPTS_TTPO gradient correction
-   branch_weight_factor = model_inputs.get("branch_weight_factor", None)
+   # Extract branch_weight for OPTS_TTPO gradient correction
+   branch_weight = model_inputs.get("branch_weight", None)
 
-   # Compute policy loss with branch_weight_factor
-   if branch_weight_factor is not None:
-       pg_loss, pg_metrics = policy_loss_fn(..., branch_weight_factor=branch_weight_factor)
+   # Compute policy loss with branch_weight
+   if branch_weight is not None:
+       pg_loss, pg_metrics = policy_loss_fn(..., branch_weight=branch_weight)
    ```
 
 #### 7.4.4 Critic Value Head 激活函数

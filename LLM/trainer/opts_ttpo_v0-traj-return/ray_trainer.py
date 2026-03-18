@@ -61,7 +61,7 @@ from .core_algos import (
     AdvantageEstimator,
     agg_loss,
     compute_partree_branches,
-    compute_branch_weight_factors,
+    compute_branch_weight,
 )
 
 
@@ -2340,14 +2340,14 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                             batch = global_batch
                             batch.batch["advantages"] = verl_F.masked_whiten(batch.batch["advantages"], batch.batch["response_mask"])
 
-                            # Compute branch_weight_factor for TTPO gradient correction
-                            branch_weight_factor = compute_branch_weight_factors(
+                            # Compute branch_weight for TTPO gradient correction
+                            branch_weight = compute_branch_weight(
                                 state_branches=batch.batch["state_branches"],
                                 pid=batch.non_tensor_batch["pid"],
                                 rid=batch.non_tensor_batch["rid"],
                                 branch_pos=batch.non_tensor_batch["branch_pos"],
                             )
-                            batch.batch["branch_weight_factor"] = branch_weight_factor
+                            batch.batch["branch_weight"] = branch_weight
                             log_batch_state(batch, stage="opts_ttpo_final_batch_before_update", step=self.global_steps)
                         
                     # update critic

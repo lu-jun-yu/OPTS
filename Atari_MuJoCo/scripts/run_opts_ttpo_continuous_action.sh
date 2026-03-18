@@ -5,23 +5,12 @@ export MKL_NUM_THREADS=1
 
 SEEDS=(1 2 3 4 5)
 
-for task in HalfCheetah-v4 Walker2d-v4 Hopper-v4; do
-    for seed in "${SEEDS[@]}"; do
-        python cleanrl/opts_ttpo_continuous_action.py \
-            --env-id $task \
-            --total-timesteps 1000000 \
-            --num-envs 2 \
-            --no-cuda \
-            --seed $seed &
-    done
-done
-
-for task in Ant-v4 Humanoid-v4; do
+for task in HalfCheetah-v4 Walker2d-v4 Hopper-v4 Ant-v4 Humanoid-v4; do
     for seed in "${SEEDS[@]}"; do
         python cleanrl/opts_ttpo_continuous_action.py \
             --env-id $task \
             --total-timesteps 3000000 \
-            --num-envs 2 \
+            --num-steps 4096 \
             --no-cuda \
             --seed $seed &
     done

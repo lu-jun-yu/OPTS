@@ -83,7 +83,7 @@ actor_rollout_ref:
 | trajectory_reward | (bs, response_len) | 累计折扣奖励 |
 | state_branches | (bs, response_len) | 每个状态的分支数 |
 | subtree_branches | (bs, response_len) | 子树的轨迹数 |
-| branch_weight_factor | (bs, response_len) | 策略梯度权重因子（更新阶段计算） |
+| branch_weight | (bs, response_len) | 策略梯度权重因子（更新阶段计算） |
 
 #### 3.1.2 non_tensor_batch（非张量数据）
 
@@ -130,7 +130,7 @@ branch_pos (Branch Position)
 ├── 第一轮采样的轨迹 branch_pos = -1
 ├── 用于：
 │   ├── 1. compute_forward_values：从父轨迹继承 gamma_t、lam_t、trajectory_reward
-│   └── 2. compute_branch_weight_factors：计算祖先轨迹的 state_branches 累乘
+│   └── 2. compute_branch_weight：计算祖先轨迹的 state_branches 累乘
 └── 由 set_opts_ttpo_info 函数生成并保存
 
 new_sample_indices
@@ -196,7 +196,7 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 **state_branches[t]**：状态 t 处的分支数
 - 初始化：全部为 1
 - 当状态 t 被选中进行扩展时：state_branches[t] = n + 1（+1 是因为原轨迹本身也算一个分支）
-- 用于计算 branch_weight_factor
+- 用于计算 branch_weight
 
 **subtree_branches[t]**：经过状态 t 的轨迹总数
 - 初始化：全部为 1
@@ -237,9 +237,9 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 - 探索项：c * sqrt(log(N_parent)) / N_child（UCB1 风格）
 - decay_factor 使选择的状态尽可能远离之前已选择的状态（分支节点）
 
-**branch_weight_factor[t]**：策略梯度权重因子
-- t=0 时：branch_weight_factor[0] = 1
-- t>0 时：branch_weight_factor[t] = branch_weight_factor[t-1] * state_branches[t-1]
+**branch_weight[t]**：策略梯度权重因子
+- t=0 时：branch_weight[0] = 1
+- t>0 时：branch_weight[t] = branch_weight[t-1] * state_branches[t-1]
 - 含义：祖先轨迹分支数的累乘
 - 用于校正策略梯度，保证无偏估计
 
@@ -366,13 +366,13 @@ for epoch in ...:
         if opts_ttpo:
             - 使用全局 batch 进行更新（包含完整的树）
             - 对优势进行白化（whiten）
-            - compute_branch_weight_factors：计算策略梯度的权重校正因子
+            - compute_branch_weight：计算策略梯度的权重校正因子
                 - W_t = 祖先轨迹所有分支数的累乘（保证树结构上的无偏梯度估计）
 
         - 更新 Critic：Loss 计算与 PPO 一致
 
         - 更新 Actor：
-            - 若存在 branch_weight_factor：
+            - 若存在 branch_weight：
                 - pg_loss = pg_loss / W_t
                 - 使用 "weighted-token-mean" 聚合模式：
                     loss = masked_sum(loss_mat) / masked_sum(1/W_t) * dp_size
@@ -416,7 +416,7 @@ $$
 \nabla_\theta J(\theta) = \mathbb{E}\left[ \sum_t \frac{1}{W_t} \nabla_\theta \log \pi_\theta(a_t|s_t) \hat{A}_t \right]
 $$
 
-其中 $W_t = \prod_{i=0}^{t-1} |B_i|$ 为 branch_weight_factor。
+其中 $W_t = \prod_{i=0}^{t-1} |B_i|$ 为 branch_weight。
 
 
 ## 6 实现要求
@@ -455,9 +455,9 @@ LLM/trainer/opts_ttpo/
 | `compute_treegae_advantage_return` | core_algos.py | 注册函数 | 通过 `@register_adv_est(AdvantageEstimator.TreeGAE)` 注册 |
 | `compute_decay_factor` | core_algos.py | 函数 | 计算 TUCT 中的 decay_factor |
 | `compute_partree_branches` | core_algos.py | 函数 | 计算父分支点的 subtree_branches |
-| `compute_branch_weight_factors` | core_algos.py | 函数 | 计算分支权重因子 |
+| `compute_branch_weight` | core_algos.py | 函数 | 计算分支权重因子 |
 | `agg_loss` | core_algos.py | 修改 | 新增 "weighted-token-mean" 模式 |
-| `compute_policy_loss_vanilla` | core_algos.py | 修改 | 新增 branch_weight_factor 参数 |
+| `compute_policy_loss_vanilla` | core_algos.py | 修改 | 新增 branch_weight 参数 |
 | `AdvantageEstimator` | core_algos.py | 枚举扩展 | 新增 `TreeGAE = "treegae"` |
 
 ### 7.3 配置参数
@@ -541,7 +541,7 @@ OPTS_TTPO 需要从已有的 `input_ids` 续写生成，而不是从 `raw_prompt
 
 **`LLM/verl/verl/workers/actor/dp_actor.py`**：
 
-1. **导入本地 `core_algos`**：优先使用 OPTS_TTPO 的 `core_algos` 以支持 `branch_weight_factor`
+1. **导入本地 `core_algos`**：优先使用 OPTS_TTPO 的 `core_algos` 以支持 `branch_weight`
    ```python
    try:
        from trainer.opts_ttpo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
@@ -549,18 +549,18 @@ OPTS_TTPO 需要从已有的 `input_ids` 续写生成，而不是从 `raw_prompt
        from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
    ```
 
-2. **提取并传递 `branch_weight_factor`**：
+2. **提取并传递 `branch_weight`**：
    ```python
-   # Include branch_weight_factor for OPTS_TTPO gradient correction
-   if "branch_weight_factor" in data.batch.keys():
-       select_keys.append("branch_weight_factor")
+   # Include branch_weight for OPTS_TTPO gradient correction
+   if "branch_weight" in data.batch.keys():
+       select_keys.append("branch_weight")
 
-   # Extract branch_weight_factor for OPTS_TTPO gradient correction
-   branch_weight_factor = model_inputs.get("branch_weight_factor", None)
+   # Extract branch_weight for OPTS_TTPO gradient correction
+   branch_weight = model_inputs.get("branch_weight", None)
 
-   # Compute policy loss with branch_weight_factor
-   if branch_weight_factor is not None:
-       pg_loss, pg_metrics = policy_loss_fn(..., branch_weight_factor=branch_weight_factor)
+   # Compute policy loss with branch_weight
+   if branch_weight is not None:
+       pg_loss, pg_metrics = policy_loss_fn(..., branch_weight=branch_weight)
    ```
 
 #### 7.4.4 Critic Value Head 激活函数

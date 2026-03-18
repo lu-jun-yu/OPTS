@@ -58,7 +58,7 @@ from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 from .core_algos import (
     AdvantageEstimator,
     agg_loss,
-    compute_branch_weight_factors,
+    compute_branch_weight,
 )
 from utils.logger_batch import *
 
@@ -817,21 +817,21 @@ class PromptBuffer:
         return drawn
 
 
-def compute_aggregated_returns(batch: DataProto) -> float:
-    """Compute aggregated returns across all trees for return_threshold.
+def compute_aggregated_returns(batch: DataProto) -> list[float]:
+    """Compute per-uid aggregated returns for return_threshold.
 
     Per uid (tree), compute weighted average of episodic returns using
-    inverse branch_weight_factor. Return the mean across all uids.
+    inverse branch_weight. Return the list of per-uid aggregated returns.
 
     Args:
         batch: Global batch with episodic_returns (pre-computed),
-               branch_weight_factor, response_mask, uid.
+               branch_weight, response_mask, uid.
 
     Returns:
-        Mean aggregated return across all trees.
+        List of per-uid aggregated returns.
     """
     response_mask = batch.batch["response_mask"]
-    branch_weight = batch.batch["branch_weight_factor"]
+    branch_weight = batch.batch["branch_weight"]
     uid = batch.non_tensor_batch["uid"]
     episodic_returns = batch.non_tensor_batch["episodic_returns"]
 
@@ -858,9 +858,7 @@ def compute_aggregated_returns(batch: DataProto) -> float:
         if weight_sum > 0:
             aggregated_returns.append(weighted_sum / weight_sum)
 
-    if len(aggregated_returns) == 0:
-        return 0.0
-    return sum(aggregated_returns) / len(aggregated_returns)
+    return aggregated_returns
 
 
 class RayOPTSTTPOTrainer(RayPPOTrainer):
@@ -2252,19 +2250,20 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                         batch = global_batch
                         batch.batch["advantages"] = verl_F.masked_whiten(batch.batch["advantages"], batch.batch["response_mask"])
 
-                        # Compute branch_weight_factor
-                        branch_weight_factor = compute_branch_weight_factors(
+                        # Compute branch_weight
+                        branch_weight = compute_branch_weight(
                             state_branches=batch.batch["state_branches"],
                             pid=batch.non_tensor_batch["pid"],
                             rid=batch.non_tensor_batch["rid"],
                             uid=batch.non_tensor_batch["uid"],
                             branch_pos=batch.non_tensor_batch["branch_pos"],
                         )
-                        batch.batch["branch_weight_factor"] = branch_weight_factor
+                        batch.batch["branch_weight"] = branch_weight
 
-                        # Collect step-level return; prev_mean_return updated at epoch end
-                        step_mean_return = compute_aggregated_returns(batch)
-                        epoch_returns.append(step_mean_return)
+                        # Collect per-uid aggregated returns; prev_mean_return updated at epoch end
+                        step_aggregated_returns = compute_aggregated_returns(batch)
+                        epoch_returns.extend(step_aggregated_returns)
+                        step_mean_return = sum(step_aggregated_returns) / len(step_aggregated_returns) if step_aggregated_returns else 0.0
                         metrics["opts_ttpo/return_threshold"] = prev_mean_return if prev_mean_return is not None else 0.0
                         metrics["opts_ttpo/step_mean_return"] = step_mean_return
 
