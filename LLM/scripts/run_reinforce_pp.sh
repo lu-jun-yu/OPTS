@@ -5,8 +5,8 @@ export VLLM_LOGGING_LEVEL=WARN
 DATE=0315
 MODEL_SIZE=1.7B
 
-python3 -m trainer.main_opts_ttpo \
- algorithm.adv_estimator=treegae \
+python3 -m verl.trainer.main_ppo \
+ algorithm.adv_estimator=reinforce_plus_plus \
  data.train_files=data/train.parquet \
  data.val_files=data/test.parquet \
  data.train_batch_size=1024 \
@@ -17,29 +17,22 @@ python3 -m trainer.main_opts_ttpo \
  actor_rollout_ref.actor.optim.lr=1e-6 \
  actor_rollout_ref.actor.ppo_mini_batch_size=1024 \
  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=32 \
+ actor_rollout_ref.actor.use_kl_loss=False \
  actor_rollout_ref.rollout.name=vllm \
  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1024 \
  actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
  actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
- actor_rollout_ref.rollout.search=opts \
  actor_rollout_ref.rollout.n=4 \
- actor_rollout_ref.rollout.c=1.0 \
- actor_rollout_ref.rollout.max_search_per_tree=4 \
- critic.enable=True \
- critic.optim.lr=1e-5 \
- critic.model.path=models/Qwen3-${MODEL_SIZE} \
- critic.ppo_micro_batch_size_per_gpu=64 \
- critic.value_head_activation=sigmoid \
  custom_reward_function.path=utils/reward_fn.py \
  custom_reward_function.name=compute_score \
+ algorithm.use_kl_in_reward=True \
  algorithm.kl_ctrl.kl_coef=0.001 \
- algorithm.lam=0.998 \
  trainer.logger='["console","wandb"]' \
  trainer.val_before_train=False \
  trainer.n_gpus_per_node=8 \
  trainer.nnodes=1 \
- trainer.project_name=opts_ttpo \
+ trainer.project_name=reinforce_pp \
  trainer.experiment_name=${DATE}_${MODEL_SIZE} \
  trainer.save_freq=10 \
  trainer.test_freq=10 \
- trainer.total_epochs=15 2>&1 | tee logs/opts_ttpo_${DATE}_${MODEL_SIZE}.log
+ trainer.total_epochs=15 2>&1 | tee logs/reinforce_pp_${DATE}_${MODEL_SIZE}.log
