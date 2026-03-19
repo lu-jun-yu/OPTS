@@ -190,7 +190,9 @@ hf download Qwen/Qwen3-8B --local-dir models/Qwen3-8B
 ```bash
 cd LLM
 ./scripts/run_ppo.sh
-./scripts/run_grpo.sh
+./scripts/run_dapo.sh
+./scripts/run_gpg.sh
+./scripts/run_reinforce_pp.sh
 ```
 
 **Run OPTS-TTPO (train-time searching):**
