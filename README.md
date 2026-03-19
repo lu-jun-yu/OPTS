@@ -124,6 +124,7 @@ cd LLM/verl
 wget -nv https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
 
 USE_MEGATRON=0 bash scripts/install_vllm_sglang_mcore.sh
+pip install math_verify
 ```
 
 **Install NVIDIA Apex:**
@@ -259,6 +260,7 @@ OPTS/
 │   │   └── cleanrl/
 │   │       ├── ppo_atari.py             # PPO baseline for Atari
 │   │       ├── ppo_continuous_action.py # PPO baseline for MuJoCo
+│   │       ├── rpo_continuous_action.py # RPO baseline for MuJoCo
 │   │       ├── opts_ttpo_atari.py       # OPTS-TTPO for Atari
 │   │       └── opts_ttpo_continuous_action.py  # OPTS-TTPO for MuJoCo
 │   ├── scripts/                         # Training launch scripts
