@@ -70,7 +70,7 @@ ATARI_GAMES=(
 for seed in "${SEEDS[@]}"; do
     echo "PPO seed=$seed starting..."
     for task in "${ATARI_GAMES[@]}"; do
-        python cleanrl/ppo_atari.py \
+        python cleanrl/cleanrl/ppo_atari.py \
             --env-id $task \
             --total-timesteps 10000000 \
             --num-steps 4096 \

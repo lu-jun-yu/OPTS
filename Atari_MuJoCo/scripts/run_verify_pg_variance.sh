@@ -1,4 +1,4 @@
-# Run all MuJoCo continuous action tasks with multiple seeds in parallel
+# Run Verification 1: positive vs negative trajectory PG variance
 
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
@@ -7,11 +7,12 @@ SEEDS=(1 2 3 4 5)
 
 for task in HalfCheetah-v4 Walker2d-v4 Hopper-v4 Ant-v4 Humanoid-v4; do
     for seed in "${SEEDS[@]}"; do
-        python cleanrl/cleanrl/opts_ttpo_continuous_action.py \
+        python experiments/verify_pg_variance.py \
             --env-id $task \
-            --total-timesteps 3000000 \
+            --seed $seed \
             --num-steps 4096 \
-            --no-cuda \
-            --seed $seed &
+            --num-rollouts 8 \
+            --no-cuda &
     done
 done
+wait

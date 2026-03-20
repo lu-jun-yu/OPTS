@@ -150,29 +150,29 @@ pip install --no-deps -e .
 **Run baselines:**
 
 ```bash
-cd Atari_MuJoCo/cleanrl
-../scripts/run_ppo_atari.sh                       # Requirement: CPU Cores > 57
-../scripts/run_all_baselines_continuous_action.sh # Requirement: CPU Cores > 25
+cd Atari_MuJoCo
+scripts/run_ppo_atari.sh                          # Requirement: CPU Cores > 57
+scripts/run_all_baselines_continuous_action.sh    # Requirement: CPU Cores > 25
 ```
 
 **Run OPTS-TTPO:**
 
 ```bash
-cd Atari_MuJoCo/cleanrl
-../scripts/run_opts_ttpo_atari.sh                 # Requirement: CPU Cores > 57
-../scripts/run_opts_ttpo_continuous_action.sh     # Requirement: CPU Cores > 25
+cd Atari_MuJoCo
+scripts/run_opts_ttpo_atari.sh                    # Requirement: CPU Cores > 57
+scripts/run_opts_ttpo_continuous_action.sh        # Requirement: CPU Cores > 25
 ```
 
 **Visualization:**
 
 ```bash
-cd Atari_MuJoCo/visual
+cd Atari_MuJoCo
 
 # Plot Atari results
-python plot_atari.py ../cleanrl/results ppo_atari opts_ttpo_atari
+python visual/plot_atari.py ./results ppo_atari opts_ttpo_atari
 
 # Plot MuJoCo results
-python plot_mujoco.py ../cleanrl/results ppo_continuous_action rpo_continuous_action opts_ttpo_continuous_action
+python visual/plot_mujoco.py ./results ppo_continuous_action rpo_continuous_action opts_ttpo_continuous_action
 ```
 
 ### LLM
@@ -189,17 +189,17 @@ hf download Qwen/Qwen3-8B --local-dir models/Qwen3-8B
 
 ```bash
 cd LLM
-./scripts/run_ppo.sh
-./scripts/run_dapo.sh
-./scripts/run_gpg.sh
-./scripts/run_reinforce_pp.sh
+scripts/run_ppo.sh
+scripts/run_dapo.sh
+scripts/run_gpg.sh
+scripts/run_reinforce_pp.sh
 ```
 
 **Run OPTS-TTPO (train-time searching):**
 
 ```bash
 cd LLM
-./scripts/run_opts_ttpo.sh
+scripts/run_opts_ttpo.sh
 ```
 
 > Entry point: `LLM/trainer/main_opts_ttpo.py`
@@ -208,7 +208,7 @@ cd LLM
 
 ```bash
 cd LLM
-./scripts/run_opts_generation.sh
+scripts/run_opts_generation.sh
 ```
 
 > Entry point: `LLM/trainer/main_opts_generation.py`

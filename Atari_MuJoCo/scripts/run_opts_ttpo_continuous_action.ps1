@@ -15,7 +15,7 @@ foreach ($config in $taskConfigs_ttpo) {
     $task = $config.Name
     $steps = $config.Steps
     Write-Host "Running task: $task ($($steps / 1000000)M steps)" -ForegroundColor Yellow
-    python cleanrl/opts_ttpo_continuous_action.py `
+    python cleanrl/cleanrl/opts_ttpo_continuous_action.py `
         --env-id $task `
         --total-timesteps $steps `
         --num-steps 4096 `

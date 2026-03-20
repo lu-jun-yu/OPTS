@@ -68,7 +68,7 @@ ATARI_GAMES=(
 for seed in "${SEEDS[@]}"; do
     echo "OPTS_TTPO seed=$seed starting..."
     for task in "${ATARI_GAMES[@]}"; do
-        python cleanrl/opts_ttpo_atari.py \
+        python cleanrl/cleanrl/opts_ttpo_atari.py \
             --env-id $task \
             --total-timesteps 10000000 \
             --num-steps 4096 \
