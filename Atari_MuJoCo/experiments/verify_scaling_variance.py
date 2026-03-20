@@ -188,38 +188,46 @@ def collect_opts_rollout(env, agent, num_steps, device, max_search, c,
         compute_tree_gae(current_parent, env_idx, rewards, values, dones,
                          parent_indices, advantages, gamma, gae_lambda, next_value)
 
-    return obs, actions, advantages[:, env_idx]
+    # Compute branch weights (same as training code)
+    weights = compute_branch_weight(
+        num_steps=num_steps,
+        parent_indices=parent_indices,
+        state_branches=state_branches,
+        env_indices=[env_idx],
+        root_branch_counts=root_branch_counts,
+    )
+
+    return obs, actions, advantages[:, env_idx], weights[:, 0]
 
 
-def compute_pg_gradient(agent, obs, actions, advantages, device):
+def compute_pg_gradient(agent, obs, actions, advantages, device, weights=None):
+    """计算策略梯度。weights 非 None 时使用 OPTS IPW 加权方式"""
     agent.zero_grad()
     obs, actions, advantages = obs.to(device), actions.to(device), advantages.to(device)
     action_mean = agent.actor_mean(obs)
     action_logstd = agent.actor_logstd.expand_as(action_mean)
     dist = Normal(action_mean, torch.exp(action_logstd))
     log_probs = dist.log_prob(actions).sum(-1)
-    pg_loss = -(log_probs * advantages.detach()).mean()
+    pg_loss_per_sample = -(log_probs * advantages.detach())
+    if weights is not None:
+        weights = weights.to(device)
+        pg_loss = (pg_loss_per_sample / weights).sum() / (1.0 / weights).sum()
+    else:
+        pg_loss = pg_loss_per_sample.mean()
     pg_loss.backward()
     return torch.cat([p.grad.detach().flatten() if p.grad is not None
                       else torch.zeros(p.numel(), device=device) for p in agent.parameters()])
 
 
-def compute_chunk_variance(agent, obs, actions, advantages, batch_sizes, g_expected, device):
-    """对每个 batch_size，将数据分 chunk 计算梯度方差"""
-    num_steps = obs.shape[0]
+def compute_scaling_variance(agent, obs, actions, advantages, batch_sizes, g_expected, device, weights=None):
+    """对每个 batch_size，取前 B 个 step 计算梯度，衡量与期望梯度的偏差"""
     variances = {}
     for B in batch_sizes:
-        num_chunks = num_steps // B
-        if num_chunks < 2:
+        if B > obs.shape[0]:
             continue
-        chunk_grads = []
-        for k in range(num_chunks):
-            g_k = compute_pg_gradient(agent, obs[k*B:(k+1)*B], actions[k*B:(k+1)*B],
-                                       advantages[k*B:(k+1)*B], device)
-            chunk_grads.append(g_k)
-        chunk_grads = torch.stack(chunk_grads)
-        var_per_param = ((chunk_grads - g_expected.unsqueeze(0)) ** 2).mean(dim=0)
-        variances[B] = var_per_param.mean().item()
+        w = weights[:B] if weights is not None else None
+        g_B = compute_pg_gradient(agent, obs[:B], actions[:B], advantages[:B], device, w)
+        variances[B] = ((g_B - g_expected) ** 2).mean().item()
     return variances
 
 
@@ -261,32 +269,26 @@ if __name__ == "__main__":
                                          args.gamma, args.gae_lambda)
         ppo_all_obs.append(o); ppo_all_act.append(a); ppo_all_adv.append(adv)
 
-    g_expected_ppo = compute_pg_gradient(
+    # 期望策略梯度（PPO 4096*8 全量），作为 PPO 和 OPTS 共同的基准
+    g_expected = compute_pg_gradient(
         agent, torch.cat(ppo_all_obs), torch.cat(ppo_all_act), torch.cat(ppo_all_adv), device)
-    ppo_variances = compute_chunk_variance(
-        agent, ppo_all_obs[0], ppo_all_act[0], ppo_all_adv[0], batch_sizes, g_expected_ppo, device)
+    ppo_variances = compute_scaling_variance(
+        agent, ppo_all_obs[0], ppo_all_act[0], ppo_all_adv[0], batch_sizes, g_expected, device)
     print(f"  PPO variances: {ppo_variances}")
     env_ppo.close()
 
-    # === OPTS ===
-    print(f"OPTS rollouts: {args.env_id} seed {args.seed}")
-    opts_all_obs, opts_all_act, opts_all_adv = [], [], []
-    for r in range(args.num_rollouts):
-        env_opts = make_eval_env(args.env_id, gamma=args.gamma, with_snapshot=True)
-        restore_normalization(env_opts, checkpoint)
-        np.random.seed(args.seed * 100 + r)
-        torch.manual_seed(args.seed * 100 + r)
+    # === OPTS ===（单次 4096 step rollout，使用 branch_weight IPW 加权）
+    print(f"OPTS rollout: {args.env_id} seed {args.seed}")
+    env_opts = make_eval_env(args.env_id, gamma=args.gamma, with_snapshot=True)
+    restore_normalization(env_opts, checkpoint)
 
-        o, a, adv = collect_opts_rollout(
-            env_opts, agent, args.num_steps, device, args.max_search_per_tree, args.c,
-            args.gamma, args.gae_lambda)
-        opts_all_obs.append(o); opts_all_act.append(a); opts_all_adv.append(adv)
-        env_opts.close()
+    opts_obs, opts_act, opts_adv, opts_weights = collect_opts_rollout(
+        env_opts, agent, args.num_steps, device, args.max_search_per_tree, args.c,
+        args.gamma, args.gae_lambda)
+    env_opts.close()
 
-    g_expected_opts = compute_pg_gradient(
-        agent, torch.cat(opts_all_obs), torch.cat(opts_all_act), torch.cat(opts_all_adv), device)
-    opts_variances = compute_chunk_variance(
-        agent, opts_all_obs[0], opts_all_act[0], opts_all_adv[0], batch_sizes, g_expected_opts, device)
+    opts_variances = compute_scaling_variance(
+        agent, opts_obs, opts_act, opts_adv, batch_sizes, g_expected, device, opts_weights)
     print(f"  OPTS variances: {opts_variances}")
 
     # 保存

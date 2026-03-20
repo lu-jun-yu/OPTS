@@ -43,22 +43,22 @@ def main():
             continue
 
         x = np.arange(len(seeds_found))
-        width = 0.35
-        ax.bar(x - width / 2, pos_vars, width, color=COLOR_POS, alpha=0.8)
-        ax.bar(x + width / 2, neg_vars, width, color=COLOR_NEG, alpha=0.8)
+        ax.plot(seeds_found, pos_vars, 'o-', color=COLOR_POS, linewidth=1.5, markersize=6)
+        ax.plot(seeds_found, neg_vars, 's-', color=COLOR_NEG, linewidth=1.5, markersize=6)
 
         ax.set_title(task, fontsize=12)
-        ax.set_xticks(x)
+        ax.set_xticks(seeds_found)
         ax.set_xticklabels([f"S{s}" for s in seeds_found])
+        ax.set_xlabel("Seed")
         ax.set_ylabel("PG Variance")
         ax.ticklabel_format(axis='y', style='scientific', scilimits=(0, 0))
-        ax.grid(True, alpha=0.3, axis='y')
+        ax.grid(True, alpha=0.3)
 
     # legend panel
     axes[5].axis('off')
     handles = [
-        plt.Rectangle((0, 0), 1, 1, color=COLOR_POS, alpha=0.8),
-        plt.Rectangle((0, 0), 1, 1, color=COLOR_NEG, alpha=0.8),
+        plt.Line2D([0], [0], color=COLOR_POS, marker='o', linewidth=2),
+        plt.Line2D([0], [0], color=COLOR_NEG, marker='s', linewidth=2),
     ]
     axes[5].legend(handles, ["Positive trajectories", "Negative trajectories"],
                    loc='center', fontsize=11, frameon=True)
