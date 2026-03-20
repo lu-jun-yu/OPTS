@@ -17,7 +17,7 @@
 **方法**:
 
 1. 加载预训练模型，按 PPO 方式收集 4096 x 8 个 step
-2. 取第一个 4096 step 中的数据，按 episode return 与 mean episode return 的大小关系将 step 划分为正样本（return > mean）和负样本（return <= mean），截取为等量 step
+2. 取第一个 4096 step 中的所有完整 episode，按 episode return 降序排列，取前 α 比例的 episode 的 step 作为正样本，后 α 比例的 episode 的 step 作为负样本（α 默认 0.3），截取为等量 step
 3. 分别计算正/负样本的策略梯度（全部 step 平均 pg_loss，一次反向传播）
 4. 用全部 4096 x 8 step 计算期望策略梯度 g_expected
 5. 计算方差：对每个参数 i，variance_i = (g_sub_i - g_expected_i)^2，对所有参数取均值
@@ -86,6 +86,7 @@ visual/
 |------|--------|------|
 | `--num-steps` | 4096 | 单次 rollout 的 step 数 |
 | `--num-rollouts` | 8 | rollout 次数（用于计算 g_expected） |
+| `--alpha` | 0.3 | 正/负样本的 episode 比例（验证1） |
 | `--max-search-per-tree` | 4 | OPTS 每棵树的最大搜索次数 |
 | `--c` | 1.0 | OPTS TUCT 探索系数 |
 | `--gamma` | 0.99 | 折扣因子 |

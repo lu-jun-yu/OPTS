@@ -123,6 +123,8 @@ if __name__ == "__main__":
     parser.add_argument("--output-dir", type=str, default="results/variance/verify1")
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
+    parser.add_argument("--alpha", type=float, default=0.3,
+                        help="proportion of top/bottom episodes as positive/negative samples")
     args = parser.parse_args()
 
     device = torch.device("cpu" if args.no_cuda else ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -136,7 +138,12 @@ if __name__ == "__main__":
     env = make_eval_env(args.env_id, gamma=args.gamma)
     restore_normalization(env, checkpoint)
 
-    agent = Agent([env]).to(device)
+    import types
+    env_spec = types.SimpleNamespace(
+        single_observation_space=env.observation_space,
+        single_action_space=env.action_space,
+    )
+    agent = Agent(env_spec).to(device)
     agent.load_state_dict(checkpoint["model_state_dict"])
     agent.eval()
 
@@ -157,15 +164,21 @@ if __name__ == "__main__":
         print(f"WARNING: No complete episodes for {args.env_id} seed {args.seed}")
         sys.exit(1)
 
-    # 按 episode return 分正负
-    ep_returns = [ep[2] for ep in first_episodes]
-    mean_return = np.mean(ep_returns)
-    print(f"{args.env_id} seed{args.seed}: {len(first_episodes)} episodes, mean_return={mean_return:.2f}")
+    # 按 episode return 降序排列，取前 alpha 比例为正样本，后 alpha 比例为负样本
+    sorted_episodes = sorted(first_episodes, key=lambda ep: ep[2], reverse=True)
+    num_eps = len(sorted_episodes)
+    n_select = max(1, int(num_eps * args.alpha))
+    top_episodes = sorted_episodes[:n_select]
+    bottom_episodes = sorted_episodes[-n_select:]
+    print(f"{args.env_id} seed{args.seed}: {num_eps} episodes, alpha={args.alpha}, "
+          f"top {n_select} eps (ret >= {top_episodes[-1][2]:.2f}), "
+          f"bottom {n_select} eps (ret <= {bottom_episodes[0][2]:.2f})")
 
     pos_idx, neg_idx = [], []
-    for start, end, ret in first_episodes:
-        indices = list(range(start, end + 1))
-        (pos_idx if ret > mean_return else neg_idx).extend(indices)
+    for start, end, ret in top_episodes:
+        pos_idx.extend(range(start, end + 1))
+    for start, end, ret in bottom_episodes:
+        neg_idx.extend(range(start, end + 1))
 
     N = min(len(pos_idx), len(neg_idx))
     if N == 0:
@@ -192,8 +205,9 @@ if __name__ == "__main__":
     result = {
         "env_id": args.env_id,
         "seed": args.seed,
+        "alpha": args.alpha,
         "num_episodes": len(first_episodes),
-        "mean_episode_return": float(mean_return),
+        "num_selected_episodes": n_select,
         "balanced_N": N,
         "positive_variance": var_pos,
         "negative_variance": var_neg,

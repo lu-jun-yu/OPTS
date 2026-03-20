@@ -259,7 +259,12 @@ if __name__ == "__main__":
     env_ppo = make_eval_env(args.env_id, gamma=args.gamma)
     restore_normalization(env_ppo, checkpoint)
 
-    agent = Agent([env_ppo]).to(device)
+    import types
+    env_spec = types.SimpleNamespace(
+        single_observation_space=env_ppo.observation_space,
+        single_action_space=env_ppo.action_space,
+    )
+    agent = Agent(env_spec).to(device)
     agent.load_state_dict(checkpoint["model_state_dict"])
     agent.eval()
 
