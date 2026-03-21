@@ -2,8 +2,18 @@ import argparse
 import os
 
 import datasets
+from math_verify import parse
 
 from prompts import SYSTEM_PROMPT
+
+
+def is_answer_parsable(answer: str) -> bool:
+    """Check if math-verify can parse this answer for reliable reward verification."""
+    try:
+        result = parse(str(answer).strip(), parsing_timeout=0)
+        return len(result) > 0
+    except Exception:
+        return False
 
 
 if __name__ == "__main__":
@@ -26,6 +36,12 @@ if __name__ == "__main__":
 
     train_dataset = dataset["train"]
     test_dataset = dataset["test"]
+
+    # Filter unparsable answers from training set (ensures reliable reward signal)
+    before = len(train_dataset)
+    valid_indices = [i for i in range(before) if is_answer_parsable(train_dataset[i]["answer"])]
+    train_dataset = train_dataset.select(valid_indices)
+    print(f"Answer parsability filter: {before} -> {len(train_dataset)} (removed {before - len(train_dataset)})")
 
     # add a row to each data item that represents a unique id
     def make_map_fn(split):

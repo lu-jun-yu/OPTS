@@ -5,23 +5,27 @@ import re
 
 import datasets
 import pandas as pd
+from math_verify import parse
 
 from prompts import SYSTEM_PROMPT
 
 # Sources to keep (competition-level)
-VALID_SOURCES = {"olympiads", "amc_aime", "aops_forum"}
+VALID_SOURCES = {"olympiads", "amc_aime"}
 
 # Default per-source sampling quotas
 DEFAULT_QUOTAS = {
-    "amc_aime": 3000,
-    "olympiads": 1500,
-    "aops_forum": 500,
+    "amc_aime": 2000,
+    "olympiads": 3000,
 }
 
 
-def is_pure_number(answer: str) -> bool:
-    """Check if the answer is a pure number (integer or decimal, possibly negative)."""
-    return bool(re.match(r"^-?\d+(\.\d+)?$", str(answer).strip()))
+def is_answer_parsable(answer: str) -> bool:
+    """Check if math-verify can parse this answer for reliable reward verification."""
+    try:
+        result = parse(str(answer).strip(), parsing_timeout=0)
+        return len(result) > 0
+    except Exception:
+        return False
 
 
 def normalize_text(text: str) -> str:
@@ -81,11 +85,6 @@ def filter_dataset(dataset, max_problem_len: int, max_solution_len: int):
     after_solution = len(dataset)
     print(f"  Solution length filter (<={max_solution_len}): {after_problem} -> {after_solution}")
 
-    # # 4. Only keep pure number answers
-    # dataset = dataset.filter(lambda x: is_pure_number(x["answer"]))
-    # after_answer = len(dataset)
-    # print(f"  Answer filter: {after_solution} -> {after_answer}")
-
     return dataset
 
 
@@ -134,10 +133,9 @@ if __name__ == "__main__":
     parser.add_argument("--local_dataset_path", default=None, help="Local path to the raw dataset.")
     parser.add_argument("--local_save_dir", default="data/numinamath", help="Save directory for processed data.")
     parser.add_argument("--max_problem_len", type=int, default=2000, help="Max problem text length in characters.")
-    parser.add_argument("--max_solution_len", type=int, default=5000, help="Max solution text length in characters.")
-    parser.add_argument("--quota_amc_aime", type=int, default=3000, help="Sampling quota for amc_aime.")
-    parser.add_argument("--quota_olympiads", type=int, default=1500, help="Sampling quota for olympiads.")
-    parser.add_argument("--quota_aops_forum", type=int, default=500, help="Sampling quota for aops_forum.")
+    parser.add_argument("--max_solution_len", type=int, default=3000, help="Max solution text length in characters.")
+    parser.add_argument("--quota_amc_aime", type=int, default=4000, help="Sampling quota for amc_aime.")
+    parser.add_argument("--quota_olympiads", type=int, default=6000, help="Sampling quota for olympiads.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for sampling.")
     parser.add_argument(
         "--test_data_dirs", nargs="*",
@@ -174,11 +172,17 @@ if __name__ == "__main__":
     quotas = {
         "amc_aime": args.quota_amc_aime,
         "olympiads": args.quota_olympiads,
-        "aops_forum": args.quota_aops_forum,
     }
     print("Stratified sampling...")
     dataset = stratified_sample(dataset, quotas, args.seed)
     print(f"After sampling: {len(dataset)}")
+
+    # Filter unparsable answers (run after sampling so only ~5k calls to math-verify)
+    print("Answer parsability filter...")
+    before = len(dataset)
+    valid_indices = [i for i in range(before) if is_answer_parsable(dataset[i]["answer"])]
+    dataset = dataset.select(valid_indices)
+    print(f"  {before} -> {len(dataset)} (removed {before - len(dataset)})")
 
     # Format to training schema
     train_dataset = dataset.map(
