@@ -59,6 +59,13 @@ if __name__ == "__main__":
         print(f"Shuffling with seed={args.seed}...")
         merged_df = merged_df.sample(frac=1, random_state=args.seed).reset_index(drop=True)
 
+    # Truncate to 16384 samples (1024 * 16)
+    max_samples = 16384
+    if len(merged_df) > max_samples:
+        print(f"Truncating: {len(merged_df)} -> {max_samples}")
+        merged_df = merged_df.head(max_samples).reset_index(drop=True)
+    print(f"Final samples: {len(merged_df)}")
+
     # Ensure output directory exists
     output_dir = os.path.dirname(output_path)
     if output_dir:

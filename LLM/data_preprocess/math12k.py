@@ -56,8 +56,12 @@ if __name__ == "__main__":
 
         return process_fn
 
-    train_dataset = train_dataset.map(function=make_map_fn("train"), with_indices=True)
-    test_dataset = test_dataset.map(function=make_map_fn("test"), with_indices=True)
+    train_dataset = train_dataset.map(
+        function=make_map_fn("train"), with_indices=True, remove_columns=train_dataset.column_names
+    )
+    test_dataset = test_dataset.map(
+        function=make_map_fn("test"), with_indices=True, remove_columns=test_dataset.column_names
+    )
 
     local_save_dir = args.local_dir
     if local_save_dir is not None:
