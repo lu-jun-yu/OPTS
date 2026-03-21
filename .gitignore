@@ -6,3 +6,4 @@ LLM/logs/
 LLM/wandb/
 *.deb
 *.whl
+token.json
