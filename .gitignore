@@ -6,4 +6,5 @@ LLM/logs/
 LLM/wandb/
 *.deb
 *.whl
+.claude
 token.json
