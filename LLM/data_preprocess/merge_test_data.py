@@ -1,7 +1,7 @@
 import argparse
 import os
 
-import pandas as pd
+import datasets
 
 
 if __name__ == "__main__":
@@ -55,40 +55,35 @@ if __name__ == "__main__":
 
     # Read datasets
     print(f"Reading Math500 from: {math500_path}")
-    math500_df = pd.read_parquet(math500_path)
-    print(f"  Math500 samples: {len(math500_df)}")
+    math500_ds = datasets.Dataset.from_parquet(math500_path)
+    print(f"  Math500 samples: {len(math500_ds)}")
 
     print(f"Reading minervamath from: {minervamath_path}")
-    minervamath_df = pd.read_parquet(minervamath_path)
-    print(f"  minervamath samples: {len(minervamath_df)}")
+    minervamath_ds = datasets.Dataset.from_parquet(minervamath_path)
+    print(f"  minervamath samples: {len(minervamath_ds)}")
 
     print(f"Reading aime25 from: {aime25_path}")
-    aime25_df = pd.read_parquet(aime25_path)
-    print(f"  aime25 samples: {len(aime25_df)}")
+    aime25_ds = datasets.Dataset.from_parquet(aime25_path)
+    print(f"  aime25 samples: {len(aime25_ds)}")
 
     print(f"Reading amc23 from: {amc23_path}")
-    amc23_df = pd.read_parquet(amc23_path)
-    print(f"  amc23 samples: {len(amc23_df)}")
+    amc23_ds = datasets.Dataset.from_parquet(amc23_path)
+    print(f"  amc23 samples: {len(amc23_ds)}")
 
     # Merge datasets
-    merged_df = pd.concat([math500_df, minervamath_df, aime25_df, amc23_df], ignore_index=True)
-    print(f"Merged samples: {len(merged_df)}")
+    merged_ds = datasets.concatenate_datasets([math500_ds, minervamath_ds, aime25_ds, amc23_ds])
+    print(f"Merged samples: {len(merged_ds)}")
 
     # Shuffle if requested
     if args.shuffle:
         print(f"Shuffling with seed={args.seed}...")
-        merged_df = merged_df.sample(frac=1, random_state=args.seed).reset_index(drop=True)
+        merged_ds = merged_ds.shuffle(seed=args.seed)
 
     # Ensure output directory exists
     output_dir = os.path.dirname(output_path)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-    # Normalize mixed-type columns to string to avoid PyArrow serialization errors
-    for col in merged_df.columns:
-        if merged_df[col].dtype == object:
-            merged_df[col] = merged_df[col].astype(str).where(merged_df[col].notna(), None)
-
     # Save merged dataset
-    merged_df.to_parquet(output_path)
+    merged_ds.to_parquet(output_path)
     print(f"Saved merged dataset to: {output_path}")
