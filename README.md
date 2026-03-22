@@ -99,10 +99,20 @@ cp /var/cuda-repo-ubuntu2204-12-8-local/cuda-*-keyring.gpg /usr/share/keyrings/
 
 apt-get update
 apt-get -y install cuda-toolkit-12-8
+
+# Note: If running inside a Docker/Kubernetes container where the NVIDIA driver
+# is already mounted from the host (verify with `nvidia-smi`), skip the following
+# two commands (nvidia-open and cuda-drivers).
 apt-get install -y nvidia-open
 apt-get install -y cuda-drivers
 
 update-alternatives --set cuda /usr/local/cuda-12.8
+
+# Add CUDA to PATH permanently
+echo 'export PATH=/usr/local/cuda-12.8/bin:$PATH' >> ~/.bashrc
+echo 'export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
+source ~/.bashrc
+nvcc --version
 ```
 
 **Install cuDNN:**
