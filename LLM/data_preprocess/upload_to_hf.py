@@ -60,7 +60,7 @@ def generate_dataset_card(repo_id: str, data_dir: str) -> str:
     train_desc_parts = []
     if "hiyouga/math12k" in train_sources:
         train_desc_parts.append("- [hiyouga/math12k](https://huggingface.co/datasets/hiyouga/math12k): MATH competition problems (converted from OpenAI PRM800K)")
-    if "nlile/NuminaMath-1.5-RL-Verifiable" in train_sources:
+    if any(src.startswith("nlile/NuminaMath-1.5-RL-Verifiable") for src in train_sources):
         train_desc_parts.append("- [nlile/NuminaMath-1.5-RL-Verifiable](https://huggingface.co/datasets/nlile/NuminaMath-1.5-RL-Verifiable): AMC/AIME and Olympiad competition problems")
     train_desc = "\n".join(train_desc_parts) if train_desc_parts else ""
 
