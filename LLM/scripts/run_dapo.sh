@@ -2,8 +2,8 @@ export NCCL_DEBUG=ERROR
 export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
-DATE=0315
 MODEL_SIZE=1.7B
+Experiment_Name=dapo_0322_${MODEL_SIZE}
 
 python3 -m verl.trainer.main_ppo \
  algorithm.adv_estimator=grpo \
@@ -41,10 +41,10 @@ python3 -m verl.trainer.main_ppo \
  +reward_model.reward_kwargs.max_resp_len=2048 \
  trainer.logger='["console","wandb"]' \
  trainer.val_before_train=False \
- trainer.n_gpus_per_node=8 \
+ trainer.n_gpus_per_node=1 \
  trainer.nnodes=1 \
- trainer.project_name=dapo \
- trainer.experiment_name=${DATE}_${MODEL_SIZE} \
+ trainer.project_name=opts_ttpo_${MODEL_SIZE} \
+ trainer.experiment_name=${Experiment_Name} \
  trainer.save_freq=10 \
  trainer.test_freq=10 \
- trainer.total_epochs=15 2>&1 | tee logs/dapo_${DATE}_${MODEL_SIZE}.log
+ trainer.total_epochs=15 2>&1 | tee logs/${Experiment_Name}.log
