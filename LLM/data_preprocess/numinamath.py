@@ -110,7 +110,7 @@ def make_map_fn(split, data_source):
         problem = example["problem"]
         answer = str(example["answer"]).strip()
         data = {
-            "data_source": data_source,
+            "data_source": data_source + "/" + example.get("source", ""),
             "prompt": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": problem},
@@ -120,7 +120,6 @@ def make_map_fn(split, data_source):
             "extra_info": {
                 "split": split,
                 "index": idx,
-                "source": example.get("source", ""),
             },
         }
         return data
