@@ -27,6 +27,15 @@ def check_format(response_str: str) -> bool:
         True if the format is correct, False otherwise.
     """
     # Strict format: must have </think> followed by \boxed{...}
+    if "</think>" not in response_str:
+        return False
+
+    think_end = response_str.rfind("</think>")
+    answer_part = response_str[think_end + len("</think>"):]
+    boxed_matches = re.findall(r'\\boxed\{', answer_part)
+    if len(boxed_matches) != 1:
+        return False
+
     pattern = r'^.*</think>\s*.*\\boxed\{.*\}.*$'
     return bool(re.match(pattern, response_str, re.DOTALL))
 
