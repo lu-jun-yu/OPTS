@@ -2,9 +2,9 @@ LLM/models/
 __pycache__/
 LLM/outputs/
 LLM/checkpoints/
-LLM/logs/
 LLM/wandb/
 *.deb
 *.whl
 .claude
 token.json
+*.log
