@@ -203,7 +203,7 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 │  │                          ↓                             │  │
 │  │  ┌──────────────────────────────────────────────────┐ │  │
 │  │  │  后处理：白化优势，计算 branch_weight               │ │  │
-│  │  │  计算 aggregated_returns，记录 epoch_returns       │ │  │
+│  │  │  计算 aggregated_returns，更新 step_mean_return     │ │  │
 │  │  └──────────────────────────────────────────────────┘ │  │
 │  │                          ↓                             │  │
 │  │  ┌──────────────────────────────────────────────────┐ │  │
@@ -211,19 +211,17 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 │  │  └──────────────────────────────────────────────────┘ │  │
 │  │                                                        │  │
 │  └───────────────────────────────────────────────────────┘  │
-│  epoch 结束：prev_mean_return = mean(epoch_returns)          │
+│                                                               │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ### 4.2 训练流程伪代码
 
 ```
-prev_mean_return = None
+step_mean_return = None
 prompt_buffer = PromptBuffer(train_dataloader)
 
 for epoch in ...:
-    epoch_returns = []  # 收集各 uid 的 aggregated_return
-
     for step in ...:
         初始化 global_batch、next_states、search_count
 
@@ -271,7 +269,7 @@ for epoch in ...:
             if 非最后一轮:
                 select_next_states：用 TUCT 选择下一轮扩展状态
                   - 跳过搜索次数已达上限的树
-                  - 跳过最大 reward 超过 return_threshold 的树
+                  - 跳过最大 reward 超过 step_mean_return 的树
                   - 沿最优路径计算 TUCT，选择 argmax
                   - 应用 prompt 长度约束和 </think> 位置掩码
                   - 全局排序，取 top batch_size 个候选
@@ -285,7 +283,7 @@ for epoch in ...:
         compute_branch_weight：沿祖先链追溯到根，累乘 state_branches，根节点乘以同 uid 的根轨迹数
 
         计算 aggregated_returns：按 uid 分组，组内用 weight 倒数加权平均 episodic_returns
-        将各 uid 的 aggregated_return 收集到 epoch_returns
+        step_mean_return = mean(各 uid 的 aggregated_return)
 
         ======== 更新 ========
 
@@ -295,8 +293,7 @@ for epoch in ...:
           - branch_weight 存在时使用 "weighted-token-mean" 聚合：
             loss = masked_sum(loss_mat / W) / masked_sum(1 / W) * dp_size
 
-    -------- epoch 结束 --------
-    prev_mean_return = mean(epoch_returns)
+
 ```
 
 
@@ -379,15 +376,15 @@ $$
 
 选择流程：
 1. 跳过 `search_count >= max_search_per_tree` 的树
-2. 跳过 `tree_max_reward > return_threshold` 的树（return_threshold = prev_mean_return）
+2. 跳过 `tree_max_reward > step_mean_return` 的树
 3. 对每棵树沿最优路径计算 TUCT，取 argmax
 4. 应用掩码：prompt 长度约束 + `</think>` 位置约束（确保分支在思考阶段内）
 5. 跨所有树全局排序，取 top batch_size 个候选
 6. 通过 `selected_to_branch_points` 将选中节点转换为其父节点作为分支点
 
-**return_threshold 更新机制**：
-- 首次迭代 prev_mean_return 为 None，此时 select_next_states 直接返回空字典，所有样本从新 prompt 开始
-- 每个 epoch 结束时，prev_mean_return 更新为该 epoch 内所有 uid 的 aggregated_return 的均值
+**step_mean_return 更新机制**：
+- 首次迭代 step_mean_return 为 None，此时 select_next_states 直接返回空字典，所有样本从新 prompt 开始
+- 每个 step 结束时，step_mean_return 更新为该 step 内所有 uid 的 aggregated_return 的均值
 
 ### 5.3 TTPO 策略梯度
 
@@ -417,9 +414,7 @@ $$
 
 1. 取每条轨迹最后一个有效 token 位置的 branch_weight 作为权重
 2. 按 uid 分组，对组内 episodic_returns 用 weight 倒数加权平均，得到每个 uid 的 aggregated_return
-3. 将各 uid 的 aggregated_return 收集到 epoch_returns 列表中
-
-epoch 结束时，prev_mean_return 更新为 epoch_returns 中所有 aggregated_return 的均值，作为下一 epoch TUCT 的 return_threshold。
+3. 计算各 uid 的 aggregated_return 的均值，更新 step_mean_return，作为下一 step TUCT 的 return_threshold
 
 ### 5.5 Episodic Returns
 
@@ -512,6 +507,6 @@ OPTS_TTPO 需要从已有的 `input_ids` 续写生成，而不是从 `raw_prompt
 2. **`non_tensor_batch` 类型约束**：`DataProto.non_tensor_batch` 的所有值必须是 `np.ndarray` 类型
    - `cid` 存储为 `np.array([OrderedDict() for ...], dtype=object)`
    - `next_states` 是 `Dict[str, Tuple[int, int]]`，不能存入 `non_tensor_batch`，应作为函数参数传递
-3. **return_threshold 更新粒度**：在 epoch 级别更新（非 step 级别），epoch_returns 收集每个 step 中各 uid 的 aggregated_return，epoch 结束时取均值
+3. **return_threshold 更新粒度**：在 step 级别更新，每个 step 结束时将各 uid 的 aggregated_return 取均值作为 step_mean_return，供下一 step 使用
 4. **TUCT 分支点转换**：`select_next_states` 返回的是 TUCT 选中的节点本身，需要通过 `selected_to_branch_points` 转换为其父节点，因为分支是从父节点重新采样新动作
 5. **`</think>` 掩码**：TUCT 选择时掩盖 `</think>` 之后的位置，确保分支发生在思考阶段内

@@ -1613,7 +1613,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
 
         # save OPTS trainer state (return_threshold, etc.)
         opts_state_path = os.path.join(local_global_step_folder, "opts_state.pt")
-        opts_state = {"prev_mean_return": getattr(self, "_prev_mean_return", None)}
+        opts_state = {"step_mean_return": getattr(self, "_step_mean_return", None)}
         torch.save(opts_state, opts_state_path)
 
         # latest checkpointed iteration tracker (for atomic usage)
@@ -1693,11 +1693,11 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
         opts_state_path = os.path.join(global_step_folder, "opts_state.pt")
         if os.path.exists(opts_state_path):
             opts_state = torch.load(opts_state_path, weights_only=False)
-            self._prev_mean_return = opts_state.get("prev_mean_return", None)
-            print(f"Restored prev_mean_return={self._prev_mean_return}")
+            self._step_mean_return = opts_state.get("step_mean_return", None)
+            print(f"Restored step_mean_return={self._step_mean_return}")
         else:
-            self._prev_mean_return = None
-            print("Warning: No OPTS state found, prev_mean_return will start as None")
+            self._step_mean_return = None
+            print("Warning: No OPTS state found, step_mean_return will start as None")
 
     def _start_profiling(self, do_profile: bool) -> None:
         """Start profiling for all worker groups if profiling is enabled."""
@@ -1944,13 +1944,12 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
 
         # OPTS_TTPO setup
         prompt_buffer = PromptBuffer(self.train_dataloader)
-        prev_mean_return = getattr(self, "_prev_mean_return", None)  # restored from checkpoint if available
+        step_mean_return = getattr(self, "_step_mean_return", None)  # restored from checkpoint if available
 
         # Batch size for each round
         batch_size = self.config.data.get("gen_batch_size", self.config.data.train_batch_size)
 
         for epoch in range(current_epoch, self.config.trainer.total_epochs):
-            epoch_returns = []  # Collect per-step returns for epoch-level threshold
             for batch_idx in range(len(self.train_dataloader)):
                 if hasattr(self.actor_rollout_wg, "async_calls_finalize_fn_exec"):
                     self.actor_rollout_wg.async_calls_finalize_fn_exec(blocking=False)
@@ -2226,7 +2225,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                     max_search_per_tree=max_search_per_tree,
                                     c=c_tuct,
                                     gamma=self.config.algorithm.gamma,
-                                    return_threshold=prev_mean_return,
+                                    return_threshold=step_mean_return,
                                     max_prompt_length=self.config.data.max_prompt_length,
                                     batch_size=batch_size,
                                     tokenizer=self.tokenizer,
@@ -2260,11 +2259,10 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                         )
                         batch.batch["branch_weight"] = branch_weight
 
-                        # Collect per-uid aggregated returns; prev_mean_return updated at epoch end
+                        # Compute per-uid aggregated returns and update step-level return_threshold
                         step_aggregated_returns = compute_aggregated_returns(batch)
-                        epoch_returns.extend(step_aggregated_returns)
                         step_mean_return = sum(step_aggregated_returns) / len(step_aggregated_returns) if step_aggregated_returns else 0.0
-                        metrics["opts_ttpo/return_threshold"] = prev_mean_return if prev_mean_return is not None else 0.0
+                        self._step_mean_return = step_mean_return
                         metrics["opts_ttpo/step_mean_return"] = step_mean_return
 
                         log_batch_state(batch, stage="opts_ttpo_final_batch_before_update", step=self.global_steps)
@@ -2394,7 +2392,3 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                     # The dataset may be changed after each training batch
                     self.train_dataset.on_batch_end(batch=batch)
 
-            # End of epoch: update prev_mean_return as mean of all steps in this epoch
-            if epoch_returns:
-                prev_mean_return = sum(epoch_returns) / len(epoch_returns)
-                self._prev_mean_return = prev_mean_return
