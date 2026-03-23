@@ -17,8 +17,8 @@
 
 | 数据集                                       | 数量                                        | 难度  | 来源                                   |
 | ----------------------------------------- | ----------------------------------------- | --- | ------------------------------------ |
-| **MATH (math12k)**                        | ~12k（经 parsability 过滤）                     | 高中级 | `hiyouga/math12k`（源自 OpenAI PRM800K） |
-| **NuminaMath-1.5-RL-Verifiable** (竞赛子集筛选) | ~10k (amc_aime: 4000, olympiads: 6000)    | 竞赛级 | `nlile/NuminaMath-1.5-RL-Verifiable` |
+| **MATH (math12k)**                        | ~12k（经 parsability 过滤后 10k）                     | 高中级 | `hiyouga/math12k`（源自 OpenAI PRM800K） |
+| **NuminaMath-1.5-RL-Verifiable** (竞赛子集筛选) | ~8k (amc_aime: 4000, olympiads: 4000；过滤后 6k)    | 竞赛级 | `nlile/NuminaMath-1.5-RL-Verifiable` |
 | **合并后截断**                                 | **16,384**                                 |     |                                      |
 
 

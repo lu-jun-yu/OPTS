@@ -134,7 +134,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_problem_len", type=int, default=2000, help="Max problem text length in characters.")
     parser.add_argument("--max_solution_len", type=int, default=3000, help="Max solution text length in characters.")
     parser.add_argument("--quota_amc_aime", type=int, default=4000, help="Sampling quota for amc_aime.")
-    parser.add_argument("--quota_olympiads", type=int, default=6000, help="Sampling quota for olympiads.")
+    parser.add_argument("--quota_olympiads", type=int, default=4000, help="Sampling quota for olympiads.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for sampling.")
     parser.add_argument(
         "--test_data_dirs", nargs="*",
