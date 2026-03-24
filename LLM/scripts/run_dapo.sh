@@ -9,7 +9,7 @@ python3 -m verl.trainer.main_ppo \
  algorithm.adv_estimator=grpo \
  data.train_files=data/train.parquet \
  data.val_files=data/test.parquet \
- data.train_batch_size=1024 \
+ data.train_batch_size=512 \
  data.max_prompt_length=1024 \
  data.max_response_length=2048 \
  data.filter_overlong_prompts=True \
@@ -17,8 +17,8 @@ python3 -m verl.trainer.main_ppo \
  actor_rollout_ref.actor.optim.lr=1e-6 \
  actor_rollout_ref.actor.optim.weight_decay=0.1 \
  actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
- actor_rollout_ref.actor.ppo_mini_batch_size=1024 \
- actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=32 \
+ actor_rollout_ref.actor.ppo_mini_batch_size=512 \
+ actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16 \
  actor_rollout_ref.actor.use_kl_loss=False \
  actor_rollout_ref.actor.grad_clip=1.0 \
  actor_rollout_ref.actor.clip_ratio_low=0.2 \
@@ -26,9 +26,9 @@ python3 -m verl.trainer.main_ppo \
  actor_rollout_ref.actor.clip_ratio_c=10.0 \
  actor_rollout_ref.actor.loss_agg_mode=token-mean \
  actor_rollout_ref.rollout.name=vllm \
- actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1024 \
+ actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=256 \
  actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
- actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
+ actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
  actor_rollout_ref.rollout.n=4 \
  custom_reward_function.path=utils/reward_fn.py \
  custom_reward_function.name=compute_score \
@@ -41,10 +41,10 @@ python3 -m verl.trainer.main_ppo \
  +reward_model.reward_kwargs.max_resp_len=2048 \
  trainer.logger='["console","wandb"]' \
  trainer.val_before_train=False \
- trainer.n_gpus_per_node=1 \
+ trainer.n_gpus_per_node=8 \
  trainer.nnodes=1 \
  trainer.project_name=opts_ttpo_${MODEL_SIZE} \
  trainer.experiment_name=${Experiment_Name} \
- trainer.save_freq=10 \
- trainer.test_freq=10 \
- trainer.total_epochs=15 2>&1 | tee logs/${Experiment_Name}.log
+ trainer.save_freq=16 \
+ trainer.test_freq=8 \
+ trainer.total_epochs=10 2>&1 | tee logs/${Experiment_Name}.log
