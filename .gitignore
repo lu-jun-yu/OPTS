@@ -3,6 +3,8 @@ __pycache__/
 LLM/outputs/
 LLM/checkpoints/
 LLM/wandb/
+Atari_MuJoCo/results
+Atari_MuJoCo/runs
 *.deb
 *.whl
 .claude

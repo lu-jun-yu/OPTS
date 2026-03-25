@@ -10,8 +10,8 @@ for task in HalfCheetah-v4 Walker2d-v4 Hopper-v4 Ant-v4 Humanoid-v4; do
         python experiments/verify_pg_variance.py \
             --env-id $task \
             --seed $seed \
-            --num-steps 4096 \
-            --num-rollouts 8 \
+            --num-steps 2000000 \
+            --alpha 0.3 \
             --no-cuda &
     done
 done

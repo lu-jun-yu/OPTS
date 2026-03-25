@@ -10,7 +10,7 @@ import torch
 from torch.distributions.normal import Normal
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'cleanrl', 'cleanrl'))
-from opts_ttpo_continuous_action import Agent
+from opts_ttpo_continuous_action import Agent, MuJoCoStateSnapshotWrapper
 
 
 def make_eval_env(env_id, gamma):
@@ -22,6 +22,7 @@ def make_eval_env(env_id, gamma):
     env = gym.wrappers.TransformObservation(env, lambda obs: np.clip(obs, -10, 10))
     env = gym.wrappers.NormalizeReward(env, gamma=gamma)
     env = gym.wrappers.TransformReward(env, lambda reward: np.clip(reward, -10, 10))
+    env = MuJoCoStateSnapshotWrapper(env)
     return env
 
 
@@ -55,14 +56,22 @@ def compute_gae(rewards, values, dones, next_value, gamma=0.99, gae_lambda=0.95)
     return advantages
 
 
-def collect_rollout(env, agent, num_steps, device, gamma=0.99, gae_lambda=0.95):
-    """跑一次 rollout，返回 obs, actions, advantages, episode_info"""
+def collect_steps(env, agent, num_steps, device, resume_state=None):
+    """跑 rollout，返回原始数据 dict。若提供 resume_state 则从该状态精确续跑。"""
     obs_buf, act_buf, rew_buf, val_buf, done_buf = [], [], [], [], []
     episode_info = []  # (start, end, return)
 
-    obs_np, _ = env.reset()
-    obs_t = torch.Tensor(obs_np).to(device)
-    ep_start = 0
+    if resume_state is not None:
+        env.reset()  # 初始化 wrapper 内部状态（episode_returns 等）
+        env.restore_state(resume_state['env_state'])
+        obs_t = resume_state['last_obs_t'].to(device)
+        ep_start = resume_state['ep_start']
+        np.random.set_state(resume_state['np_rng'])
+        torch.random.set_rng_state(resume_state['torch_rng'])
+    else:
+        obs_np, _ = env.reset()
+        obs_t = torch.Tensor(obs_np).to(device)
+        ep_start = 0
 
     for step in range(num_steps):
         obs_buf.append(obs_t)
@@ -89,10 +98,20 @@ def collect_rollout(env, agent, num_steps, device, gamma=0.99, gae_lambda=0.95):
     with torch.no_grad():
         next_value = agent.get_value(obs_t.unsqueeze(0)).item()
 
-    advantages = compute_gae(
-        torch.tensor(rew_buf), torch.tensor(val_buf), torch.tensor(done_buf),
-        next_value, gamma, gae_lambda)
-    return torch.stack(obs_buf), torch.stack(act_buf), advantages, episode_info
+    return {
+        'obs': torch.stack(obs_buf),
+        'actions': torch.stack(act_buf),
+        'rewards': torch.tensor(rew_buf, dtype=torch.float32),
+        'values': torch.tensor(val_buf, dtype=torch.float32),
+        'dones': torch.tensor(done_buf, dtype=torch.float32),
+        'episode_info': episode_info,
+        'next_value': next_value,
+        'env_state': env.clone_state(),
+        'last_obs_t': obs_t.cpu(),
+        'ep_start': ep_start,
+        'np_rng': np.random.get_state(),
+        'torch_rng': torch.random.get_rng_state(),
+    }
 
 
 def compute_pg_gradient(agent, obs, actions, advantages, device):
@@ -117,13 +136,12 @@ if __name__ == "__main__":
     parser.add_argument("--env-id", type=str, required=True)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
-    parser.add_argument("--num-steps", type=int, default=4096)
-    parser.add_argument("--num-rollouts", type=int, default=8)
+    parser.add_argument("--num-steps", type=int, default=32768)
     parser.add_argument("--no-cuda", action="store_true")
     parser.add_argument("--output-dir", type=str, default="results/variance/verify1")
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
-    parser.add_argument("--alpha", type=float, default=0.3,
+    parser.add_argument("--alpha", type=float, default=0.1,
                         help="proportion of top/bottom episodes as positive/negative samples")
     args = parser.parse_args()
 
@@ -147,31 +165,105 @@ if __name__ == "__main__":
     agent.load_state_dict(checkpoint["model_state_dict"])
     agent.eval()
 
-    # 收集多次 rollout
-    all_obs, all_act, all_adv = [], [], []
-    first_episodes = None
+    # ---- 缓存逻辑：加载 / 续跑 / 从头跑 ----
+    cache_dir = os.path.join(args.output_dir, "cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, f"{args.env_id}_seed{args.seed}.pt")
 
-    for r in range(args.num_rollouts):
-        obs, actions, advantages, episodes = collect_rollout(
-            env, agent, args.num_steps, device, args.gamma, args.gae_lambda)
-        all_obs.append(obs)
-        all_act.append(actions)
-        all_adv.append(advantages)
-        if r == 0:
-            first_episodes = episodes
+    cache = None
+    cached_steps = 0
+    if os.path.exists(cache_path):
+        cache = torch.load(cache_path, map_location=device, weights_only=False)
+        cached_steps = len(cache['obs'])
 
-    if not first_episodes:
+    if cached_steps >= args.num_steps:
+        # 缓存足够，直接截取前 num_steps
+        print(f"Loaded cache ({cached_steps} steps), using first {args.num_steps}")
+        obs = cache['obs'][:args.num_steps]
+        actions = cache['actions'][:args.num_steps]
+        rewards = cache['rewards'][:args.num_steps]
+        values = cache['values'][:args.num_steps]
+        dones = cache['dones'][:args.num_steps]
+        all_episodes = [(s, e, r) for s, e, r in cache['episode_info'] if e < args.num_steps]
+        if args.num_steps < cached_steps:
+            with torch.no_grad():
+                next_value = agent.get_value(cache['obs'][args.num_steps].unsqueeze(0).to(device)).item()
+        else:
+            next_value = cache['next_value']
+
+    elif cached_steps > 0:
+        # 缓存不够，恢复环境状态后从断点精确续跑
+        additional = args.num_steps - cached_steps
+        print(f"Loaded cache ({cached_steps} steps), continuing {additional} more from saved env state...")
+
+        resume_state = {
+            'env_state': cache['env_state'],
+            'last_obs_t': cache['last_obs_t'],
+            'ep_start': 0,  # 新 chunk 内部从 0 开始编号
+            'np_rng': cache['np_rng'],
+            'torch_rng': cache['torch_rng'],
+        }
+        new = collect_steps(env, agent, additional, device, resume_state=resume_state)
+
+        obs = torch.cat([cache['obs'], new['obs']])
+        actions = torch.cat([cache['actions'], new['actions']])
+        rewards = torch.cat([cache['rewards'], new['rewards']])
+        values = torch.cat([cache['values'], new['values']])
+        dones = torch.cat([cache['dones'], new['dones']])
+
+        # 合并 episode_info（新 chunk 的索引偏移 cached_steps）
+        all_episodes = list(cache['episode_info'])
+        # 处理跨 chunk 的 episode：如果旧数据最后处于 episode 中间
+        old_ep_start = cache['ep_start']
+        for s, e, r in new['episode_info']:
+            if s == 0 and old_ep_start < cached_steps:
+                # 第一个 episode 起始于旧 chunk 中
+                all_episodes.append((old_ep_start, e + cached_steps, r))
+            else:
+                all_episodes.append((s + cached_steps, e + cached_steps, r))
+        next_value = new['next_value']
+
+        # 保存扩展后的缓存
+        torch.save({
+            'obs': obs, 'actions': actions,
+            'rewards': rewards, 'values': values, 'dones': dones,
+            'episode_info': all_episodes,
+            'next_value': next_value,
+            'env_state': new['env_state'],
+            'last_obs_t': new['last_obs_t'],
+            'ep_start': new['ep_start'] + cached_steps,
+            'np_rng': new['np_rng'],
+            'torch_rng': new['torch_rng'],
+        }, cache_path)
+        print(f"Saved extended cache ({args.num_steps} steps)")
+
+    else:
+        # 无缓存，从头跑
+        print(f"No cache found, collecting {args.num_steps} steps...")
+        data = collect_steps(env, agent, args.num_steps, device)
+        obs, actions = data['obs'], data['actions']
+        rewards, values, dones = data['rewards'], data['values'], data['dones']
+        all_episodes = data['episode_info']
+        next_value = data['next_value']
+
+        torch.save(data, cache_path)
+        print(f"Saved cache ({args.num_steps} steps)")
+
+    # ---- 计算 GAE ----
+    advantages = compute_gae(rewards, values, dones, next_value, args.gamma, args.gae_lambda)
+
+    if not all_episodes:
         print(f"WARNING: No complete episodes for {args.env_id} seed {args.seed}")
         sys.exit(1)
 
     # 按 episode return 降序排列，取前 alpha 比例为正样本，后 alpha 比例为负样本
-    sorted_episodes = sorted(first_episodes, key=lambda ep: ep[2], reverse=True)
+    sorted_episodes = sorted(all_episodes, key=lambda ep: ep[2], reverse=True)
     num_eps = len(sorted_episodes)
     n_select = max(1, int(num_eps * args.alpha))
     top_episodes = sorted_episodes[:n_select]
     bottom_episodes = sorted_episodes[-n_select:]
-    print(f"{args.env_id} seed{args.seed}: {num_eps} episodes, alpha={args.alpha}, "
-          f"top {n_select} eps (ret >= {top_episodes[-1][2]:.2f}), "
+    print(f"{args.env_id} seed{args.seed}: {num_eps} episodes in {args.num_steps} steps, "
+          f"alpha={args.alpha}, top {n_select} eps (ret >= {top_episodes[-1][2]:.2f}), "
           f"bottom {n_select} eps (ret <= {bottom_episodes[0][2]:.2f})")
 
     pos_idx, neg_idx = [], []
@@ -187,12 +279,9 @@ if __name__ == "__main__":
     pos_idx, neg_idx = pos_idx[:N], neg_idx[:N]
 
     # 计算梯度
-    first_obs, first_act, first_adv = all_obs[0], all_act[0], all_adv[0]
-    full_obs, full_act, full_adv = torch.cat(all_obs), torch.cat(all_act), torch.cat(all_adv)
-
-    g_pos = compute_pg_gradient(agent, first_obs[pos_idx], first_act[pos_idx], first_adv[pos_idx], device)
-    g_neg = compute_pg_gradient(agent, first_obs[neg_idx], first_act[neg_idx], first_adv[neg_idx], device)
-    g_expected = compute_pg_gradient(agent, full_obs, full_act, full_adv, device)
+    g_pos = compute_pg_gradient(agent, obs[pos_idx], actions[pos_idx], advantages[pos_idx], device)
+    g_neg = compute_pg_gradient(agent, obs[neg_idx], actions[neg_idx], advantages[neg_idx], device)
+    g_expected = compute_pg_gradient(agent, obs, actions, advantages, device)
 
     # 方差 = mean_i((g_i - g_expected_i)^2)
     var_pos = ((g_pos - g_expected) ** 2).mean().item()
@@ -206,7 +295,8 @@ if __name__ == "__main__":
         "env_id": args.env_id,
         "seed": args.seed,
         "alpha": args.alpha,
-        "num_episodes": len(first_episodes),
+        "num_steps": args.num_steps,
+        "num_episodes": num_eps,
         "num_selected_episodes": n_select,
         "balanced_N": N,
         "positive_variance": var_pos,
