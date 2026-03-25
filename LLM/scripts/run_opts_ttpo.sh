@@ -21,7 +21,7 @@ python3 -m trainer.main_opts_ttpo \
  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16 \
  actor_rollout_ref.actor.use_kl_loss=False \
  actor_rollout_ref.rollout.name=vllm \
- actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=256 \
+ actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=128 \
  actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
  actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
  actor_rollout_ref.rollout.search=opts \
@@ -40,10 +40,10 @@ python3 -m trainer.main_opts_ttpo \
  algorithm.lam=0.9998 \
  trainer.logger='["console","wandb"]' \
  trainer.val_before_train=False \
- trainer.n_gpus_per_node=8 \
+ trainer.n_gpus_per_node=1 \
  trainer.nnodes=1 \
  trainer.project_name=opts_ttpo_${MODEL_SIZE} \
  trainer.experiment_name=${Experiment_Name} \
- trainer.save_freq=16 \
- trainer.test_freq=8 \
+ trainer.save_freq=20 \
+ trainer.test_freq=10 \
  trainer.total_epochs=10 2>&1 | tee logs/${Experiment_Name}.log

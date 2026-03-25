@@ -26,7 +26,7 @@ python3 -m verl.trainer.main_ppo \
  actor_rollout_ref.actor.clip_ratio_c=10.0 \
  actor_rollout_ref.actor.loss_agg_mode=token-mean \
  actor_rollout_ref.rollout.name=vllm \
- actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=256 \
+ actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=128 \
  actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
  actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
  actor_rollout_ref.rollout.n=4 \
@@ -41,10 +41,10 @@ python3 -m verl.trainer.main_ppo \
  +reward_model.reward_kwargs.max_resp_len=2048 \
  trainer.logger='["console","wandb"]' \
  trainer.val_before_train=False \
- trainer.n_gpus_per_node=8 \
+ trainer.n_gpus_per_node=1 \
  trainer.nnodes=1 \
  trainer.project_name=opts_ttpo_${MODEL_SIZE} \
  trainer.experiment_name=${Experiment_Name} \
- trainer.save_freq=16 \
- trainer.test_freq=8 \
+ trainer.save_freq=20 \
+ trainer.test_freq=10 \
  trainer.total_epochs=10 2>&1 | tee logs/${Experiment_Name}.log
