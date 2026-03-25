@@ -1,5 +1,6 @@
-LLM/models/
 __pycache__/
+LLM/models/Qwen3-1.7B
+LLM/models/Qwen3-8B
 LLM/outputs/
 LLM/checkpoints/
 LLM/wandb/
