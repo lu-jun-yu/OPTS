@@ -287,7 +287,9 @@ for epoch in ...:
 
         ======== 更新 ========
 
-        更新 Critic：Loss 计算与 PPO 一致
+        更新 Critic：
+          - branch_weight 存在时使用 "weighted-token-mean" 聚合（与 Actor 一致）
+          - 校正 value 梯度，避免 value 随训练逐渐偏低
 
         更新 Actor：
           - branch_weight 存在时使用 "weighted-token-mean" 聚合：
@@ -455,6 +457,7 @@ LLM/trainer/opts_ttpo/
 | `compute_treegae_advantage_return` | core_algos.py | TreeGAE 优势估计：新样本 GAE + 祖先传播 |
 | `compute_branch_weight` | core_algos.py | 计算分支权重因子：祖先链追溯 + 轨迹内 cumprod |
 | `agg_loss` | core_algos.py | Loss 聚合，新增 "weighted-token-mean" 模式 |
+| `compute_value_loss` | core_algos.py | PPO value loss，新增 branch_weight 参数 |
 | `compute_policy_loss_vanilla` | core_algos.py | PPO policy loss，新增 branch_weight 参数 |
 | `AdvantageEstimator` | core_algos.py | 枚举扩展：新增 `TreeGAE = "treegae"` |
 | `compute_advantage` | ray_trainer.py | 优势计算入口，根据 adv_estimator 参数分发到 TreeGAE 或 GAE |
@@ -501,7 +504,16 @@ OPTS_TTPO 需要从已有的 `input_ids` 续写生成，而不是从 `raw_prompt
 2. **提取并传递 `branch_weight`**：当 batch 中存在 `branch_weight` 时传递给 policy loss 函数
 3. **自动切换聚合模式**：`agg_loss` 检测到 `branch_weight is not None` 时自动使用 `"weighted-token-mean"` 模式
 
-#### 6.4.3 注意事项
+#### 6.4.3 Critic 价值损失修改
+
+**`LLM/verl/verl/workers/critic/dp_critic.py`**：
+
+1. **导入本地 `core_algos`**：优先使用 OPTS_TTPO 的 `core_algos` 以支持 `branch_weight`
+2. **`select_keys` 扩展**：当 batch 中存在 `branch_weight` 时将其加入 `select_keys`，确保数据在 mini-batch 分割时被保留
+3. **提取并传递 `branch_weight`**：从 `model_inputs` 中取出 `branch_weight` 并传递给 `compute_value_loss`
+4. **自动切换聚合模式**：与 Actor 一致，`branch_weight` 存在时使用 `"weighted-token-mean"` 模式
+
+#### 6.4.4 注意事项
 
 1. **Tensor 布尔判断**：使用 `if tensor is not None:` 而非 `if tensor:`，避免多元素 Tensor 的歧义错误
 2. **`non_tensor_batch` 类型约束**：`DataProto.non_tensor_batch` 的所有值必须是 `np.ndarray` 类型
