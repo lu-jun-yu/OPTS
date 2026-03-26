@@ -3,7 +3,7 @@ export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=1.7B
-Experiment_Name=ppo_0322_${MODEL_SIZE}
+Experiment_Name=ppo_0326_${MODEL_SIZE}
 
 python3 -m verl.trainer.main_ppo \
  algorithm.adv_estimator=gae \
@@ -33,7 +33,7 @@ python3 -m verl.trainer.main_ppo \
  custom_reward_function.name=compute_score \
  algorithm.use_kl_in_reward=False \
  algorithm.kl_ctrl.kl_coef=0.0 \
- algorithm.lam=0.999 \
+ algorithm.lam=0.998 \
  trainer.logger='["console","wandb"]' \
  trainer.val_before_train=False \
  trainer.n_gpus_per_node=1 \

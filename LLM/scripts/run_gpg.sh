@@ -3,7 +3,7 @@ export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=1.7B
-Experiment_Name=gpg_0322_${MODEL_SIZE}
+Experiment_Name=gpg_0326_${MODEL_SIZE}
 
 python3 -m verl.trainer.main_ppo \
  algorithm.adv_estimator=gpg \

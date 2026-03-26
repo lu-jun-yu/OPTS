@@ -3,7 +3,7 @@ export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=1.7B
-Experiment_Name=dapo_0322_${MODEL_SIZE}
+Experiment_Name=dapo_0326_${MODEL_SIZE}
 
 python3 -m verl.trainer.main_ppo \
  algorithm.adv_estimator=grpo \
@@ -35,10 +35,11 @@ python3 -m verl.trainer.main_ppo \
  algorithm.use_kl_in_reward=False \
  algorithm.kl_ctrl.kl_coef=0.0 \
  reward_model.reward_manager=dapo \
- +reward_model.reward_kwargs.overlong_buffer_cfg.enable=True \
- +reward_model.reward_kwargs.overlong_buffer_cfg.len=1024 \
- +reward_model.reward_kwargs.overlong_buffer_cfg.penalty_factor=1.0 \
- +reward_model.reward_kwargs.max_resp_len=2048 \
+ +reward_model.overlong_buffer_cfg.enable=True \
+ +reward_model.overlong_buffer_cfg.len=1024 \
+ +reward_model.overlong_buffer_cfg.penalty_factor=1.0 \
+ +reward_model.overlong_buffer_cfg.log=False \
+ +reward_model.max_resp_len=2048 \
  trainer.logger='["console","wandb"]' \
  trainer.val_before_train=False \
  trainer.n_gpus_per_node=1 \
