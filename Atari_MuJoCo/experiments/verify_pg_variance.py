@@ -1,4 +1,5 @@
 # 验证1：正轨迹的策略梯度方差 < 负轨迹的策略梯度方差
+# 方法：mini-batch bootstrap 估计 E[||ĝ - g*||²] / d
 import argparse
 import json
 import os
@@ -127,8 +128,30 @@ def compute_pg_gradient(agent, obs, actions, advantages, device):
     pg_loss = -(log_probs * advantages.detach()).mean()
     pg_loss.backward()
 
+    actor_params = list(agent.actor_mean.parameters()) + [agent.actor_logstd]
     return torch.cat([p.grad.detach().flatten() if p.grad is not None
-                      else torch.zeros(p.numel(), device=device) for p in agent.parameters()])
+                      else torch.zeros(p.numel(), device=device) for p in actor_params])
+
+
+def estimate_variance_bootstrap(agent, obs, actions, advantages,
+                                g_star, device,
+                                mini_batch_size=512, num_bootstrap=200):
+    """
+    从 step 池中有放回采样 B 个 mini-batch，估计策略梯度方差。
+
+    Var(ĝ) = E[||ĝ - g*||²] / d
+
+    Returns:
+        mean_var: 方差的均值估计
+        std_var: 方差的标准差（跨 B 次采样）
+    """
+    N = len(obs)
+    sq_diffs = []
+    for _ in range(num_bootstrap):
+        idx = np.random.choice(N, size=mini_batch_size, replace=True)
+        g = compute_pg_gradient(agent, obs[idx], actions[idx], advantages[idx], device)
+        sq_diffs.append(((g - g_star) ** 2).mean().item())
+    return float(np.mean(sq_diffs)), float(np.std(sq_diffs))
 
 
 if __name__ == "__main__":
@@ -136,14 +159,18 @@ if __name__ == "__main__":
     parser.add_argument("--env-id", type=str, required=True)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
-    parser.add_argument("--num-steps", type=int, default=32768)
+    parser.add_argument("--num-steps", type=int, default=1000000)
     parser.add_argument("--no-cuda", action="store_true")
     parser.add_argument("--output-dir", type=str, default="results/variance/verify1")
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
-    parser.add_argument("--alpha", type=float, default=0.1,
+    parser.add_argument("--alpha", type=float, default=0.3,
                         help="proportion of top/bottom episodes as positive/negative samples")
+    parser.add_argument("--num-bootstrap", type=int, default=200,
+                        help="number of bootstrap resamples per batch_size")
     args = parser.parse_args()
+
+    BATCH_SIZES = [256, 512, 1024, 2048, 4096]
 
     device = torch.device("cpu" if args.no_cuda else ("cuda" if torch.cuda.is_available() else "cpu"))
     np.random.seed(args.seed)
@@ -177,7 +204,6 @@ if __name__ == "__main__":
         cached_steps = len(cache['obs'])
 
     if cached_steps >= args.num_steps:
-        # 缓存足够，直接截取前 num_steps
         print(f"Loaded cache ({cached_steps} steps), using first {args.num_steps}")
         obs = cache['obs'][:args.num_steps]
         actions = cache['actions'][:args.num_steps]
@@ -192,14 +218,13 @@ if __name__ == "__main__":
             next_value = cache['next_value']
 
     elif cached_steps > 0:
-        # 缓存不够，恢复环境状态后从断点精确续跑
         additional = args.num_steps - cached_steps
         print(f"Loaded cache ({cached_steps} steps), continuing {additional} more from saved env state...")
 
         resume_state = {
             'env_state': cache['env_state'],
             'last_obs_t': cache['last_obs_t'],
-            'ep_start': 0,  # 新 chunk 内部从 0 开始编号
+            'ep_start': 0,
             'np_rng': cache['np_rng'],
             'torch_rng': cache['torch_rng'],
         }
@@ -211,19 +236,15 @@ if __name__ == "__main__":
         values = torch.cat([cache['values'], new['values']])
         dones = torch.cat([cache['dones'], new['dones']])
 
-        # 合并 episode_info（新 chunk 的索引偏移 cached_steps）
         all_episodes = list(cache['episode_info'])
-        # 处理跨 chunk 的 episode：如果旧数据最后处于 episode 中间
         old_ep_start = cache['ep_start']
         for s, e, r in new['episode_info']:
             if s == 0 and old_ep_start < cached_steps:
-                # 第一个 episode 起始于旧 chunk 中
                 all_episodes.append((old_ep_start, e + cached_steps, r))
             else:
                 all_episodes.append((s + cached_steps, e + cached_steps, r))
         next_value = new['next_value']
 
-        # 保存扩展后的缓存
         torch.save({
             'obs': obs, 'actions': actions,
             'rewards': rewards, 'values': values, 'dones': dones,
@@ -238,7 +259,6 @@ if __name__ == "__main__":
         print(f"Saved extended cache ({args.num_steps} steps)")
 
     else:
-        # 无缓存，从头跑
         print(f"No cache found, collecting {args.num_steps} steps...")
         data = collect_steps(env, agent, args.num_steps, device)
         obs, actions = data['obs'], data['actions']
@@ -256,7 +276,7 @@ if __name__ == "__main__":
         print(f"WARNING: No complete episodes for {args.env_id} seed {args.seed}")
         sys.exit(1)
 
-    # 按 episode return 降序排列，取前 alpha 比例为正样本，后 alpha 比例为负样本
+    # 按 episode return 排序，取前 alpha 比例为正样本，后 alpha 比例为负样本
     sorted_episodes = sorted(all_episodes, key=lambda ep: ep[2], reverse=True)
     num_eps = len(sorted_episodes)
     n_select = max(1, int(num_eps * args.alpha))
@@ -272,22 +292,44 @@ if __name__ == "__main__":
     for start, end, ret in bottom_episodes:
         neg_idx.extend(range(start, end + 1))
 
-    N = min(len(pos_idx), len(neg_idx))
-    if N == 0:
+    if not pos_idx or not neg_idx:
         print(f"WARNING: Cannot split pos/neg for {args.env_id} seed {args.seed}")
         sys.exit(1)
-    pos_idx, neg_idx = pos_idx[:N], neg_idx[:N]
 
-    # 计算梯度
-    g_pos = compute_pg_gradient(agent, obs[pos_idx], actions[pos_idx], advantages[pos_idx], device)
-    g_neg = compute_pg_gradient(agent, obs[neg_idx], actions[neg_idx], advantages[neg_idx], device)
-    g_expected = compute_pg_gradient(agent, obs, actions, advantages, device)
+    print(f"  pos steps: {len(pos_idx)}, neg steps: {len(neg_idx)}")
 
-    # 方差 = mean_i((g_i - g_expected_i)^2)
-    var_pos = ((g_pos - g_expected) ** 2).mean().item()
-    var_neg = ((g_neg - g_expected) ** 2).mean().item()
+    # 计算 g* (全量平均梯度，近似期望策略梯度)
+    print("Computing g* from full buffer...")
+    g_star = compute_pg_gradient(agent, obs, actions, advantages, device)
 
-    print(f"  positive_variance={var_pos:.6e}, negative_variance={var_neg:.6e}")
+    # 对每个 batch_size 做 bootstrap 方差估计
+    pos_variances = []
+    neg_variances = []
+
+    pos_obs, pos_act, pos_adv = obs[pos_idx], actions[pos_idx], advantages[pos_idx]
+    neg_obs, neg_act, neg_adv = obs[neg_idx], actions[neg_idx], advantages[neg_idx]
+
+    for bs in BATCH_SIZES:
+        if bs > len(pos_idx) or bs > len(neg_idx):
+            print(f"  batch_size={bs} exceeds available steps (pos={len(pos_idx)}, neg={len(neg_idx)}), skipping")
+            pos_variances.append(None)
+            neg_variances.append(None)
+            continue
+
+        print(f"  batch_size={bs}: bootstrapping {args.num_bootstrap} times...")
+        pos_mean, pos_std = estimate_variance_bootstrap(
+            agent, pos_obs, pos_act, pos_adv,
+            g_star, device, mini_batch_size=bs, num_bootstrap=args.num_bootstrap)
+        neg_mean, neg_std = estimate_variance_bootstrap(
+            agent, neg_obs, neg_act, neg_adv,
+            g_star, device, mini_batch_size=bs, num_bootstrap=args.num_bootstrap)
+
+        ratio = neg_mean / pos_mean if pos_mean > 0 else float('inf')
+        print(f"    pos_var={pos_mean:.6e} (±{pos_std:.2e}), "
+              f"neg_var={neg_mean:.6e} (±{neg_std:.2e}), ratio={ratio:.2f}")
+
+        pos_variances.append(pos_mean)
+        neg_variances.append(neg_mean)
 
     # 保存
     os.makedirs(args.output_dir, exist_ok=True)
@@ -298,9 +340,12 @@ if __name__ == "__main__":
         "num_steps": args.num_steps,
         "num_episodes": num_eps,
         "num_selected_episodes": n_select,
-        "balanced_N": N,
-        "positive_variance": var_pos,
-        "negative_variance": var_neg,
+        "num_pos_steps": len(pos_idx),
+        "num_neg_steps": len(neg_idx),
+        "num_bootstrap": args.num_bootstrap,
+        "batch_sizes": BATCH_SIZES,
+        "pos_variances": pos_variances,
+        "neg_variances": neg_variances,
     }
     out_path = os.path.join(args.output_dir, f"{args.env_id}_seed{args.seed}.json")
     with open(out_path, "w") as f:

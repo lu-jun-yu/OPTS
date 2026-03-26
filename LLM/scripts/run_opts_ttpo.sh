@@ -37,7 +37,7 @@ python3 -m trainer.main_opts_ttpo \
  custom_reward_function.name=compute_score \
  algorithm.use_kl_in_reward=False \
  algorithm.kl_ctrl.kl_coef=0.0 \
- algorithm.lam=0.9998 \
+ algorithm.lam=0.999 \
  trainer.logger='["console","wandb"]' \
  trainer.val_before_train=False \
  trainer.n_gpus_per_node=1 \
