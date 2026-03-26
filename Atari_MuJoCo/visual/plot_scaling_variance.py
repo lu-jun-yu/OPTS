@@ -36,9 +36,11 @@ def main():
             with open(path, "r") as f:
                 result = json.load(f)
             for bs_str, var in result.get("ppo_variance", {}).items():
-                ppo_by_bs[int(bs_str)].append(var)
+                v = var["mean"] if isinstance(var, dict) else var
+                ppo_by_bs[int(bs_str)].append(v)
             for bs_str, var in result.get("opts_variance", {}).items():
-                opts_by_bs[int(bs_str)].append(var)
+                v = var["mean"] if isinstance(var, dict) else var
+                opts_by_bs[int(bs_str)].append(v)
 
         # 取两者都有的 batch_sizes
         all_bs = sorted(set(ppo_by_bs.keys()) & set(opts_by_bs.keys()))
