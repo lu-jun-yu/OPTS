@@ -562,7 +562,9 @@ def main():
     if os.path.exists(results_dir):
         seed_info = f" (seeds: {sorted(seed_filters)})" if seed_filters else ""
         print(f"Plotting combined convergence curves for: {TARGET_TASKS}{seed_info}")
-        plot_all_tasks_convergence(results_dir, algo_filters=global_algo_filters,
+        script_dir = str(Path(__file__).resolve().parent)
+        plot_all_tasks_convergence(results_dir, output_dir=script_dir,
+                                   algo_filters=global_algo_filters,
                                    seed_filters=seed_filters)
     else:
         print(f"Results directory {results_dir} does not exist")

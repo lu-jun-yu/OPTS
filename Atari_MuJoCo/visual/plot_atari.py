@@ -194,7 +194,7 @@ def load_algo_filters_from_config(task_name, config_filename="algo_select_atari.
     return None
 
 
-def plot_all_tasks(results_dir="../cleanrl/results", output_dir=".",
+def plot_all_tasks(results_dir="../cleanrl/results", output_dir="./visual",
                    algo_filters=None, smooth_window=200, seed_filters=None):
     """
     绘制57个 Atari 任务的收敛曲线（10行6列布局）
@@ -353,7 +353,8 @@ def main():
     if os.path.exists(results_dir):
         seed_info = f" (seeds: {sorted(seed_filters)})" if seed_filters else ""
         print(f"Plotting Atari convergence curves for {len(TARGET_TASKS)} tasks{seed_info}...")
-        plot_all_tasks(results_dir, algo_filters=algo_filters, seed_filters=seed_filters)
+        script_dir = str(Path(__file__).resolve().parent)
+        plot_all_tasks(results_dir, output_dir=script_dir, algo_filters=algo_filters, seed_filters=seed_filters)
     else:
         print(f"Results directory {results_dir} does not exist")
 
