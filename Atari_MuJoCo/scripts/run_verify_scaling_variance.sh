@@ -10,11 +10,13 @@ for task in HalfCheetah-v4 Walker2d-v4 Hopper-v4 Ant-v4 Humanoid-v4; do
         python experiments/verify_scaling_variance.py \
             --env-id $task \
             --seed $seed \
-            --num-steps 1000000 \
+            --total-steps 1000000 \
+            --num-steps 200000 \
             --batch-sizes 64,128,256,512,1024,2048,4096,8192,16384 \
-            --num-bootstrap 200 \
-            --max-search-per-tree 4 \
-            --no-cuda &
+            --num-bootstrap 100 \
+            --max-search-per-tree 1 \
+            --no-cuda
+        wait
     done
     wait
 done
