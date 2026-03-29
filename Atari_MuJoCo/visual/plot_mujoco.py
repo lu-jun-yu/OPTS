@@ -23,44 +23,33 @@ TASK_SMOOTH_WINDOWS = {
     "Humanoid-v4": 9,
 }
 
-# 冷暖色穿插的调色板（冷色在前，暖色在后）
-COOL_COLORS = [
-    "#1f77b4",  # 蓝
-    "#2ca02c",  # 绿
-    "#9467bd",  # 紫
-    "#17becf",  # 青
-]
-WARM_COLORS = [
-    "#d62728",  # 红
-    "#ff7f0e",  # 橙
-    "#8c564b",  # 棕
-    "#e377c2",  # 粉
-]
+# PPO 蓝、RPO 绿、OPTS-TTPO 红；其余算法用补充色
+COLOR_PPO = "#1f77b4"
+COLOR_RPO = "#2ca02c"
+COLOR_OPTS_TTPO = "#d62728"
+EXTRA_ALGO_COLORS = ["#9467bd", "#ff7f0e", "#17becf", "#8c564b", "#e377c2"]
 
 
-def get_alternating_colors(n):
+def build_algo_colors(algo_keys):
     """
-    生成冷暖色交替的颜色序列。
-    例如 n=2 时为 冷、暖；n=3 时为 冷、暖、冷。
-    """
-    colors = []
-    for i in range(n):
-        if i % 2 == 0:
-            idx = i // 2
-            colors.append(COOL_COLORS[idx % len(COOL_COLORS)])
-        else:
-            idx = i // 2
-            colors.append(WARM_COLORS[idx % len(WARM_COLORS)])
-    return colors
-
-
-def assign_algo_colors(algo_keys):
-    """
-    为算法分配冷暖色交替的颜色，保证顺序稳定。
+    为算法分配颜色：PPO 蓝、RPO 绿、OPTS-TTPO（opts_ttpo*）红；
+    其他算法按排序稳定地依次使用 EXTRA_ALGO_COLORS。
     """
     sorted_keys = sorted(algo_keys)
-    colors = get_alternating_colors(len(sorted_keys))
-    return {algo_key: colors[i] for i, algo_key in enumerate(sorted_keys)}
+    colors = {}
+    extra_i = 0
+    for algo_key in sorted_keys:
+        algo_name, _ = algo_key
+        if algo_name == "ppo_continuous_action":
+            colors[algo_key] = COLOR_PPO
+        elif algo_name == "rpo_continuous_action":
+            colors[algo_key] = COLOR_RPO
+        elif algo_name.startswith("opts_ttpo"):
+            colors[algo_key] = COLOR_OPTS_TTPO
+        else:
+            colors[algo_key] = EXTRA_ALGO_COLORS[extra_i % len(EXTRA_ALGO_COLORS)]
+            extra_i += 1
+    return colors
 
 
 def get_task_smooth_window(task_name, default_window):
@@ -258,7 +247,7 @@ def get_display_name(algo_name, date=None):
 def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
                                 algo_filters=None, smooth_window=5, seed_filters=None):
     """
-    绘制所有5个任务的收敛曲线在一张图上（2行3列布局）
+    绘制所有5个任务的收敛曲线在一张图上（1行5列布局）
     
     Args:
         results_dir: results 目录路径
@@ -331,12 +320,9 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
         for algo_key in task_data.keys():
             all_algos.add(algo_key)
     
-    # 冷暖色交替分配颜色
-    algo_colors = assign_algo_colors(all_algos)
-    
-    # 创建2行3列的子图布局
-    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
-    axes = axes.flatten()
+    algo_colors = build_algo_colors(all_algos)
+
+    fig, axes = plt.subplots(1, 5, figsize=(20, 4))
     
     # 绘制每个任务
     for idx, task_name in enumerate(TARGET_TASKS):
@@ -344,8 +330,9 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
         
         if task_name not in all_tasks_data:
             ax.set_title(task_name.replace('-v4', '-v1'), fontsize=12)
-            ax.set_xlabel('')
-            ax.set_ylabel('')
+            ax.set_xlabel("Timesteps", fontsize=10)
+            if idx == 0:
+                ax.set_ylabel("Mean Episodic Return", fontsize=10)
             continue
         
         task_data = all_tasks_data[task_name]
@@ -370,9 +357,11 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
             ax.plot(steps[:len(mean_values)], mean_values,
                    color=color, label=display_name, linewidth=1.5)
 
-        # 设置子图标题和标签
         ax.set_title(task_name, fontsize=12)
-        
+        ax.set_xlabel("Timesteps", fontsize=10)
+        if idx == 0:
+            ax.set_ylabel("Mean Episodic Return", fontsize=10)
+
         # 设置x轴范围和刻度（只显示0和终点）
         if task_data:
             all_steps = []
@@ -388,22 +377,19 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
                 ax.set_xticks([0, max_step_rounded])
                 ax.set_xticklabels(['0', f'{int(max_step_rounded)}'])
         
-        ax.grid(True, alpha=0.3)
-    
-    # 隐藏第6个子图（只有5个任务）
-    axes[5].axis('off')
-    
-    # 在第6个位置添加图例
+        ax.grid(True, alpha=0.3, which='major')
+
     handles, labels = [], []
     for algo_key in sorted(algo_colors.keys()):
         algo_name, date = algo_key
         display_name = get_display_name(algo_name, date)
         handles.append(plt.Line2D([0], [0], color=algo_colors[algo_key], linewidth=2))
         labels.append(display_name)
-    
-    # 不去重，因为不同日期的同一算法需要分开显示
-    axes[5].legend(handles, labels, loc='center', fontsize=9, frameon=True)
-    
+
+    ncol = min(len(handles), 4) if handles else 1
+    fig.legend(handles, labels, loc='upper center', ncol=ncol, fontsize=11,
+               bbox_to_anchor=(0.5, 1.08), frameon=True)
+
     plt.tight_layout()
     
     # 保存图片
@@ -473,7 +459,7 @@ def plot_convergence_curves(task_name, results_dir="./results", output_dir=".",
     task_smooth_window = get_task_smooth_window(task_name, smooth_window)
     
     algo_keys = sorted(algorithms_data.keys())
-    algo_colors = assign_algo_colors(algo_keys)
+    algo_colors = build_algo_colors(algo_keys)
     
     for algo_key in algo_keys:
         seed_data = algorithms_data[algo_key]

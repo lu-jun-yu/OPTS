@@ -1,6 +1,6 @@
 """
 验证2可视化：PPO vs OPTS_TTPO 策略梯度方差随 batch_size 的缩放
-2×3 grid（5 任务 + legend），log-log scale，跨 seed 聚合 mean ± std
+1×5 子图，横轴 batch_size，纵轴 PG 方差 (log scale)，跨 seed 聚合 mean ± std
 """
 import os
 import json
@@ -13,16 +13,15 @@ from collections import defaultdict
 TARGET_TASKS = ["Ant-v4", "HalfCheetah-v4", "Hopper-v4", "Humanoid-v4", "Walker2d-v4"]
 SEEDS = [1, 2, 3, 4, 5]
 
-COLOR_PPO = "#1f77b4"   # 蓝
-COLOR_OPTS = "#d62728"  # 红
+COLOR_PPO = "#1f77b4"
+COLOR_OPTS = "#d62728"
 
 
 def main():
     input_dir = sys.argv[1] if len(sys.argv) > 1 else "results/variance/verify2"
     output_dir = sys.argv[2] if len(sys.argv) > 2 else "visual"
 
-    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
-    axes = axes.flatten()
+    fig, axes = plt.subplots(1, 5, figsize=(20, 4))
 
     for idx, task in enumerate(TARGET_TASKS):
         ax = axes[idx]
@@ -42,7 +41,6 @@ def main():
                 v = var["mean"] if isinstance(var, dict) else var
                 opts_by_bs[int(bs_str)].append(v)
 
-        # 取两者都有的 batch_sizes
         all_bs = sorted(set(ppo_by_bs.keys()) & set(opts_by_bs.keys()))
         if not all_bs:
             ax.set_title(task, fontsize=12)
@@ -55,29 +53,25 @@ def main():
         opts_m = np.array([np.mean(opts_by_bs[b]) for b in all_bs])
         opts_s = np.array([np.std(opts_by_bs[b]) for b in all_bs])
 
-        ax.plot(bs, ppo_m, 'o-', color=COLOR_PPO, linewidth=1.5, markersize=4)
+        ax.plot(bs, ppo_m, 'o-', color=COLOR_PPO, linewidth=1.5, markersize=5, label="PPO")
         ax.fill_between(bs, ppo_m - ppo_s, ppo_m + ppo_s, color=COLOR_PPO, alpha=0.2)
-        ax.plot(bs, opts_m, 's-', color=COLOR_OPTS, linewidth=1.5, markersize=4)
+        ax.plot(bs, opts_m, 's-', color=COLOR_OPTS, linewidth=1.5, markersize=5, label="OPTS_TTPO")
         ax.fill_between(bs, opts_m - opts_s, opts_m + opts_s, color=COLOR_OPTS, alpha=0.2)
 
-        ax.set_xscale('log', base=2)
         ax.set_yscale('log')
-        ax.set_title(task, fontsize=12)
-        ax.set_xlabel("Batch size")
-        ax.set_ylabel("PG Variance")
+        ax.set_xscale('log', base=2)
         ax.set_xticks(bs)
-        ax.set_xticklabels([str(b) for b in bs], fontsize=7, rotation=45)
-        ax.grid(True, alpha=0.3, which='both')
+        ax.set_xticklabels([str(b) for b in bs], fontsize=8)
+        ax.set_title(task, fontsize=12)
+        ax.set_xlabel("Batch Size", fontsize=10)
+        if idx == 0:
+            ax.set_ylabel("PG Variance (log scale)", fontsize=10)
+        ax.grid(True, alpha=0.3, which='major')
 
-    # legend panel
-    axes[5].axis('off')
-    handles = [
-        plt.Line2D([0], [0], color=COLOR_PPO, marker='o', linewidth=2),
-        plt.Line2D([0], [0], color=COLOR_OPTS, marker='s', linewidth=2),
-    ]
-    axes[5].legend(handles, ["PPO", "OPTS_TTPO"], loc='center', fontsize=11, frameon=True)
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='upper center', ncol=2, fontsize=11,
+               bbox_to_anchor=(0.5, 1.08), frameon=True)
 
-    plt.suptitle("Policy Gradient Variance Convergence: PPO vs OPTS_TTPO", fontsize=14)
     plt.tight_layout()
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, "scaling_variance_verify2.png")

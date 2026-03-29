@@ -12,8 +12,8 @@ import numpy as np
 TARGET_TASKS = ["Ant-v4", "HalfCheetah-v4", "Hopper-v4", "Humanoid-v4", "Walker2d-v4"]
 SEEDS = [1, 2, 3, 4, 5]
 
-COLOR_POS = "#1f77b4"
-COLOR_NEG = "#d62728"
+COLOR_POS = "#d62728"
+COLOR_NEG = "#1f77b4"
 
 
 def main():

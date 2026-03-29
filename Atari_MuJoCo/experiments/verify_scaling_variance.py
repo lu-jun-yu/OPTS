@@ -139,7 +139,7 @@ def select_next_states_v2(
             max_path_idx = tuct.argmax().item()
 
             # 过滤：所选位置是最后一个位置 → 跳过该树
-            if max_path_idx == n - 1:
+            if max_path_idx == n - 1 or exploitation[max_path_idx] <= 0:
                 continue
 
             max_tuct_val = tuct[max_path_idx].item()
