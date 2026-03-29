@@ -448,13 +448,13 @@ def compute_pg_gradient(agent, obs, actions, advantages, device, weights=None):
 
 def estimate_scaling_variance(agent, obs, actions, advantages, batch_sizes,
                                g_star, device, num_bootstrap=200, weights=None):
-    """对每个 batch_size，用 bootstrap 有放回采样估计策略梯度方差。
+    """对每个 batch_size，用 bootstrap 有放回采样估计策略梯度总方差 E[||ĝ - g*||²]。
 
     对每个 B:
         重复 num_bootstrap 次:
             从 pool 中有放回采样 B 个 step
             计算梯度 ĝ_B（OPTS 使用对应 weights 做 IPW 加权）
-            记录 ||ĝ_B - g*||² / d
+            记录总方差 ||ĝ_B - g*||² = Σ_i (ĝ_B,i - g*_i)²
         Var(B) = mean, Std(B) = std
 
     Returns:
@@ -471,7 +471,7 @@ def estimate_scaling_variance(agent, obs, actions, advantages, batch_sizes,
             idx = np.random.choice(N, size=B, replace=True)
             w = weights[idx] if weights is not None else None
             g_B = compute_pg_gradient(agent, obs[idx], actions[idx], advantages[idx], device, w)
-            sq_diffs.append(((g_B - g_star) ** 2).mean().item())
+            sq_diffs.append(((g_B - g_star) ** 2).sum().item())
         mean_var = float(np.mean(sq_diffs))
         std_var = float(np.std(sq_diffs))
         print(f"    B={B}: var={mean_var:.6e} (±{std_var:.2e})")

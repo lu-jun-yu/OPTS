@@ -1,5 +1,5 @@
 # 验证1：正轨迹的策略梯度方差 < 负轨迹的策略梯度方差
-# 方法：mini-batch bootstrap 估计 E[||ĝ - g*||²] / d
+# 方法：mini-batch bootstrap 估计总方差 E[||ĝ - g*||²]（平方 L2 范数，非逐维平均）
 import argparse
 import json
 import os
@@ -137,9 +137,9 @@ def estimate_variance_bootstrap(agent, obs, actions, advantages,
                                 g_star, device,
                                 mini_batch_size=512, num_bootstrap=200):
     """
-    从 step 池中有放回采样 B 个 mini-batch，估计策略梯度方差。
+    从 step 池中有放回采样 B 个 mini-batch，估计策略梯度总方差。
 
-    Var(ĝ) = E[||ĝ - g*||²] / d
+    总方差：E[||ĝ - g*||²] = E[Σ_i (ĝ_i - g*_i)²]
 
     Returns:
         mean_var: 方差的均值估计
@@ -150,7 +150,7 @@ def estimate_variance_bootstrap(agent, obs, actions, advantages,
     for _ in range(num_bootstrap):
         idx = np.random.choice(N, size=mini_batch_size, replace=True)
         g = compute_pg_gradient(agent, obs[idx], actions[idx], advantages[idx], device)
-        sq_diffs.append(((g - g_star) ** 2).mean().item())
+        sq_diffs.append(((g - g_star) ** 2).sum().item())
     return float(np.mean(sq_diffs)), float(np.std(sq_diffs))
 
 

@@ -11,8 +11,8 @@ for task in HalfCheetah-v4 Walker2d-v4 Hopper-v4 Ant-v4 Humanoid-v4; do
             --env-id $task \
             --seed $seed \
             --num-steps 1000000 \
-            --alpha 0.2 \
-            --num-bootstrap 200 \
+            --alpha 0.3 \
+            --num-bootstrap 100 \
             --no-cuda &
     done
     wait
