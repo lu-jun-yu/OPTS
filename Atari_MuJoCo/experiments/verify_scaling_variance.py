@@ -62,7 +62,8 @@ def compute_gae(rewards, values, dones, next_value, gamma=0.99, gae_lambda=0.95)
 
 def select_next_states_v2(
     terminated_envs, current_step, num_steps, advantages, parent_indices,
-    tree_indices, skip_search, search_count, max_search, c=1.0, gamma=0.99,
+    tree_indices, skip_search, search_count, max_search, max_exploitations,
+    c=1.0, gamma=0.99,
 ):
     """Modified select_next_states for variance verification:
     - No return_threshold filtering; filter by whether selected position is last in path
@@ -124,6 +125,9 @@ def select_next_states_v2(
                 discounted_sum = -path_advs[k].item() + gamma * discounted_sum
                 exploitation[k] = discounted_sum  # 直接使用加权累加，不除以 (n-k)
 
+            max_exploitation = exploitation.max().item()
+            max_exploitations[env_idx][tid] = max_exploitation
+
             path_parents_vals = tree_parents[path_local_mask]
             sibling_counts = torch.zeros(len(path_steps), device=advantages.device)
             for i in range(len(path_steps)):
@@ -139,7 +143,9 @@ def select_next_states_v2(
             max_path_idx = tuct.argmax().item()
 
             # 过滤：所选位置是最后一个位置 → 跳过该树
-            if max_path_idx == n - 1 or exploitation[max_path_idx] <= 0:
+            max_exploitation_values = [v for d in max_exploitations for v in d.values() if v > 0]
+            mean_max_exploitations = np.mean(max_exploitation_values) if max_exploitation_values else 0.0
+            if exploitation[max_path_idx] <= mean_max_exploitations:
                 continue
 
             max_tuct_val = tuct[max_path_idx].item()
@@ -229,6 +235,7 @@ def collect_opts_steps(env, agent, num_steps, device, max_search, c,
     env_states = [None] * num_steps
     root_branch_counts = [{}]
     search_count = [{}]
+    max_exploitations = [{}]
 
     obs_np, _ = env.reset()
     next_obs = torch.Tensor(obs_np).to(device)
@@ -287,6 +294,7 @@ def collect_opts_steps(env, agent, num_steps, device, max_search, c,
                 skip_search=skip_search,
                 search_count=search_count,
                 max_search=max_search,
+                max_exploitations=max_exploitations,
                 c=c,
                 gamma=gamma,
             )
