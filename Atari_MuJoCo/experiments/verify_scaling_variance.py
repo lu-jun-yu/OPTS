@@ -120,13 +120,12 @@ def select_next_states_v2(
 
             n = len(path_advs)
             exploitation = torch.zeros_like(path_advs)
+            mean_exploitation = torch.zeros_like(path_advs)
             discounted_sum = 0.0
             for k in range(n - 1, -1, -1):
                 discounted_sum = -path_advs[k].item() + gamma * discounted_sum
                 exploitation[k] = discounted_sum  # 直接使用加权累加，不除以 (n-k)
-
-            max_exploitation = exploitation.max().item()
-            max_exploitations[env_idx][tid] = max_exploitation
+                mean_exploitation[k] = exploitation[k] / (n - k)
 
             path_parents_vals = tree_parents[path_local_mask]
             sibling_counts = torch.zeros(len(path_steps), device=advantages.device)
@@ -141,11 +140,13 @@ def select_next_states_v2(
             tuct = exploitation - c * exploration
 
             max_path_idx = tuct.argmax().item()
+            max_exploitations[env_idx][tid] = mean_exploitation[max_path_idx].item()
 
             # 过滤：所选位置是最后一个位置 → 跳过该树
             max_exploitation_values = [v for d in max_exploitations for v in d.values() if v > 0]
-            mean_max_exploitations = np.mean(max_exploitation_values) if max_exploitation_values else 0.0
-            if exploitation[max_path_idx] <= mean_max_exploitations:
+            mean_max_exploitations = np.mean(max_exploitation_values) if len(max_exploitation_values) > 0 else 0.0
+            std_max_exploitations = np.std(max_exploitation_values) if len(max_exploitation_values) > 1 else 0.0
+            if mean_exploitation[max_path_idx] <= mean_max_exploitations + 1.0 * std_max_exploitations:
                 continue
 
             max_tuct_val = tuct[max_path_idx].item()
@@ -416,15 +417,15 @@ def load_or_collect_opts(env, agent, num_steps, device, cache_path,
     """加载/收集 OPTS rollout 缓存。
     缓存够用则截取，不够则重新从头跑。
     """
-    if os.path.exists(cache_path):
-        cache = torch.load(cache_path, map_location=device, weights_only=False)
-        cached_steps = len(cache['obs'])
-        if cached_steps >= num_steps:
-            print(f"  OPTS: loaded cache ({cached_steps} steps), using first {num_steps}")
-            return cache['obs'][:num_steps], cache['actions'][:num_steps], \
-                   cache['advantages'][:num_steps], cache['weights'][:num_steps]
-        else:
-            print(f"  OPTS: cache has {cached_steps} steps but need {num_steps}, re-collecting...")
+    # if os.path.exists(cache_path):
+    #     cache = torch.load(cache_path, map_location=device, weights_only=False)
+    #     cached_steps = len(cache['obs'])
+    #     if cached_steps >= num_steps:
+    #         print(f"  OPTS: loaded cache ({cached_steps} steps), using first {num_steps}")
+    #         return cache['obs'][:num_steps], cache['actions'][:num_steps], \
+    #                cache['advantages'][:num_steps], cache['weights'][:num_steps]
+    #     else:
+    #         print(f"  OPTS: cache has {cached_steps} steps but need {num_steps}, re-collecting...")
 
     print(f"  OPTS: collecting {num_steps} steps...")
     data = collect_opts_steps(env, agent, num_steps, device, max_search, c,
