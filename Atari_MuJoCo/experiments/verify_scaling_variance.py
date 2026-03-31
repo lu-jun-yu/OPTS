@@ -140,13 +140,13 @@ def select_next_states_v2(
             tuct = exploitation - c * exploration
 
             max_path_idx = tuct.argmax().item()
-            max_exploitations[env_idx][tid] = mean_exploitation[max_path_idx].item()
+            if tid not in max_exploitations[env_idx]:
+                max_exploitations[env_idx][tid] = mean_exploitation[max_path_idx].item()
 
             # 过滤：所选位置是最后一个位置 → 跳过该树
             max_exploitation_values = [v for d in max_exploitations for v in d.values() if v > 0]
             mean_max_exploitations = np.mean(max_exploitation_values) if len(max_exploitation_values) > 0 else 0.0
-            std_max_exploitations = np.std(max_exploitation_values) if len(max_exploitation_values) > 1 else 0.0
-            if mean_exploitation[max_path_idx] <= mean_max_exploitations + 1.0 * std_max_exploitations:
+            if mean_exploitation[max_path_idx] <= mean_max_exploitations:
                 continue
 
             max_tuct_val = tuct[max_path_idx].item()
