@@ -11,8 +11,11 @@ from torch.distributions.normal import Normal
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'cleanrl', 'cleanrl'))
 from opts_ttpo_continuous_action import (
-    Agent, MuJoCoStateSnapshotWrapper,
-    compute_tree_gae, compute_branch_weight,
+    Agent,
+    MuJoCoStateSnapshotWrapper,
+    compute_tree_gae,
+    compute_branch_weight,
+    select_next_states,
 )
 
 
@@ -58,113 +61,6 @@ def compute_gae(rewards, values, dones, next_value, gamma=0.99, gae_lambda=0.95)
         delta = rewards[t] + gamma * nextvalues * nextnonterminal - values[t]
         advantages[t] = lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
     return advantages
-
-
-def select_next_states_v2(
-    terminated_envs, current_step, num_steps, advantages, parent_indices,
-    tree_indices, skip_search, search_count, max_search, max_exploitations,
-    c=1.0, gamma=0.99,
-):
-    """Modified select_next_states for variance verification:
-    - No return_threshold filtering; filter by whether selected position is last in path
-    - Use raw weighted cumulative advantage (no division by remaining steps)
-    """
-    selected = []
-    n_steps = current_step + 1
-
-    for env_idx in terminated_envs:
-        env_tree_ids = torch.unique(tree_indices[:n_steps, env_idx]).tolist()
-        num_env_trees = len(env_tree_ids)
-
-        if skip_search:
-            selected.append(-(num_env_trees + 1))
-            continue
-
-        best_tuct_val = float('-inf')
-        best_step_overall = None
-        best_tree_id = None
-        best_depth = None
-        best_path_len = None
-
-        for tid in env_tree_ids:
-            current_count = search_count[env_idx].get(tid, 0)
-            if current_count >= max_search:
-                continue
-
-            tree_mask = tree_indices[:n_steps, env_idx] == tid
-            tree_node_steps = tree_mask.nonzero(as_tuple=True)[0]
-            tree_advs = advantages[tree_node_steps, env_idx].clone()
-            tree_parents = parent_indices[tree_node_steps, env_idx]
-
-            root_local_mask = tree_parents < 0
-            root_steps = tree_node_steps[root_local_mask]
-            root_advs = advantages[root_steps, env_idx]
-            best_root_local = root_advs.argmax().item()
-            current_node = root_steps[best_root_local].item()
-
-            path = [current_node]
-            while True:
-                children_of_node = (parent_indices[:n_steps, env_idx] == current_node) & tree_mask
-                children_steps = children_of_node.nonzero(as_tuple=True)[0]
-                if len(children_steps) == 0:
-                    break
-                child_advs = advantages[children_steps, env_idx]
-                best_child = child_advs.argmax().item()
-                current_node = children_steps[best_child].item()
-                path.append(current_node)
-
-            path_t = torch.tensor(path, device=advantages.device)
-            path_local_mask = torch.isin(tree_node_steps, path_t)
-            path_advs = tree_advs[path_local_mask]
-            path_steps = tree_node_steps[path_local_mask]
-
-            n = len(path_advs)
-            exploitation = torch.zeros_like(path_advs)
-            mean_exploitation = torch.zeros_like(path_advs)
-            discounted_sum = 0.0
-            for k in range(n - 1, -1, -1):
-                discounted_sum = -path_advs[k].item() + gamma * discounted_sum
-                exploitation[k] = discounted_sum  # 直接使用加权累加，不除以 (n-k)
-                mean_exploitation[k] = exploitation[k] / (n - k)
-
-            path_parents_vals = tree_parents[path_local_mask]
-            sibling_counts = torch.zeros(len(path_steps), device=advantages.device)
-            for i in range(len(path_steps)):
-                sibling_counts[i] = (tree_parents == path_parents_vals[i]).sum()
-
-            max_abs_exploitation = exploitation.abs().max().item()
-            if max_abs_exploitation == 0:
-                max_abs_exploitation = 1.0
-
-            exploration = (sibling_counts - 1) * max_abs_exploitation
-            tuct = exploitation - c * exploration
-
-            max_path_idx = tuct.argmax().item()
-            if tid not in max_exploitations[env_idx]:
-                max_exploitations[env_idx][tid] = mean_exploitation[max_path_idx].item()
-
-            # 过滤：所选位置是最后一个位置 → 跳过该树
-            max_exploitation_values = [v for d in max_exploitations for v in d.values() if v > 0]
-            mean_max_exploitations = np.mean(max_exploitation_values) if len(max_exploitation_values) > 0 else 0.0
-            if mean_exploitation[max_path_idx] <= mean_max_exploitations:
-                continue
-
-            max_tuct_val = tuct[max_path_idx].item()
-
-            if max_tuct_val > best_tuct_val:
-                best_tuct_val = max_tuct_val
-                best_step_overall = path_steps[max_path_idx].item()
-                best_tree_id = tid
-                best_depth = max_path_idx
-                best_path_len = len(path)
-
-        if best_step_overall is None:
-            selected.append(-(num_env_trees + 1))
-        else:
-            search_count[env_idx][best_tree_id] = search_count[env_idx].get(best_tree_id, 0) + 1
-            selected.append(best_step_overall)
-
-    return selected
 
 
 def collect_ppo_steps(env, agent, num_steps, device, resume_state=None):
@@ -285,7 +181,7 @@ def collect_opts_steps(env, agent, num_steps, device, max_search, c,
 
             skip_search = step >= num_steps - 1
 
-            selected = select_next_states_v2(
+            selected = select_next_states(
                 terminated_envs=[env_idx],
                 current_step=step,
                 num_steps=num_steps,
