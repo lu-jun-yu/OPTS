@@ -165,7 +165,7 @@ if __name__ == "__main__":
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument("--alpha", type=float, default=0.3,
-                        help="proportion of top/bottom episodes as positive/negative samples")
+                        help="proportion of top/bottom steps (by GAE advantage) as pos/neg samples")
     parser.add_argument("--num-bootstrap", type=int, default=200,
                         help="number of bootstrap resamples per batch_size")
     args = parser.parse_args()
@@ -276,23 +276,22 @@ if __name__ == "__main__":
         print(f"WARNING: No complete episodes for {args.env_id} seed {args.seed}")
         sys.exit(1)
 
-    # 按 episode return 排序，取前 alpha 比例为正样本，后 alpha 比例为负样本
-    sorted_episodes = sorted(all_episodes, key=lambda ep: ep[2], reverse=True)
-    num_eps = len(sorted_episodes)
-    n_select = max(1, int(num_eps * args.alpha))
-    top_episodes = sorted_episodes[:n_select]
-    bottom_episodes = sorted_episodes[-n_select:]
-    print(f"{args.env_id} seed{args.seed}: {num_eps} episodes in {args.num_steps} steps, "
-          f"alpha={args.alpha}, top {n_select} eps (ret >= {top_episodes[-1][2]:.2f}), "
-          f"bottom {n_select} eps (ret <= {bottom_episodes[0][2]:.2f})")
+    # 按 step 的 GAE 优势降序排序，取前 alpha 比例为正样本，后 alpha 比例为负样本
+    num_eps = len(all_episodes)
+    N = args.num_steps
+    n_select = max(1, int(N * args.alpha))
+    if 2 * n_select > N:
+        n_select = max(1, N // 2)
+    step_order = torch.argsort(advantages, descending=True)
+    pos_idx = step_order[:n_select]
+    neg_idx = step_order[-n_select:]
+    adv_top_thr = advantages[pos_idx[-1]].item()
+    adv_bot_thr = advantages[neg_idx[0]].item()
+    print(f"{args.env_id} seed{args.seed}: {num_eps} episodes in {N} steps, "
+          f"alpha={args.alpha}, top {n_select} steps (adv >= {adv_top_thr:.4f}), "
+          f"bottom {n_select} steps (adv <= {adv_bot_thr:.4f})")
 
-    pos_idx, neg_idx = [], []
-    for start, end, ret in top_episodes:
-        pos_idx.extend(range(start, end + 1))
-    for start, end, ret in bottom_episodes:
-        neg_idx.extend(range(start, end + 1))
-
-    if not pos_idx or not neg_idx:
+    if pos_idx.numel() == 0 or neg_idx.numel() == 0:
         print(f"WARNING: Cannot split pos/neg for {args.env_id} seed {args.seed}")
         sys.exit(1)
 
@@ -339,7 +338,7 @@ if __name__ == "__main__":
         "alpha": args.alpha,
         "num_steps": args.num_steps,
         "num_episodes": num_eps,
-        "num_selected_episodes": n_select,
+        "num_selected_steps_per_side": n_select,
         "num_pos_steps": len(pos_idx),
         "num_neg_steps": len(neg_idx),
         "num_bootstrap": args.num_bootstrap,
