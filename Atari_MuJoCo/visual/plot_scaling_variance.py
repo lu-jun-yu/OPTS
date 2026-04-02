@@ -10,7 +10,7 @@ import numpy as np
 from collections import defaultdict
 
 
-TARGET_TASKS = ["Ant-v4", "HalfCheetah-v4", "Hopper-v4", "Humanoid-v4", "Walker2d-v4"]
+TARGET_TASKS = ["HalfCheetah-v4", "Hopper-v4", "Walker2d-v4", "Ant-v4", "Humanoid-v4"]
 SEEDS = [1, 2, 3, 4, 5]
 
 COLOR_PPO = "#1f77b4"
