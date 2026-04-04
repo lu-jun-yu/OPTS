@@ -1,6 +1,7 @@
 export NCCL_DEBUG=ERROR
 export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 MODEL_SIZE=8B
 Experiment_Name=dapo_0326_${MODEL_SIZE}
@@ -17,8 +18,10 @@ python3 -m verl.trainer.main_ppo \
  actor_rollout_ref.actor.optim.lr=1e-6 \
  actor_rollout_ref.actor.optim.weight_decay=0.1 \
  actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
+ +actor_rollout_ref.actor.optim.override_optimizer_config.foreach=false \
+ actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
  actor_rollout_ref.actor.ppo_mini_batch_size=512 \
- actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
+ actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16 \
  actor_rollout_ref.actor.use_kl_loss=False \
  actor_rollout_ref.actor.grad_clip=1.0 \
  actor_rollout_ref.actor.clip_ratio_low=0.2 \
@@ -40,7 +43,7 @@ python3 -m verl.trainer.main_ppo \
  +reward_model.overlong_buffer_cfg.penalty_factor=1.0 \
  +reward_model.overlong_buffer_cfg.log=False \
  +reward_model.max_resp_len=2048 \
- trainer.logger='["console","wandb"]' \
+ trainer.logger=console \
  trainer.val_before_train=False \
  trainer.n_gpus_per_node=1 \
  trainer.nnodes=1 \

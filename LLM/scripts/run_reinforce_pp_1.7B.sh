@@ -2,8 +2,8 @@ export NCCL_DEBUG=ERROR
 export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
-MODEL_SIZE=8B
-Experiment_Name=reinforce_pp_0326_${MODEL_SIZE}
+MODEL_SIZE=1.7B
+Experiment_Name=reinforce_pp_0327_${MODEL_SIZE}
 
 python3 -m verl.trainer.main_ppo \
  algorithm.adv_estimator=reinforce_plus_plus \
@@ -14,11 +14,11 @@ python3 -m verl.trainer.main_ppo \
  data.max_response_length=2048 \
  data.filter_overlong_prompts=True \
  actor_rollout_ref.model.path=models/Qwen3-${MODEL_SIZE} \
- actor_rollout_ref.actor.optim.lr=1e-6 \
+ actor_rollout_ref.actor.optim.lr=3e-6 \
  actor_rollout_ref.actor.optim.weight_decay=0.1 \
  actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
  actor_rollout_ref.actor.ppo_mini_batch_size=512 \
- actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
+ actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16 \
  actor_rollout_ref.actor.use_kl_loss=False \
  actor_rollout_ref.rollout.name=vllm \
  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=128 \
