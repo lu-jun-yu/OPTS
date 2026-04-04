@@ -10,9 +10,9 @@ for task in Ant-v4 Humanoid-v4; do
         python cleanrl/cleanrl/opts_ttpo_continuous_action.py \
             --env-id $task \
             --total-timesteps 3000000 \
-            --num-steps 2048 \
+            --num-steps 4096 \
             --num-envs 1 \
-            --max-search-per-tree 2 \
+            --max-search-per-tree 3 \
             --no-cuda \
             --seed $seed &
     done
@@ -22,10 +22,10 @@ for task in HalfCheetah-v4 Walker2d-v4 Hopper-v4; do
     for seed in "${SEEDS[@]}"; do
         python cleanrl/cleanrl/opts_ttpo_continuous_action.py \
             --env-id $task \
-            --total-timesteps 1000000 \
-            --num-steps 2048 \
+            --total-timesteps 3000000 \
+            --num-steps 4096 \
             --num-envs 1 \
-            --max-search-per-tree 2 \
+            --max-search-per-tree 3 \
             --no-cuda \
             --seed $seed &
     done

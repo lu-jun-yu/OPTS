@@ -14,7 +14,7 @@ for task in HalfCheetah-v4 Walker2d-v4 Hopper-v4 Ant-v4 Humanoid-v4; do
             --num-steps 10000 \
             --batch-sizes 64,128,256,512,1024,2048,4096 \
             --num-bootstrap 100 \
-            --max-search-per-tree 3 \
+            --max-search-per-tree 2 \
             --no-cuda &
         # wait
     done
