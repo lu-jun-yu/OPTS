@@ -20,7 +20,7 @@ python3 -m verl.trainer.main_ppo \
  +actor_rollout_ref.actor.optim.override_optimizer_config.foreach=false \
  actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
  actor_rollout_ref.actor.ppo_mini_batch_size=2048 \
- actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16 \
+ actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
  actor_rollout_ref.actor.use_kl_loss=False \
  actor_rollout_ref.rollout.name=vllm \
  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=128 \
@@ -29,7 +29,7 @@ python3 -m verl.trainer.main_ppo \
  critic.enable=True \
  critic.optim.lr=1e-5 \
  critic.model.path=models/Qwen3-${MODEL_SIZE} \
- critic.ppo_micro_batch_size_per_gpu=32 \
+ critic.ppo_micro_batch_size_per_gpu=8 \
  critic.value_head_activation=sigmoid \
  custom_reward_function.path=utils/reward_fn.py \
  custom_reward_function.name=compute_score \

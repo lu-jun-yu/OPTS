@@ -20,7 +20,7 @@ python3 -m verl.trainer.main_ppo \
  +actor_rollout_ref.actor.optim.override_optimizer_config.foreach=false \
  actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
  actor_rollout_ref.actor.ppo_mini_batch_size=512 \
- actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16 \
+ actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
  actor_rollout_ref.actor.use_kl_loss=False \
  actor_rollout_ref.actor.grad_clip=1.0 \
  actor_rollout_ref.actor.clip_ratio_low=0.2 \
