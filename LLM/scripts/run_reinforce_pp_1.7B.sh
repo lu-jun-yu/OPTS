@@ -14,7 +14,7 @@ python3 -m verl.trainer.main_ppo \
  data.max_response_length=2048 \
  data.filter_overlong_prompts=True \
  actor_rollout_ref.model.path=models/Qwen3-${MODEL_SIZE} \
- actor_rollout_ref.actor.optim.lr=3e-6 \
+ actor_rollout_ref.actor.optim.lr=1e-6 \
  actor_rollout_ref.actor.optim.weight_decay=0.1 \
  actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
  actor_rollout_ref.actor.ppo_mini_batch_size=512 \
