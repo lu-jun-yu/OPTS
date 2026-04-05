@@ -12,7 +12,7 @@ for task in Ant-v4 Humanoid-v4; do
             --total-timesteps 3000000 \
             --num-steps 4096 \
             --num-envs 1 \
-            --max-search-per-tree 3 \
+            --max-search-per-tree 4 \
             --no-cuda \
             --seed $seed &
     done
@@ -25,7 +25,7 @@ for task in HalfCheetah-v4 Walker2d-v4 Hopper-v4; do
             --total-timesteps 3000000 \
             --num-steps 4096 \
             --num-envs 1 \
-            --max-search-per-tree 3 \
+            --max-search-per-tree 4 \
             --no-cuda \
             --seed $seed &
     done
