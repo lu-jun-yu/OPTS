@@ -1,7 +1,6 @@
 export NCCL_DEBUG=ERROR
 export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 MODEL_SIZE=8B
 Experiment_Name=dapo_0326_${MODEL_SIZE}
@@ -43,7 +42,7 @@ python3 -m verl.trainer.main_ppo \
  +reward_model.overlong_buffer_cfg.penalty_factor=1.0 \
  +reward_model.overlong_buffer_cfg.log=False \
  +reward_model.max_resp_len=2048 \
- trainer.logger=console \
+ trainer.logger='["console","wandb"]' \
  trainer.val_before_train=False \
  trainer.n_gpus_per_node=1 \
  trainer.nnodes=1 \
