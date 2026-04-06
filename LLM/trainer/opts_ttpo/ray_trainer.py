@@ -495,10 +495,10 @@ def compute_episodic_returns(
 def select_next_states(
     batch: DataProto,
     search_count: dict,
+    max_exploitations: dict,
     max_search_per_tree: int,
     c: float,
     gamma: float,
-    return_threshold: Optional[float],
     max_prompt_length: int,
     batch_size: int,
     tokenizer=None,
@@ -510,22 +510,22 @@ def select_next_states(
     branch points for prepare_next_round_input / set_opts_ttpo_info.
 
     Algorithm:
-    1. If return_threshold is None, return empty dict (first iteration, all new trees).
-    2. For each uid (tree), skip if search_count >= max_search_per_tree or
-       tree_max_reward > return_threshold.
-    3. Trace optimal path through tree (greedy by first-token advantage at branches).
-    4. Compute TUCT along path: exploitation (backward cumulative mean of advantage)
+    1. For each uid (tree), skip if search_count >= max_search_per_tree.
+    2. Trace optimal path through tree (greedy by first-token advantage at branches).
+    3. Compute TUCT along path: exploitation (backward cumulative advantage)
        + c * exploration ((sibling_count - 1) * max_abs_exploitation).
-    5. Apply dual mask: response_mask and prompt_length constraint.
-    6. Select argmax(TUCT) per tree; skip if at first position (no parent).
-    7. Globally sort candidates by max_tuct_value, take top batch_size.
+    4. Apply dual mask: response_mask and prompt_length constraint.
+    5. Select argmax(TUCT) per tree.
+    6. Update per-tree max_exploitations with exploitation[max_idx], and only
+       keep candidates whose exploitation[max_idx] is above the pooled mean.
+    7. Globally sort candidates by exploitation[max_idx], take top batch_size.
 
     Args:
         batch: DataProto containing all required tensors and non-tensor data.
         search_count: {uid: count}, cumulative within training iteration.
+        max_exploitations: {uid: max exploitation at selected node}.
         max_search_per_tree: Max searches per tree per iteration.
         c: TUCT exploration coefficient.
-        return_threshold: None to skip search; otherwise float threshold.
         max_prompt_length: Maximum allowed prompt length.
         batch_size: Maximum number of candidates to select.
 
@@ -534,10 +534,6 @@ def select_next_states(
             TUCT-selected node. Must be converted to parent via
             selected_to_branch_points() before use as branch points.
     """
-    # Early return if no threshold (first iteration)
-    if return_threshold is None:
-        return {}
-
     # Extract tensors and non-tensor data
     advantages = batch.batch["advantages"]
     state_branches = batch.batch["state_branches"]
@@ -547,7 +543,6 @@ def select_next_states(
     rid = batch.non_tensor_batch["rid"]
     pid = batch.non_tensor_batch["pid"]
     cid = list(batch.non_tensor_batch["cid"])
-    episodic_returns = batch.non_tensor_batch["episodic_returns"]
 
     # Compute prompt_lengths
     prompt_len = batch.batch["input_ids"].shape[1] - batch.batch["responses"].shape[1]
@@ -572,23 +567,13 @@ def select_next_states(
                     think_end_pos[i] = pos
                     break
 
-    # Compute tree_max_reward per uid (from pre-computed episodic_returns)
-    tree_max_reward = {}
-    for i in range(batch_size):
-        u = uid[i]
-        ret = float(episodic_returns[i])
-        if u not in tree_max_reward or ret > tree_max_reward[u]:
-            tree_max_reward[u] = ret
-
     # Process each uid
     unique_uids = np.unique(uid)
-    candidates = []  # List of (min_tuct_value, uid, parent_idx, branch_pos)
+    candidates = []  # List of (score_exploitation, uid, traj_idx, token_pos)
 
     for u in unique_uids:
         # Skip conditions
         if search_count.get(u, 0) >= max_search_per_tree:
-            continue
-        if tree_max_reward.get(u, float('-inf')) > return_threshold:
             continue
 
         uid_indices = np.where(uid == u)[0]
@@ -706,8 +691,21 @@ def select_next_states(
         if max_tuct_val == float('-inf'):
             continue
 
+        # LLM uses episode-level budget, so we track raw exploitation[k]
+        max_exploitation_val = exploitation[max_idx].item()
+
+        if u not in max_exploitations:
+            max_exploitations[u] = max_exploitation_val
+
+        max_exploitation_values = [v for v in max_exploitations.values() if v > 0]
+        if len(max_exploitation_values) < 1:
+            continue
+        mean_max_exploitations = float(np.mean(max_exploitation_values))
+        if max_exploitation_val <= mean_max_exploitations:
+            continue
+
         ti, tp = path[max_idx]
-        candidates.append((max_tuct_val, u, ti, tp))
+        candidates.append((max_exploitation_val, u, ti, tp))
 
     # --- Global sort and select top batch_size ---
     candidates.sort(key=lambda x: x[0], reverse=True)
@@ -724,7 +722,7 @@ def select_next_states(
     if candidates:
         logger_batch.info(
             f"[select_next_states] candidates={len(candidates)}, selected={len(selected)}, "
-            f"tuct_range=[{candidates[0][0]:.4f}, {candidates[-1][0]:.4f}]"
+            f"exploitation_range=[{candidates[0][0]:.4f}, {candidates[-1][0]:.4f}]"
         )
     else:
         logger_batch.info("[select_next_states] no candidates")
@@ -818,7 +816,7 @@ class PromptBuffer:
 
 
 def compute_aggregated_returns(batch: DataProto) -> list[float]:
-    """Compute per-uid aggregated returns for return_threshold.
+    """Compute per-uid aggregated returns for monitoring metrics.
 
     Per uid (tree), compute weighted average of episodic returns using
     inverse branch_weight. Return the list of per-uid aggregated returns.
@@ -1611,11 +1609,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
         dataloader_state_dict = self.train_dataloader.state_dict()
         torch.save(dataloader_state_dict, dataloader_local_path)
 
-        # save OPTS trainer state (return_threshold, etc.)
-        opts_state_path = os.path.join(local_global_step_folder, "opts_state.pt")
-        opts_state = {"step_mean_return": getattr(self, "_step_mean_return", None)}
-        torch.save(opts_state, opts_state_path)
-
         # latest checkpointed iteration tracker (for atomic usage)
         if (
             hasattr(self.config.actor_rollout_ref.actor.checkpoint, "async_save")
@@ -1688,16 +1681,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
             self.train_dataloader.load_state_dict(dataloader_state_dict)
         else:
             print(f"Warning: No dataloader state found at {dataloader_local_path}, will start from scratch")
-
-        # load OPTS trainer state (return_threshold, etc.)
-        opts_state_path = os.path.join(global_step_folder, "opts_state.pt")
-        if os.path.exists(opts_state_path):
-            opts_state = torch.load(opts_state_path, weights_only=False)
-            self._step_mean_return = opts_state.get("step_mean_return", None)
-            print(f"Restored step_mean_return={self._step_mean_return}")
-        else:
-            self._step_mean_return = None
-            print("Warning: No OPTS state found, step_mean_return will start as None")
 
     def _start_profiling(self, do_profile: bool) -> None:
         """Start profiling for all worker groups if profiling is enabled."""
@@ -1944,7 +1927,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
 
         # OPTS_TTPO setup
         prompt_buffer = PromptBuffer(self.train_dataloader)
-        step_mean_return = getattr(self, "_step_mean_return", None)  # restored from checkpoint if available
+        step_mean_return = None
 
         # Batch size for each round
         batch_size = self.config.data.get("gen_batch_size", self.config.data.train_batch_size)
@@ -1973,6 +1956,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                 global_batch = None
                 next_states = {}
                 search_count = {}  # {uid: count} per training iteration
+                max_exploitations = {}  # {uid: exploitation} per training iteration
                 sorted_states = None
                 reward_extra_infos_dict = {}
 
@@ -2222,10 +2206,10 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 selected_states = select_next_states(
                                     batch=global_batch,
                                     search_count=search_count,
+                                    max_exploitations=max_exploitations,
                                     max_search_per_tree=max_search_per_tree,
                                     c=c_tuct,
                                     gamma=self.config.algorithm.gamma,
-                                    return_threshold=step_mean_return,
                                     max_prompt_length=self.config.data.max_prompt_length,
                                     batch_size=batch_size,
                                     tokenizer=self.tokenizer,
@@ -2259,10 +2243,9 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                         )
                         batch.batch["branch_weight"] = branch_weight
 
-                        # Compute per-uid aggregated returns and update step-level return_threshold
+                        # Compute per-uid aggregated returns and update step-level metric
                         step_aggregated_returns = compute_aggregated_returns(batch)
                         step_mean_return = sum(step_aggregated_returns) / len(step_aggregated_returns) if step_aggregated_returns else 0.0
-                        self._step_mean_return = step_mean_return
                         metrics["opts_ttpo/step_mean_return"] = step_mean_return
 
                         log_batch_state(batch, stage="opts_ttpo_final_batch_before_update", step=self.global_steps)
