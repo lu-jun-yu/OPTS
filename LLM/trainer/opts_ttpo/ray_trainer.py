@@ -859,6 +859,37 @@ def compute_aggregated_returns(batch: DataProto) -> list[float]:
     return aggregated_returns
 
 
+def weighted_masked_whiten(
+    advantages: torch.Tensor,
+    response_mask: torch.Tensor,
+    branch_weight: torch.Tensor,
+    eps: float = 1e-8,
+    shift_mean: bool = True,
+) -> torch.Tensor:
+    """Weighted masked whitening with TTPO branch-weight correction.
+
+    Similar to masked_whiten in verl.utils.torch_functional, but uses
+    TTPO branch-weight correction over valid response tokens:
+      mean = sum(adv / w) / sum(1 / w)
+      var  = sum((adv - mean)^2 / w) / sum(1 / w)
+      adv' = (adv - mean) / sqrt(var + eps)
+
+    Statistics are computed on valid response tokens only.
+    """
+    valid = response_mask.to(dtype=advantages.dtype)
+    inv_weight = valid / torch.clamp(branch_weight.to(dtype=advantages.dtype), min=eps)
+    inv_weight_sum = inv_weight.sum()
+
+    assert inv_weight_sum.item() > 0, "weighted_masked_whiten requires positive total effective inverse-weight"
+
+    adv_mean = (advantages * inv_weight).sum() / inv_weight_sum
+    adv_var = ((advantages - adv_mean) ** 2 * inv_weight).sum() / inv_weight_sum
+    normalized = (advantages - adv_mean) * torch.rsqrt(adv_var + eps)
+    if not shift_mean:
+        normalized = normalized + adv_mean
+    return normalized * valid
+
+
 class RayOPTSTTPOTrainer(RayPPOTrainer):
     """Distributed OPTS_TTPO trainer using Ray for scalable reinforcement learning.
 
@@ -2229,9 +2260,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
 
                     # === Post-rounds: prepare for training update ===
                     with timed_block("opts_ttpo_final_processing", step=self.global_steps):
-                        import verl.utils.torch_functional as verl_F
                         batch = global_batch
-                        batch.batch["advantages"] = verl_F.masked_whiten(batch.batch["advantages"], batch.batch["response_mask"])
 
                         # Compute branch_weight
                         branch_weight = compute_branch_weight(
@@ -2242,6 +2271,11 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                             branch_pos=batch.non_tensor_batch["branch_pos"],
                         )
                         batch.batch["branch_weight"] = branch_weight
+                        batch.batch["advantages"] = weighted_masked_whiten(
+                            advantages=batch.batch["advantages"],
+                            response_mask=batch.batch["response_mask"],
+                            branch_weight=branch_weight,
+                        )
 
                         # Compute per-uid aggregated returns and update step-level metric
                         step_aggregated_returns = compute_aggregated_returns(batch)

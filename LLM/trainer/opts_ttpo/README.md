@@ -202,7 +202,7 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 │  │  └──────────────────────────────────────────────────┘ │  │
 │  │                          ↓                             │  │
 │  │  ┌──────────────────────────────────────────────────┐ │  │
-│  │  │  后处理：白化优势，计算 branch_weight               │ │  │
+│  │  │  后处理：计算 branch_weight，进行加权白化优势        │ │  │
 │  │  │  计算 aggregated_returns，更新 step_mean_return     │ │  │
 │  │  └──────────────────────────────────────────────────┘ │  │
 │  │                          ↓                             │  │
@@ -278,9 +278,11 @@ for epoch in ...:
 
         ======== 后处理 ========
 
-        对 global_batch 的 advantages 进行白化（masked_whiten）
-
         compute_branch_weight：沿祖先链追溯到根，累乘 state_branches，根节点乘以同 uid 的根轨迹数
+        weighted_masked_whiten：对 global_batch 的 advantages 做全局加权白化
+          - 仅统计 response_mask=1 的 token
+          - 权重使用 1 / branch_weight
+          - 与 masked_whiten 一致，使用 (adv-mean)/sqrt(var+eps)
 
         计算 aggregated_returns：按 uid 分组，组内用 weight 倒数加权平均 episodic_returns
         step_mean_return = mean(各 uid 的 aggregated_return)
@@ -411,7 +413,23 @@ $$
 
 当 branch_weight 不存在时（非 OPTS_TTPO 模式），退化为标准聚合模式。
 
-### 5.4 Aggregated Returns
+### 5.4 Weighted Advantage Whitening
+
+OPTS_TTPO 在 step 后处理阶段使用 `weighted_masked_whiten` 对优势做全局加权白化：
+
+$$
+\mu = \frac{\sum_t \hat{A}_t \cdot (1/W_t)\cdot m_t}{\sum_t (1/W_t)\cdot m_t},
+\quad
+\sigma^2 = \frac{\sum_t (\hat{A}_t-\mu)^2 \cdot (1/W_t)\cdot m_t}{\sum_t (1/W_t)\cdot m_t}
+$$
+
+$$
+\hat{A}'_t = \frac{\hat{A}_t - \mu}{\sqrt{\sigma^2 + \epsilon}}
+$$
+
+其中 $m_t$ 是 `response_mask`。实现里使用 `torch.rsqrt(var + eps)`，等价于除以 `sqrt(var + eps)`。
+
+### 5.5 Aggregated Returns
 
 每个 step 结束后，计算 aggregated_returns：
 
@@ -419,7 +437,7 @@ $$
 2. 按 uid 分组，对组内 episodic_returns 用 weight 倒数加权平均，得到每个 uid 的 aggregated_return
 3. 计算各 uid 的 aggregated_return 的均值，更新 step_mean_return（仅监控指标）
 
-### 5.5 Episodic Returns
+### 5.6 Episodic Returns
 
 每条轨迹的 episodic return 由 `compute_episodic_returns` 计算，沿祖先链累加：
 
