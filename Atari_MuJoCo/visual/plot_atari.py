@@ -269,9 +269,17 @@ def plot_all_tasks(results_dir="../cleanrl/results", output_dir="./visual",
             color = algo_colors[algo_key]
             display_name = get_display_name(algo_name, date)
 
+            # 各 seed 的 step 条数不一致时，统一到最短长度再可视化
+            min_len = min(
+                (len(steps) for steps, _ in seed_data.values()),
+                default=0,
+            )
+
             for i, (seed, (steps, returns)) in enumerate(sorted(seed_data.items())):
-                steps_arr = np.array(steps)
-                smoothed = smooth_data(returns, smooth_window)
+                steps_trunc = steps[:min_len]
+                returns_trunc = returns[:min_len]
+                steps_arr = np.array(steps_trunc)
+                smoothed = smooth_data(returns_trunc, smooth_window)
                 # 只在第一条种子曲线加 label（避免图例重复）
                 label = display_name if i == 0 else None
                 ax.plot(steps_arr[:len(smoothed)], smoothed,

@@ -154,6 +154,8 @@ def aggregate_seed_results(all_seed_data):
     """
     聚合多个 seed 的结果，对同一行计算 mean 和 std
 
+    各 seed 的 step 条数不一致时，取最短长度截断后再按索引对齐聚合。
+
     Args:
         all_seed_data: 字典，key 是 seed，value 是 (step列表, mean_return列表, max_return列表, min_return列表) 元组
 
@@ -164,27 +166,32 @@ def aggregate_seed_results(all_seed_data):
     if not all_seed_data:
         return [], [], []
 
-    max_length = max(
-        len(values[0]) if isinstance(values, tuple) and len(values) >= 4 else 0
-        for values in all_seed_data.values()
-    )
+    lengths = []
+    for values in all_seed_data.values():
+        if isinstance(values, tuple) and len(values) >= 4 and values[0]:
+            lengths.append(len(values[0]))
 
-    if max_length == 0:
+    if not lengths:
         return [], [], []
 
-    first_seed_data = next(iter(all_seed_data.values()))
-    if isinstance(first_seed_data, tuple) and len(first_seed_data) >= 4:
-        aggregated_steps = list(first_seed_data[0])
-    else:
-        aggregated_steps = []
+    min_length = min(lengths)
+    if min_length == 0:
+        return [], [], []
+
+    # 步数轴采用排序后第一个 seed 的 step（截断到最短长度）
+    sorted_seeds = sorted(all_seed_data.keys())
+    first_values = all_seed_data[sorted_seeds[0]]
+    if not isinstance(first_values, tuple) or len(first_values) < 4:
+        return [], [], []
+    aggregated_steps = list(first_values[0][:min_length])
 
     aggregated_mean_values = []
     aggregated_std_values = []
 
-    for i in range(max_length):
+    for i in range(min_length):
         row_values = []
-
-        for seed, values in all_seed_data.items():
+        for seed in sorted_seeds:
+            values = all_seed_data[seed]
             if isinstance(values, tuple) and len(values) >= 4:
                 mean_returns = values[1]
                 if i < len(mean_returns):
@@ -193,8 +200,6 @@ def aggregate_seed_results(all_seed_data):
         if row_values:
             aggregated_mean_values.append(np.mean(row_values))
             aggregated_std_values.append(np.std(row_values))
-        else:
-            break
 
     aggregated_steps = aggregated_steps[:len(aggregated_mean_values)]
 
