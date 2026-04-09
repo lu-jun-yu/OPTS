@@ -15,7 +15,7 @@ from scipy.ndimage import uniform_filter1d
 
 
 # 要绘制的5个任务
-TARGET_TASKS = ["HalfCheetah-v4", "Hopper-v4", "Walker2d-v4", "Ant-v4", "Humanoid-v4"]
+TARGET_TASKS = ["Hopper-v4", "Walker2d-v4", "HalfCheetah-v4", "Ant-v4", "Humanoid-v4"]
 
 # 指定任务的平滑窗口大小（其他任务使用默认值）
 TASK_SMOOTH_WINDOWS = {
