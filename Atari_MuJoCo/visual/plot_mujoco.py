@@ -380,7 +380,7 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
                     max_step_rounded = 1000000
                 ax.set_xlim(0, max_step_rounded)
                 ax.set_xticks([0, max_step_rounded])
-                ax.set_xticklabels(['0', f'{int(max_step_rounded)}'])
+                ax.set_xticklabels(["0", f"{max_step_rounded // 1_000_000}M"])
         
         ax.grid(True, alpha=0.3, which='major')
 
@@ -507,7 +507,7 @@ def plot_convergence_curves(task_name, results_dir="./results", output_dir=".",
         max_step_rounded = 1000000
     ax.set_xlim(0, max_step_rounded)
     ax.set_xticks([0, max_step_rounded])
-    ax.set_xticklabels(['0', f'{int(max_step_rounded)}'])
+    ax.set_xticklabels(["0", f"{max_step_rounded // 1_000_000}M"])
     
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, f"{task_name}_convergence.png")

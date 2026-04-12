@@ -297,7 +297,10 @@ def plot_all_tasks(results_dir="../cleanrl/results", output_dir="./visual",
                 max_step_rounded = 1000000
             ax.set_xlim(0, max_step_rounded)
             ax.set_xticks([0, max_step_rounded])
-            ax.set_xticklabels(['0', f'{max_step_rounded:.0e}'], fontsize=7)
+            ax.set_xticklabels(
+                ["0", f"{max_step_rounded // 1_000_000}M"],
+                fontsize=7,
+            )
 
         ax.tick_params(axis='y', labelsize=7)
         ax.grid(True, alpha=0.3)
