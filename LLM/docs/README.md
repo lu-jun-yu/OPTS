@@ -78,7 +78,7 @@ uv pip install ".[mujoco]"
 
 ### LLM
 
-**Hardware**: >= 8x A100 (80GB) recommended. You may adjust script parameters for lower configurations.
+**Hardware**: 1x A100 (80GB).
 
 > For more details, refer to the [VERL documentation](https://woniu9524.github.io/verl-doc/start/install.html).
 
@@ -192,7 +192,6 @@ python visual/plot_mujoco.py ./results ppo_continuous_action rpo_continuous_acti
 ```bash
 cd LLM
 hf download Qwen/Qwen3-1.7B --local-dir models/Qwen3-1.7B
-hf download Qwen/Qwen3-8B --local-dir models/Qwen3-8B
 ```
 
 **Run baselines:**

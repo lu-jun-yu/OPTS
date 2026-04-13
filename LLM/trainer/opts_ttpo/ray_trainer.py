@@ -698,7 +698,7 @@ def select_next_states(
             max_exploitations[u] = max_exploitation_val
 
         max_exploitation_values = [v for v in max_exploitations.values() if v > 0]
-        if len(max_exploitation_values) < 1:
+        if len(max_exploitation_values) <= 1:
             continue
         mean_max_exploitations = float(np.mean(max_exploitation_values))
         if max_exploitation_val <= mean_max_exploitations:
