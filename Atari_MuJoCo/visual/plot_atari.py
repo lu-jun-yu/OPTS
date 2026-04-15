@@ -65,7 +65,7 @@ TARGET_TASKS = [
     "SolarisNoFrameskip-v4",
     "SpaceInvadersNoFrameskip-v4",
     "StarGunnerNoFrameskip-v4",
-    "SurroundNoFrameskip-v4",
+    "ALE_Surround-v5",
     "TennisNoFrameskip-v4",
     "TimePilotNoFrameskip-v4",
     "TutankhamNoFrameskip-v4",
@@ -195,7 +195,7 @@ def load_algo_filters_from_config(task_name, config_filename="algo_select_atari.
 
 
 def plot_all_tasks(results_dir="../cleanrl/results", output_dir="./visual",
-                   algo_filters=None, smooth_window=200, seed_filters=None):
+                   algo_filters=None, smooth_window=1000, seed_filters=None):
     """
     绘制57个 Atari 任务的收敛曲线（10行6列布局）
     每个算法的不同种子以相同颜色画出（不聚合 mean/std）
@@ -269,17 +269,9 @@ def plot_all_tasks(results_dir="../cleanrl/results", output_dir="./visual",
             color = algo_colors[algo_key]
             display_name = get_display_name(algo_name, date)
 
-            # 各 seed 的 step 条数不一致时，统一到最短长度再可视化
-            min_len = min(
-                (len(steps) for steps, _ in seed_data.values()),
-                default=0,
-            )
-
             for i, (seed, (steps, returns)) in enumerate(sorted(seed_data.items())):
-                steps_trunc = steps[:min_len]
-                returns_trunc = returns[:min_len]
-                steps_arr = np.array(steps_trunc)
-                smoothed = smooth_data(returns_trunc, smooth_window)
+                steps_arr = np.array(steps)
+                smoothed = smooth_data(returns, smooth_window)
                 # 只在第一条种子曲线加 label（避免图例重复）
                 label = display_name if i == 0 else None
                 ax.plot(steps_arr[:len(smoothed)], smoothed,
