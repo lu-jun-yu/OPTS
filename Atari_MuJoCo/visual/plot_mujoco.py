@@ -17,11 +17,8 @@ from scipy.ndimage import uniform_filter1d
 # 要绘制的5个任务
 TARGET_TASKS = ["Hopper-v4", "Walker2d-v4", "HalfCheetah-v4", "Ant-v4", "Humanoid-v4"]
 
-# 指定任务的平滑窗口大小（其他任务使用默认值）
-TASK_SMOOTH_WINDOWS = {
-    "Ant-v4": 9,
-    "Humanoid-v4": 9,
-}
+# 参照总步数（用于按 total timesteps 缩放平滑强度）
+REF_TOTAL_TIMESTEPS = 1_000_000.0
 
 # PPO 蓝、RPO 绿、OPTS-TTPO 红；其余算法用补充色
 COLOR_PPO = "#1f77b4"
@@ -52,11 +49,16 @@ def build_algo_colors(algo_keys):
     return colors
 
 
-def get_task_smooth_window(task_name, default_window):
+def smooth_window_for_curve(max_step: float, num_points: int, baseline_at_1m: float = 5.0) -> int:
     """
-    获取指定任务的平滑窗口大小。
+    按该条曲线的 total timesteps（max_step）缩放平滑窗口（采样点数）：
+    总步数越大，窗口越大。baseline_at_1m 表示在约 1e6 步时的窗口参照（与原先默认 5 同量级）。
     """
-    return TASK_SMOOTH_WINDOWS.get(task_name, default_window)
+    if num_points <= 0:
+        return 1
+    ms = max(float(max_step), 1.0)
+    w = int(round(baseline_at_1m * ms / REF_TOTAL_TIMESTEPS))
+    return max(3, min(w, num_points))
 
 
 def smooth_data(data, window_size=5):
@@ -258,7 +260,7 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
         results_dir: results 目录路径
         output_dir: 输出图片的目录路径
         algo_filters: 要可视化的算法标识列表
-        smooth_window: 平滑窗口大小
+        smooth_window: 在约 1e6 total timesteps 时的平滑窗口参照，实际窗口随每条曲线的 max step 按比例放大
     """
     # 收集所有任务的数据
     all_tasks_data = {}
@@ -342,15 +344,16 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
         
         task_data = all_tasks_data[task_name]
         
-        task_smooth_window = get_task_smooth_window(task_name, smooth_window)
         for algo_key, data in task_data.items():
             algo_name, date = algo_key
             color = algo_colors[algo_key]
             display_name = get_display_name(algo_name, date)
             
             steps = np.array(data['steps'])
-            mean_values = smooth_data(data['mean'], task_smooth_window)
-            std_values = smooth_data(data['std'], task_smooth_window)
+            max_step = float(np.max(steps)) if len(steps) else 0.0
+            w = smooth_window_for_curve(max_step, len(data["mean"]), smooth_window)
+            mean_values = smooth_data(data['mean'], w)
+            std_values = smooth_data(data['std'], w)
 
             # 绘制阴影区域（mean ± std）
             ax.fill_between(steps[:len(mean_values)],
@@ -415,7 +418,7 @@ def plot_convergence_curves(task_name, results_dir="./results", output_dir=".",
         results_dir: results 目录路径
         output_dir: 输出图片的目录路径
         algo_filters: 要可视化的算法标识列表
-        smooth_window: 平滑窗口大小
+        smooth_window: 在约 1e6 total timesteps 时的平滑窗口参照，实际窗口随每条曲线的 max step 按比例放大
     """
     # 递归查找所有 JSON 文件
     files = list(Path(results_dir).rglob("*.json"))
@@ -461,7 +464,6 @@ def plot_convergence_curves(task_name, results_dir="./results", output_dir=".",
         return
     
     plt.figure(figsize=(12, 7))
-    task_smooth_window = get_task_smooth_window(task_name, smooth_window)
     
     algo_keys = sorted(algorithms_data.keys())
     algo_colors = build_algo_colors(algo_keys)
@@ -478,8 +480,10 @@ def plot_convergence_curves(task_name, results_dir="./results", output_dir=".",
             continue
 
         steps = np.array(aggregated_steps)
-        mean_values = smooth_data(aggregated_mean, task_smooth_window)
-        std_values = smooth_data(aggregated_std, task_smooth_window)
+        max_step = float(np.max(steps)) if len(steps) else 0.0
+        w = smooth_window_for_curve(max_step, len(aggregated_mean), smooth_window)
+        mean_values = smooth_data(aggregated_mean, w)
+        std_values = smooth_data(aggregated_std, w)
 
         # 绘制阴影区域（mean ± std）
         plt.fill_between(steps[:len(mean_values)],
