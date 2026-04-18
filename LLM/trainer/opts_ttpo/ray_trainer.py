@@ -541,174 +541,156 @@ def select_next_states(
             TUCT-selected node. Must be converted to parent via
             selected_to_branch_points() before use as branch points.
     """
-    # Extract tensors and non-tensor data
     advantages = batch.batch["advantages"]
     state_branches = batch.batch["state_branches"]
     response_mask = batch.batch["response_mask"]
+    responses = batch.batch["responses"]
 
     uid = batch.non_tensor_batch["uid"]
     rid = batch.non_tensor_batch["rid"]
     pid = batch.non_tensor_batch["pid"]
     cid = list(batch.non_tensor_batch["cid"])
+    raw_prompt_len = batch.non_tensor_batch["raw_prompt_len"]
 
-    # Compute prompt_lengths
     prompt_len = batch.batch["input_ids"].shape[1] - batch.batch["responses"].shape[1]
     prompt_lengths = batch.batch["attention_mask"][:, :prompt_len].sum(dim=1)
 
+    device = advantages.device
+    dtype = advantages.dtype
     global_batch_size, response_len = advantages.shape
     rid2idx = {r: i for i, r in enumerate(rid)}
+    response_lengths = response_mask.sum(dim=1).to(torch.long)
+    raw_prompt_len = torch.as_tensor(raw_prompt_len, device=device, dtype=torch.long)
+    history_len = prompt_lengths.to(torch.long) - raw_prompt_len
+    adv0 = advantages[:, 0]
+    adv0_np = adv0.detach().cpu().numpy()
+    neg_inf = torch.tensor(float("-inf"), device=device, dtype=dtype)
 
-    # Compute think_end_pos: position of first token of "</think>" per trajectory
-    # Positions at or after think_end_pos are masked to ensure branching stays in think phase
-    responses = batch.batch["responses"]
-    think_end_pos = torch.full((global_batch_size,), response_len, dtype=torch.long)
+    best_child_idx = torch.full((global_batch_size, response_len), -1, device=device, dtype=torch.long)
+    best_child_adv0 = torch.full((global_batch_size, response_len), float("-inf"), device=device, dtype=dtype)
+    for parent_idx, children_by_pos in enumerate(cid):
+        for pos, child_rids in children_by_pos.items():
+            child_indices = [rid2idx[c_rid] for c_rid in child_rids if c_rid in rid2idx]
+            if not child_indices:
+                continue
+            child_adv0 = adv0_np[child_indices]
+            best_child = int(child_indices[int(np.argmax(child_adv0))])
+            best_child_idx[parent_idx, pos] = best_child
+            best_child_adv0[parent_idx, pos] = adv0[best_child]
+
+    think_end_pos = torch.full((global_batch_size,), response_len, device=device, dtype=torch.long)
     if tokenizer is not None:
         think_token_ids = tokenizer.encode("</think>", add_special_tokens=False)
         think_len = len(think_token_ids)
-        think_ids_tensor = torch.tensor(think_token_ids, device=responses.device)
-        for i in range(global_batch_size):
-            valid_len = int(response_mask[i].sum().item())
-            think_end_pos[i] = valid_len  # Default: end of response (no masking)
-            for pos in range(valid_len - think_len + 1):
-                if torch.equal(responses[i, pos:pos + think_len], think_ids_tensor):
-                    think_end_pos[i] = pos
-                    break
+        think_end_pos = response_lengths.clone()
+        think_ids_tensor = torch.tensor(think_token_ids, device=device)
+        response_windows = responses.unfold(dimension=1, size=think_len, step=1)
+        think_matches = (response_windows == think_ids_tensor.view(1, 1, -1)).all(dim=-1)
+        valid_match_limit = (response_lengths - think_len + 1).clamp(min=0)
+        valid_match_mask = torch.arange(response_len - think_len + 1, device=device).unsqueeze(0) < valid_match_limit.unsqueeze(1)
+        think_matches = think_matches & valid_match_mask
+        has_think = think_matches.any(dim=1)
+        first_think_pos = think_matches.to(torch.long).argmax(dim=1)
+        think_end_pos = torch.where(has_think, first_think_pos, think_end_pos)
 
-    # Process each uid
+    root_mask = np.array([parent_rid is None for parent_rid in pid], dtype=bool)
     unique_uids = np.unique(uid)
-    candidates = []  # List of (score_exploitation, uid, traj_idx, token_pos)
+    active_uids = []
+    best_roots = []
 
     for u in unique_uids:
-        # Skip conditions
         if search_count.get(u, 0) >= max_search_per_tree:
             continue
 
         uid_indices = np.where(uid == u)[0]
-
-        # --- Trace optimal path through tree ---
-        # Find root trajectories (pid=None)
-        root_indices = [i for i in uid_indices if pid[i] is None]
+        root_indices = uid_indices[root_mask[uid_indices]]
         if len(root_indices) == 0:
             continue
 
-        # Start from root with max first-token advantage
-        root_advs = [advantages[i, 0].item() for i in root_indices]
-        best_root = root_indices[np.argmax(root_advs)]
-        current_traj = best_root
+        best_root = int(root_indices[int(np.argmax(adv0_np[root_indices]))])
+        active_uids.append(u)
+        best_roots.append(best_root)
 
-        # Build path: list of (trajectory_idx, token_pos) pairs
-        path = []
-        while True:
-            traj_cid = cid[current_traj]
-            traj_mask = response_mask[current_traj]
+    candidates = []
+    if active_uids:
+        num_trees = len(active_uids)
+        current_idx = torch.as_tensor(best_roots, device=device, dtype=torch.long)
+        current_sibling = torch.ones(num_trees, device=device, dtype=dtype)
+        active_mask = torch.ones(num_trees, device=device, dtype=torch.bool)
 
-            # Find the last valid token position for this trajectory
-            valid_len = int(traj_mask.sum().item())
+        path_idx = torch.zeros((num_trees, response_len), device=device, dtype=torch.long)
+        path_t = torch.zeros((num_trees, response_len), device=device, dtype=torch.long)
+        path_sibling = torch.ones((num_trees, response_len), device=device, dtype=dtype)
+        path_mask = torch.zeros((num_trees, response_len), device=device, dtype=torch.bool)
 
-            # Walk through tokens of current trajectory
-            token_pos = 0
-            while token_pos + 1 < valid_len - 10:
-                path.append((current_traj, token_pos))
+        for u in range(response_len):
+            idx = current_idx
+            local_t = u - history_len[idx]
+            next_local_t = local_t + 1
 
-                # Check if there's a branch at this position
-                if token_pos in traj_cid:
-                    child_rids = traj_cid[token_pos]
-                    child_indices = [rid2idx[c_rid] for c_rid in child_rids if c_rid in rid2idx]
+            valid_u = active_mask & (local_t + 1 < response_lengths[idx] - 10)
 
-                    if child_indices:
-                        # Compare first-token advantages of children with continuation
-                        child_first_advs = [advantages[ci, 0].item() for ci in child_indices]
-                        cont_adv = advantages[current_traj, token_pos + 1].item()
+            path_idx[:, u] = idx
+            path_t[:, u] = local_t
+            path_sibling[:, u] = current_sibling
+            path_mask[:, u] = valid_u
 
-                        best_child_adv = max(child_first_advs)
-                        if best_child_adv > cont_adv:
-                            # Switch to child trajectory
-                            best_child_idx = child_indices[np.argmax(child_first_advs)]
-                            current_traj = best_child_idx
-                            break  # Continue from new trajectory's beginning
-                        # else continue on current trajectory
+            cont_adv = advantages[idx, next_local_t] if u < response_len else 0
+            child_adv = best_child_adv0[idx, local_t]
+            take_child = valid_u & (child_adv > cont_adv)
 
-                token_pos += 1
-            else:
-                # Finished walking current trajectory without branching
-                break
+            current_sibling = torch.where(valid_u, state_branches[idx, local_t], current_sibling)
+            current_idx = torch.where(take_child, best_child_idx[idx, local_t], current_idx)
+            active_mask = valid_u
 
-        if len(path) == 0:
-            continue
+        exploitation = torch.zeros((num_trees, response_len), device=device, dtype=dtype)
+        lastexp = torch.zeros(num_trees, device=device, dtype=dtype)
+        for u in reversed(range(response_len)):
+            idx = path_idx[:, u]
+            local_t = path_t[:, u]
+            path_adv = advantages[idx, local_t]
+            lastexp_ = -path_adv + gamma * lastexp
+            mask_u = path_mask[:, u].to(dtype)
+            lastexp = lastexp_ * mask_u + (1 - mask_u) * lastexp
+            exploitation[:, u] = lastexp
 
-        # --- Compute TUCT along path ---
-        path_advs = torch.tensor([advantages[ti, tp].item() for ti, tp in path])
-        n = len(path_advs)
-
-        # Expected improvement: -sum(γ^(t-k) * A_t) (no length normalization for LLM)
-        # V^π(s_k) - G_k = -sum γ^(t-k) A_t, positive means improvement expected
-        exploitation = torch.zeros(n)
-        discounted_sum = 0.0
-        for k in range(n - 1, -1, -1):
-            discounted_sum = -path_advs[k].item() + gamma * discounted_sum
-            exploitation[k] = discounted_sum
-
-        # Sibling counts along path: sibling_counts[k] = children of path[k-1] (parent)
-        # path[k]'s siblings = children of path[k]'s parent = state_branches at path[k-1]
-        sibling_counts = torch.ones(n)
-        for k in range(n - 1):
-            ti, tp = path[k]
-            sibling_counts[k + 1] = state_branches[ti, tp].item()
-
-        max_abs_exploitation = exploitation.abs().max().item()
-        if max_abs_exploitation == 0:
-            max_abs_exploitation = 1.0
-
-        # Exploration: (sibling_count - 1) * max_abs_exploitation
-        exploration = (sibling_counts - 1) * max_abs_exploitation
-
+        max_abs_exploitation = exploitation.abs().amax(dim=1)
+        max_abs_exploitation = torch.where(
+            max_abs_exploitation > 0,
+            max_abs_exploitation,
+            torch.ones_like(max_abs_exploitation),
+        )
+        exploration = (path_sibling - 1) * max_abs_exploitation.unsqueeze(1)
         tuct = exploitation - c * exploration
 
-        # --- Apply dual mask ---
-        # Since we'll branch from the PARENT of the selected node,
-        # the selected node just needs to have a valid parent whose
-        # prompt_length + parent_tp < max_prompt_length.
-        # The prompt_length check at the selected node's position is
-        # conservative (parent is one step back, so always more relaxed).
-        valid_mask = torch.ones(n, dtype=torch.bool)
-        for k in range(n):
-            ti, tp = path[k]
-            # Check prompt length constraint (conservative: checked at selected node)
-            if prompt_lengths[ti].item() + tp > max_prompt_length:
-                valid_mask[k] = False
-            # Mask positions after </think> to keep branching in think phase
-            # Allowing tp == think_end_pos: selected_to_branch_points maps it to tp-1, still before </think>
-            if tp > think_end_pos[ti].item():
-                valid_mask[k] = False
+        prompt_valid = prompt_lengths[path_idx] + path_t <= max_prompt_length
+        think_valid = path_t <= think_end_pos[path_idx]
+        valid_mask = path_mask & prompt_valid & think_valid
+        tuct = torch.where(valid_mask, tuct, neg_inf)
 
-        # Set masked positions to -inf
-        tuct = torch.where(valid_mask, tuct, torch.tensor(float('-inf')))
+        row_idx = torch.arange(num_trees, device=device)
+        max_pos = tuct.argmax(dim=1)
+        max_tuct_val = tuct[row_idx, max_pos]
+        max_exploitation_val = exploitation[row_idx, max_pos]
+        selected_traj_idx = path_idx[row_idx, max_pos]
+        selected_token_pos = path_t[row_idx, max_pos]
 
-        # Find argmax
-        if not valid_mask.any():
-            continue
+        for i, u in enumerate(active_uids):
+            if max_tuct_val[i].item() == float("-inf"):
+                continue
 
-        max_idx = tuct.argmax().item()
-        max_tuct_val = tuct[max_idx].item()
+            score = max_exploitation_val[i].item()
+            if u not in max_exploitations:
+                max_exploitations[u] = score
 
-        if max_tuct_val == float('-inf'):
-            continue
+            max_exploitation_values = [v for v in max_exploitations.values() if v > 0]
+            if len(max_exploitation_values) <= 1:
+                continue
+            mean_max_exploitations = float(np.mean(max_exploitation_values))
+            if score <= mean_max_exploitations:
+                continue
 
-        # LLM uses episode-level budget, so we track raw exploitation[k]
-        max_exploitation_val = exploitation[max_idx].item()
-
-        if u not in max_exploitations:
-            max_exploitations[u] = max_exploitation_val
-
-        max_exploitation_values = [v for v in max_exploitations.values() if v > 0]
-        if len(max_exploitation_values) <= 1:
-            continue
-        mean_max_exploitations = float(np.mean(max_exploitation_values))
-        if max_exploitation_val <= mean_max_exploitations:
-            continue
-
-        ti, tp = path[max_idx]
-        candidates.append((max_exploitation_val, u, ti, tp))
+            candidates.append((score, u, selected_traj_idx[i].item(), selected_token_pos[i].item()))
 
     # --- Global sort and select top batch_size ---
     candidates.sort(key=lambda x: x[0], reverse=True)
