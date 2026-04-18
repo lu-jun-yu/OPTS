@@ -211,10 +211,10 @@ def compute_treegae_advantage_return(
     lam: float,
     rid: Optional[np.ndarray] = None,
     pid: Optional[np.ndarray] = None,
+    branch_pos: Optional[np.ndarray] = None,
     cid: Optional[list] = None,
     state_branches: Optional[torch.Tensor] = None,
     new_sample_indices: Optional[np.ndarray] = None,
-    next_states: Optional[dict] = None,
     advantages: Optional[torch.Tensor] = None,
 ):
     """Compute TreeGAE advantage for tree-structured trajectories.
@@ -223,8 +223,9 @@ def compute_treegae_advantage_return(
     At branch nodes, the advantage is computed as the mean of all branch advantages.
 
     Note: For existing trajectories, advantages are already computed. This function only
-    updates the advantages for new samples and the affected parts of ancestor trajectories
-    (from branch point to the beginning).
+    recomputes the affected subgraph: each new trajectory is scanned from its last valid
+    token back to token 0, then the updated first-token advantage is propagated upward to
+    ancestor prefixes through the pid/branch_pos links.
 
     Args:
         token_level_rewards: `(torch.Tensor)`
@@ -241,15 +242,14 @@ def compute_treegae_advantage_return(
             shape is (bs,). Response ID for each trajectory.
         pid: `(np.ndarray)`
             shape is (bs,). Parent response ID for each trajectory (None for root trajectories).
+        branch_pos: `(np.ndarray)`
+            shape is (bs,). Branch position in parent trajectory (-1 for root trajectories).
         cid: `(list)`
             list of dict. Children mapping {branch_position: [child_rid_list]} for each trajectory.
         state_branches: `(torch.Tensor)`
             shape is (bs, response_length). Number of branches at each state.
         new_sample_indices: `(np.ndarray)`
-            Indices of newly sampled trajectories in current round.
-        next_states: `(dict)`
-            Dict[str, Tuple[int, int]]. Mapping from uid to (parent_index, branch_pos).
-            Used to identify which parent trajectories need advantage propagation.
+            Indices of newly sampled trajectories in the current round.
         advantages: `(torch.Tensor)`
             shape is (bs, response_length). Pre-allocated advantages tensor to update in-place.
             For existing trajectories, this already contains computed advantages.
@@ -263,53 +263,41 @@ def compute_treegae_advantage_return(
     """
     with torch.no_grad():
         rid2idx = {r: i for i, r in enumerate(rid)}
-
-        # ========== First loop: Standard GAE for new samples ==========
-        new_rewards = token_level_rewards[new_sample_indices]
-        new_values = values[new_sample_indices]
-        new_mask = response_mask[new_sample_indices]
-
-        nextvalues = 0
-        lastgaelam = 0
-        advantages_reversed = []
         gen_len = token_level_rewards.shape[-1]
 
-        for t in reversed(range(gen_len)):
-            delta = new_rewards[:, t] + gamma * nextvalues - new_values[:, t]
-            lastgaelam_ = delta + gamma * lam * lastgaelam
-
-            nextvalues = new_values[:, t] * new_mask[:, t] + (1 - new_mask[:, t]) * nextvalues
-            lastgaelam = lastgaelam_ * new_mask[:, t] + (1 - new_mask[:, t]) * lastgaelam
-
-            advantages_reversed.append(lastgaelam)
-
-        new_advantages = torch.stack(advantages_reversed[::-1], dim=1)
-        advantages[new_sample_indices] = new_advantages
-
-        # ========== Second loop: Propagate to ancestors using next_states ==========
-        if next_states is None or len(next_states) == 0:
-            # No parent trajectories to update
+        # ========== Single backward pass from new leaves to root ancestors ==========
+        if len(new_sample_indices) == 0:
             returns = advantages + values
             return advantages, returns
 
-        def _process_parent(p_idx: int, branch_pos: int) -> Optional[Tuple[int, int]]:
-            """Process a single parent trajectory for TreeGAE advantage propagation.
+        def _process_parent(p_idx: int, end_pos: int) -> Optional[Tuple[int, int]]:
+            """Recompute the prefix [0, end_pos] of one affected trajectory.
 
             Returns:
                 Optional grandparent info (grandparent_idx, pos) for next level, or None.
             """
             parent_cid = cid[p_idx]
             cid_positions = set(parent_cid.keys())
-            lastgaelam = advantages[p_idx, branch_pos + 1]
+            if end_pos + 1 < gen_len and response_mask[p_idx, end_pos + 1]:
+                lastgaelam = advantages[p_idx, end_pos + 1]
+            else:
+                lastgaelam = 0
 
-            for t in reversed(range(branch_pos + 1)):
+            for t in reversed(range(end_pos + 1)):
+                if t + 1 < gen_len and response_mask[p_idx, t + 1]:
+                    next_value = values[p_idx, t + 1]
+                    continuation_advantage = advantages[p_idx, t + 1]
+                else:
+                    next_value = 0
+                    continuation_advantage = 0
+
                 if t in cid_positions:
                     child_indices = [rid2idx[c_rid] for c_rid in parent_cid[t]]
-                    lastgaelam_mean = (advantages[child_indices, 0].sum() + advantages[p_idx, t + 1]) / state_branches[p_idx, t]
-                    delta = token_level_rewards[p_idx, t] + gamma * values[p_idx, t + 1] - values[p_idx, t]
+                    lastgaelam_mean = (advantages[child_indices, 0].sum() + continuation_advantage) / state_branches[p_idx, t]
+                    delta = token_level_rewards[p_idx, t] + gamma * next_value - values[p_idx, t]
                     lastgaelam_ = delta + gamma * lam * lastgaelam_mean
                 else:
-                    delta = token_level_rewards[p_idx, t] + gamma * values[p_idx, t + 1] - values[p_idx, t]
+                    delta = token_level_rewards[p_idx, t] + gamma * next_value - values[p_idx, t]
                     lastgaelam_ = delta + gamma * lam * lastgaelam
 
                 lastgaelam = lastgaelam_ * response_mask[p_idx, t] + (1 - response_mask[p_idx, t]) * lastgaelam
@@ -319,16 +307,14 @@ def compute_treegae_advantage_return(
             grandparent_rid = pid[p_idx]
             if grandparent_rid is not None:
                 grandparent_idx = rid2idx[grandparent_rid]
-                grandparent_cid = cid[grandparent_idx]
-                current_rid = rid[p_idx]
-                for pos, child_rids in grandparent_cid.items():
-                    if current_rid in child_rids:
-                        return (grandparent_idx, pos)
+                return (grandparent_idx, int(branch_pos[p_idx]))
             return None
 
-        # Initialize with parent trajectories from next_states
-        # next_states: {uid: (parent_index, branch_pos)} - already deduplicated
-        current_level = list(next_states.values())
+        # Start from each new trajectory's last valid token, then climb the ancestor chain.
+        current_level = [
+            (int(idx), int(response_mask[idx].sum().item()) - 1)
+            for idx in new_sample_indices
+        ]
 
         while current_level:
             # Process all parents in current level in parallel

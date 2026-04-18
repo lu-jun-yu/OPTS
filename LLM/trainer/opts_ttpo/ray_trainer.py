@@ -5,6 +5,7 @@ OPTS_TTPO Trainer with Ray-based single controller.
 This trainer supports model-agonistic model initialization with huggingface
 """
 
+import copy
 import json
 import os
 import time
@@ -187,7 +188,7 @@ def compute_advantage(
     lam: float = 1.0,
     norm_adv_by_std_in_grpo: bool = True,
     config: Optional[AlgoConfig] = None,
-    next_states: Optional[Dict] = None,
+    new_sample_indices: Optional[np.ndarray] = None,
 ) -> DataProto:
     """Compute advantage estimates for policy optimization.
 
@@ -202,6 +203,7 @@ def compute_advantage(
         norm_adv_by_std_in_grpo (bool, optional): Whether to normalize advantages by standard deviation in
             GRPO. Defaults to True.
         config (dict, optional): Configuration dictionary for algorithm settings. Defaults to None.
+        new_sample_indices (np.ndarray, optional): Global indices of trajectories newly added in the current round.
 
     Returns:
         DataProto: The updated data with computed advantages and returns.
@@ -241,8 +243,10 @@ def compute_advantage(
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
     elif adv_estimator == AdvantageEstimator.TreeGAE:
-        # TreeGAE for OPTS_TTPO: compute advantages on tree-structured trajectories
+        # TreeGAE for OPTS_TTPO: recompute affected trajectories from new leaves upward
         from .core_algos import compute_treegae_advantage_return
+
+        assert new_sample_indices is not None, "TreeGAE requires round-local new_sample_indices."
 
         advantages, returns = compute_treegae_advantage_return(
             token_level_rewards=data.batch["token_level_rewards"],
@@ -252,10 +256,10 @@ def compute_advantage(
             lam=lam,
             rid=list(data.non_tensor_batch["rid"]),
             pid=list(data.non_tensor_batch["pid"]),
+            branch_pos=data.non_tensor_batch["branch_pos"],
             cid=list(data.non_tensor_batch["cid"]),
             state_branches=data.batch["state_branches"],
-            new_sample_indices=data.non_tensor_batch["new_sample_indices"],
-            next_states=next_states,
+            new_sample_indices=new_sample_indices,
             advantages=data.batch["advantages"],
         )
         data.batch["advantages"] = advantages
@@ -548,18 +552,18 @@ def select_next_states(
     prompt_len = batch.batch["input_ids"].shape[1] - batch.batch["responses"].shape[1]
     prompt_lengths = batch.batch["attention_mask"][:, :prompt_len].sum(dim=1)
 
-    batch_size, response_len = advantages.shape
+    global_batch_size, response_len = advantages.shape
     rid2idx = {r: i for i, r in enumerate(rid)}
 
     # Compute think_end_pos: position of first token of "</think>" per trajectory
     # Positions at or after think_end_pos are masked to ensure branching stays in think phase
     responses = batch.batch["responses"]
-    think_end_pos = torch.full((batch_size,), response_len, dtype=torch.long)
+    think_end_pos = torch.full((global_batch_size,), response_len, dtype=torch.long)
     if tokenizer is not None:
         think_token_ids = tokenizer.encode("</think>", add_special_tokens=False)
         think_len = len(think_token_ids)
         think_ids_tensor = torch.tensor(think_token_ids, device=responses.device)
-        for i in range(batch_size):
+        for i in range(global_batch_size):
             valid_len = int(response_mask[i].sum().item())
             think_end_pos[i] = valid_len  # Default: end of response (no masking)
             for pos in range(valid_len - think_len + 1):
@@ -791,6 +795,39 @@ class PromptBuffer:
         self.dataloader = dataloader
         self.buffer = None  # DataProto or None
         self.iter = iter(dataloader)
+
+    @staticmethod
+    def _serialize_dataproto(batch: Optional[DataProto]) -> Optional[dict[str, Any]]:
+        if batch is None:
+            return None
+
+        serialized_batch = {k: v.detach().cpu().clone() for k, v in batch.batch.items()}
+        serialized_non_tensor = {k: np.array(v, copy=True) for k, v in batch.non_tensor_batch.items()}
+        return {
+            "batch": serialized_batch,
+            "non_tensor_batch": serialized_non_tensor,
+            "meta_info": copy.deepcopy(batch.meta_info),
+        }
+
+    @staticmethod
+    def _deserialize_dataproto(state: Optional[dict[str, Any]]) -> Optional[DataProto]:
+        if state is None:
+            return None
+
+        batch = DataProto.from_single_dict(state["batch"])
+        batch.non_tensor_batch = state["non_tensor_batch"]
+        batch.meta_info = state.get("meta_info", {})
+        return batch
+
+    def state_dict(self) -> dict[str, Any]:
+        return {"buffer": self._serialize_dataproto(self.buffer)}
+
+    def load_state_dict(self, state_dict: Optional[dict[str, Any]]) -> None:
+        self.iter = iter(self.dataloader)
+        if state_dict is None:
+            self.buffer = None
+            return
+        self.buffer = self._deserialize_dataproto(state_dict.get("buffer"))
 
     def draw(self, n: int) -> DataProto:
         """Draw n samples. Automatically refills from dataloader when exhausted."""
@@ -1637,8 +1674,10 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
         # save dataloader
         local_mkdir_safe(local_global_step_folder)
         dataloader_local_path = os.path.join(local_global_step_folder, "data.pt")
-        dataloader_state_dict = self.train_dataloader.state_dict()
-        torch.save(dataloader_state_dict, dataloader_local_path)
+        checkpoint_state = {"dataloader": self.train_dataloader.state_dict()}
+        if getattr(self, "prompt_buffer", None) is not None:
+            checkpoint_state["prompt_buffer"] = self.prompt_buffer.state_dict()
+        torch.save(checkpoint_state, dataloader_local_path)
 
         # latest checkpointed iteration tracker (for atomic usage)
         if (
@@ -1708,9 +1747,16 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
         # TODO: from remote not implemented yet
         dataloader_local_path = os.path.join(global_step_folder, "data.pt")
         if os.path.exists(dataloader_local_path):
-            dataloader_state_dict = torch.load(dataloader_local_path, weights_only=False)
+            checkpoint_state = torch.load(dataloader_local_path, weights_only=False)
+            if isinstance(checkpoint_state, dict) and "dataloader" in checkpoint_state:
+                dataloader_state_dict = checkpoint_state["dataloader"]
+                self._prompt_buffer_state_to_load = checkpoint_state.get("prompt_buffer")
+            else:
+                dataloader_state_dict = checkpoint_state
+                self._prompt_buffer_state_to_load = None
             self.train_dataloader.load_state_dict(dataloader_state_dict)
         else:
+            self._prompt_buffer_state_to_load = None
             print(f"Warning: No dataloader state found at {dataloader_local_path}, will start from scratch")
 
     def _start_profiling(self, do_profile: bool) -> None:
@@ -1957,7 +2003,9 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
         next_step_profile = False
 
         # OPTS_TTPO setup
-        prompt_buffer = PromptBuffer(self.train_dataloader)
+        self.prompt_buffer = PromptBuffer(self.train_dataloader)
+        self.prompt_buffer.load_state_dict(getattr(self, "_prompt_buffer_state_to_load", None))
+        self._prompt_buffer_state_to_load = None
         step_mean_return = None
 
         # Batch size for each round
@@ -2001,7 +2049,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
 
                         # === Construct this round's batch ===
                         if round_idx == 0:
-                            batch = prompt_buffer.draw(batch_size)
+                            batch = self.prompt_buffer.draw(batch_size)
                             batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
                             # Assign fresh uids
                             batch.non_tensor_batch["uid"] = np.array(
@@ -2020,7 +2068,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 )
                                 parts.append(continued)
                             if k < batch_size:
-                                new_prompts = prompt_buffer.draw(batch_size - k)
+                                new_prompts = self.prompt_buffer.draw(batch_size - k)
                                 new_prompts.non_tensor_batch["uid"] = np.array(
                                     [str(uuid.uuid4()) for _ in range(batch_size - k)], dtype=object
                                 )
@@ -2191,7 +2239,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
 
                             # Set tree structure info
                             new_sample_indices = set_opts_ttpo_info(batch, global_batch, next_states, round_idx)
-                            batch.non_tensor_batch["new_sample_indices"] = new_sample_indices
 
                             batch.non_tensor_batch["episodic_returns"] = compute_episodic_returns(batch, global_batch)
 
@@ -2227,7 +2274,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                     lam=self.config.algorithm.lam,
                                     norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                                     config=self.config.algorithm,
-                                    next_states=next_states,
+                                    new_sample_indices=new_sample_indices,
                                 )
                             log_batch_state(global_batch, stage="after_advantage", step=self.global_steps, round_idx=round_idx)
 
@@ -2408,4 +2455,3 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                 if hasattr(self.train_dataset, "on_batch_end"):
                     # The dataset may be changed after each training batch
                     self.train_dataset.on_batch_end(batch=batch)
-
