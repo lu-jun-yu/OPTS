@@ -635,7 +635,7 @@ def select_next_states(
             path_sibling[:, u] = current_sibling
             path_mask[:, u] = valid_u
 
-            cont_adv = advantages[idx, next_local_t] if u < response_len else 0
+            cont_adv = advantages[idx, next_local_t] if u < response_len - 1 else 0
             child_adv = best_child_adv0[idx, local_t]
             take_child = valid_u & (child_adv > cont_adv)
 
