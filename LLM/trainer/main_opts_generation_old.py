@@ -190,10 +190,10 @@ def main_task(config):
                 lam=config.algorithm.lam,
                 rid=list(global_batch.non_tensor_batch["rid"]),
                 pid=list(global_batch.non_tensor_batch["pid"]),
+                branch_pos=list(global_batch.non_tensor_batch["branch_pos"]),
                 cid=list(global_batch.non_tensor_batch["cid"]),
                 state_branches=global_batch.batch["state_branches"],
                 new_sample_indices=global_batch.non_tensor_batch["new_sample_indices"],
-                next_states=next_states,
                 advantages=global_batch.batch["advantages"],
             )
             global_batch.batch["advantages"] = advantages

@@ -363,7 +363,6 @@ def main_task(config):
 
             # === Tree structure bookkeeping ===
             new_sample_indices = set_opts_ttpo_info(output, global_batch, next_states, round_idx)
-            output.non_tensor_batch["new_sample_indices"] = new_sample_indices
             output.non_tensor_batch["episodic_returns"] = compute_episodic_returns(output, global_batch)
             cur_batch_size, cur_response_len = output.batch["responses"].shape
             output.batch["state_branches"] = torch.ones(cur_batch_size, cur_response_len)
@@ -384,10 +383,10 @@ def main_task(config):
                 lam=lam,
                 rid=list(global_batch.non_tensor_batch["rid"]),
                 pid=list(global_batch.non_tensor_batch["pid"]),
+                branch_pos=list(global_batch.non_tensor_batch["branch_pos"]),
                 cid=list(global_batch.non_tensor_batch["cid"]),
                 state_branches=global_batch.batch["state_branches"],
-                new_sample_indices=global_batch.non_tensor_batch["new_sample_indices"],
-                next_states=next_states,
+                new_sample_indices=new_sample_indices,
                 advantages=global_batch.batch["advantages"],
             )
             global_batch.batch["advantages"] = advantages
