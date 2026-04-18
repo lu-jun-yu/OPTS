@@ -252,6 +252,7 @@ def compute_advantage(
             token_level_rewards=data.batch["token_level_rewards"],
             values=data.batch["values"],
             response_mask=data.batch["response_mask"],
+            attention_mask=data.batch["attention_mask"],
             gamma=gamma,
             lam=lam,
             rid=list(data.non_tensor_batch["rid"]),
@@ -260,6 +261,8 @@ def compute_advantage(
             cid=list(data.non_tensor_batch["cid"]),
             state_branches=data.batch["state_branches"],
             new_sample_indices=new_sample_indices,
+            raw_prompt_len=data.non_tensor_batch["raw_prompt_len"],
+            max_prompt_len=data.batch["attention_mask"].shape[1] - data.batch["response_mask"].shape[1],
             advantages=data.batch["advantages"],
         )
         data.batch["advantages"] = advantages
@@ -604,7 +607,7 @@ def select_next_states(
 
             # Walk through tokens of current trajectory
             token_pos = 0
-            while token_pos < valid_len:
+            while token_pos + 1 < valid_len - 10:
                 path.append((current_traj, token_pos))
 
                 # Check if there's a branch at this position
@@ -615,11 +618,7 @@ def select_next_states(
                     if child_indices:
                         # Compare first-token advantages of children with continuation
                         child_first_advs = [advantages[ci, 0].item() for ci in child_indices]
-                        # Continuation advantage is the next token of current trajectory
-                        if token_pos + 1 < valid_len:
-                            cont_adv = advantages[current_traj, token_pos + 1].item()
-                        else:
-                            cont_adv = float('-inf')
+                        cont_adv = advantages[current_traj, token_pos + 1].item()
 
                         best_child_adv = max(child_first_advs)
                         if best_child_adv > cont_adv:

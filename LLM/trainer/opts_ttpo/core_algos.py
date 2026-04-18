@@ -10,9 +10,8 @@ __all__ = ["register_adv_est", "get_adv_estimator_fn", "AdvantageEstimator"]
 
 import logging
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Optional
 
 import numpy as np
 import torch
@@ -207,6 +206,7 @@ def compute_treegae_advantage_return(
     token_level_rewards: torch.Tensor,
     values: torch.Tensor,
     response_mask: torch.Tensor,
+    attention_mask: torch.Tensor,
     gamma: float,
     lam: float,
     rid: Optional[np.ndarray] = None,
@@ -215,6 +215,8 @@ def compute_treegae_advantage_return(
     cid: Optional[list] = None,
     state_branches: Optional[torch.Tensor] = None,
     new_sample_indices: Optional[np.ndarray] = None,
+    raw_prompt_len: Optional[np.ndarray] = None,
+    max_prompt_len: Optional[int] = None,
     advantages: Optional[torch.Tensor] = None,
 ):
     """Compute TreeGAE advantage for tree-structured trajectories.
@@ -223,9 +225,11 @@ def compute_treegae_advantage_return(
     At branch nodes, the advantage is computed as the mean of all branch advantages.
 
     Note: For existing trajectories, advantages are already computed. This function only
-    recomputes the affected subgraph: each new trajectory is scanned from its last valid
-    token back to token 0, then the updated first-token advantage is propagated upward to
-    ancestor prefixes through the pid/branch_pos links.
+    recomputes the affected subgraph. Unlike the previous ancestor-by-ancestor propagation,
+    this implementation performs one global reverse scan over the aligned full-response
+    coordinate. Each active state is indexed by `(p_idx, t_local)`, where the absolute
+    response position is determined by the original prompt length and the accumulated
+    branch history encoded by `pid/branch_pos`.
 
     Args:
         token_level_rewards: `(torch.Tensor)`
@@ -234,6 +238,9 @@ def compute_treegae_advantage_return(
             shape is (bs, response_length)
         response_mask: `(torch.Tensor)`
             shape is (bs, response_length). [EOS] mask. The token after [EOS] have mask zero.
+        attention_mask: `(torch.Tensor)`
+            shape is (bs, max_prompt_length + response_length). Used to recover the actual
+            prompt length of each continued trajectory.
         gamma: `(float)`
             discounted factor used in RL
         lam: `(float)`
@@ -250,6 +257,10 @@ def compute_treegae_advantage_return(
             shape is (bs, response_length). Number of branches at each state.
         new_sample_indices: `(np.ndarray)`
             Indices of newly sampled trajectories in the current round.
+        raw_prompt_len: `(np.ndarray)`
+            shape is (bs,). Original prompt length before any tree prefix is appended.
+        max_prompt_len: `(int)`
+            Maximum prompt length in the left-padded batch.
         advantages: `(torch.Tensor)`
             shape is (bs, response_length). Pre-allocated advantages tensor to update in-place.
             For existing trajectories, this already contains computed advantages.
@@ -263,71 +274,74 @@ def compute_treegae_advantage_return(
     """
     with torch.no_grad():
         rid2idx = {r: i for i, r in enumerate(rid)}
-        gen_len = token_level_rewards.shape[-1]
+        batch_size, gen_len = token_level_rewards.shape
+        device = token_level_rewards.device
+        dtype = advantages.dtype
 
-        # ========== Single backward pass from new leaves to root ancestors ==========
         if len(new_sample_indices) == 0:
             returns = advantages + values
             return advantages, returns
 
-        def _process_parent(p_idx: int, end_pos: int) -> Optional[Tuple[int, int]]:
-            """Recompute the prefix [0, end_pos] of one affected trajectory.
+        raw_prompt_len = torch.as_tensor(raw_prompt_len, device=device, dtype=torch.long)
+        branch_pos = torch.as_tensor(branch_pos, device=device, dtype=torch.long)
+        state_branches = state_branches.to(device=device, dtype=dtype)
+        valid_prompt_len = attention_mask[:, :max_prompt_len].sum(dim=1).to(torch.long)
 
-            Returns:
-                Optional grandparent info (grandparent_idx, pos) for next level, or None.
-            """
-            parent_cid = cid[p_idx]
-            cid_positions = set(parent_cid.keys())
-            if end_pos + 1 < gen_len and response_mask[p_idx, end_pos + 1]:
-                lastgaelam = advantages[p_idx, end_pos + 1]
-            else:
-                lastgaelam = 0
+        parent_indices = torch.tensor(
+            [-1 if parent_rid is None else rid2idx[parent_rid] for parent_rid in pid],
+            device=device,
+            dtype=torch.long,
+        )
 
-            for t in reversed(range(end_pos + 1)):
-                if t + 1 < gen_len and response_mask[p_idx, t + 1]:
-                    next_value = values[p_idx, t + 1]
-                    continuation_advantage = advantages[p_idx, t + 1]
-                else:
-                    next_value = 0
-                    continuation_advantage = 0
+        history_len = valid_prompt_len - raw_prompt_len
 
-                if t in cid_positions:
-                    child_indices = [rid2idx[c_rid] for c_rid in parent_cid[t]]
-                    lastgaelam_mean = (advantages[child_indices, 0].sum() + continuation_advantage) / state_branches[p_idx, t]
-                    delta = token_level_rewards[p_idx, t] + gamma * next_value - values[p_idx, t]
-                    lastgaelam_ = delta + gamma * lam * lastgaelam_mean
-                else:
-                    delta = token_level_rewards[p_idx, t] + gamma * next_value - values[p_idx, t]
-                    lastgaelam_ = delta + gamma * lam * lastgaelam
+        child_first_adv_sum = torch.zeros((batch_size, gen_len), device=device, dtype=dtype)
+        for parent_idx, children_by_pos in enumerate(cid):
+            for pos, child_rids in children_by_pos.items():
+                pos = int(pos)
+                child_indices = [rid2idx[c_rid] for c_rid in child_rids]
+                child_first_adv_sum[parent_idx, pos] = advantages[child_indices, 0].sum()
 
-                lastgaelam = lastgaelam_ * response_mask[p_idx, t] + (1 - response_mask[p_idx, t]) * lastgaelam
-                advantages[p_idx, t] = lastgaelam
+        current_idx = torch.as_tensor(new_sample_indices, device=device, dtype=torch.long)
+        current_p_idx = parent_indices[current_idx]
+        nextvalues = torch.zeros(current_idx.shape[0], device=device, dtype=dtype)
+        lastgaelam = torch.zeros(current_idx.shape[0], device=device, dtype=dtype)
+        assert torch.all(history_len < gen_len), "TreeGAE requires history_len < gen_len."
 
-            # Find grandparent info for next level
-            grandparent_rid = pid[p_idx]
-            if grandparent_rid is not None:
-                grandparent_idx = rid2idx[grandparent_rid]
-                return (grandparent_idx, int(branch_pos[p_idx]))
-            return None
+        for u in reversed(range(gen_len)):
+            idx = current_idx
+            local_t = u - history_len[idx]
 
-        # Start from each new trajectory's last valid token, then climb the ancestor chain.
-        current_level = [
-            (int(idx), int(response_mask[idx].sum().item()) - 1)
-            for idx in new_sample_indices
-        ]
+            tree_lastgaelam = (child_first_adv_sum[idx, local_t] + lastgaelam) / state_branches[idx, local_t]
+            delta = token_level_rewards[idx, local_t] + gamma * nextvalues - values[idx, local_t]
+            lastgaelam_ = delta + gamma * lam * tree_lastgaelam
 
-        while current_level:
-            # Process all parents in current level in parallel
-            with ThreadPoolExecutor() as executor:
-                results = list(executor.map(lambda args: _process_parent(*args), current_level))
+            mask_t = response_mask[idx, local_t].to(dtype)
+            nextvalues = values[idx, local_t] * mask_t + (1 - mask_t) * nextvalues
+            lastgaelam = lastgaelam_ * mask_t + (1 - mask_t) * lastgaelam
 
-            # Collect next level from results
-            current_level = [r for r in results if r is not None]
+            first_token = local_t == 0
+            if first_token.any():
+                first_idx = idx[first_token]
+                old_adv0 = advantages[first_idx, 0].clone()
+
+            advantages[idx, local_t] = lastgaelam
+
+            if first_token.any() and u > 0:
+                first_idx = idx[first_token]
+                first_parent = current_p_idx[first_token]
+                parent_cols = branch_pos[first_idx]
+                delta_adv0 = advantages[first_idx, 0] - old_adv0
+                child_first_adv_sum[first_parent, parent_cols] += delta_adv0
+
+                next_pos = parent_cols + 1
+                next_mask = response_mask[first_parent, next_pos].to(dtype)
+                nextvalues[first_token] = values[first_parent, next_pos] * next_mask
+                lastgaelam[first_token] = advantages[first_parent, next_pos] * next_mask
+                current_idx[first_token] = first_parent
+                current_p_idx[first_token] = parent_indices[first_parent]
 
         returns = advantages + values
-        # Note: Do NOT whiten advantages here. In OPTS_TTPO, advantages from previous
-        # rounds are used in subsequent TreeGAE calculations. Whitening should be done
-        # after all g rounds complete, before policy update.
 
     return advantages, returns
 

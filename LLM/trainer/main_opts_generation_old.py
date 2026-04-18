@@ -186,6 +186,7 @@ def main_task(config):
                 token_level_rewards=global_batch.batch["token_level_rewards"],
                 values=global_batch.batch["values"],
                 response_mask=global_batch.batch["response_mask"],
+                attention_mask=global_batch.batch["attention_mask"],
                 gamma=config.algorithm.gamma,
                 lam=config.algorithm.lam,
                 rid=list(global_batch.non_tensor_batch["rid"]),
@@ -194,6 +195,8 @@ def main_task(config):
                 cid=list(global_batch.non_tensor_batch["cid"]),
                 state_branches=global_batch.batch["state_branches"],
                 new_sample_indices=global_batch.non_tensor_batch["new_sample_indices"],
+                raw_prompt_len=global_batch.non_tensor_batch["raw_prompt_len"],
+                max_prompt_len=global_batch.batch["attention_mask"].shape[1] - global_batch.batch["response_mask"].shape[1],
                 advantages=global_batch.batch["advantages"],
             )
             global_batch.batch["advantages"] = advantages
