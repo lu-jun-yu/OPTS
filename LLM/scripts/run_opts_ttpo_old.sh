@@ -3,13 +3,13 @@ export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=1.7B
-Experiment_Name=ppo_0326_${MODEL_SIZE}
+Experiment_Name=opts_ttpo_0419_${MODEL_SIZE}
 
-python3 -m verl.trainer.main_ppo \
- algorithm.adv_estimator=gae \
+python3 -m trainer.main_opts_ttpo \
+ algorithm.adv_estimator=treegae \
  data.train_files=data/train.parquet \
  data.val_files=data/test.parquet \
- data.train_batch_size=2048 \
+ data.train_batch_size=512 \
  data.max_prompt_length=1024 \
  data.max_response_length=2048 \
  data.filter_overlong_prompts=True \
@@ -17,13 +17,17 @@ python3 -m verl.trainer.main_ppo \
  actor_rollout_ref.actor.optim.lr=1e-6 \
  actor_rollout_ref.actor.optim.weight_decay=0.1 \
  actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
- actor_rollout_ref.actor.ppo_mini_batch_size=2048 \
+ actor_rollout_ref.actor.ppo_mini_batch_size=512 \
  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16 \
  actor_rollout_ref.actor.use_kl_loss=False \
  actor_rollout_ref.rollout.name=vllm \
  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=128 \
  actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
  actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
+ actor_rollout_ref.rollout.search=opts \
+ actor_rollout_ref.rollout.n=4 \
+ actor_rollout_ref.rollout.c=1.0 \
+ actor_rollout_ref.rollout.max_search_per_tree=4 \
  critic.enable=True \
  critic.optim.lr=1e-5 \
  critic.model.path=models/Qwen3-${MODEL_SIZE} \
@@ -32,7 +36,7 @@ python3 -m verl.trainer.main_ppo \
  custom_reward_function.name=compute_score \
  algorithm.use_kl_in_reward=False \
  algorithm.kl_ctrl.kl_coef=0.0 \
- algorithm.lam=0.999 \
+ algorithm.lam=1.0 \
  trainer.logger='["console","wandb"]' \
  trainer.val_before_train=False \
  trainer.n_gpus_per_node=1 \
@@ -41,4 +45,4 @@ python3 -m verl.trainer.main_ppo \
  trainer.experiment_name=${Experiment_Name} \
  trainer.save_freq=20 \
  trainer.test_freq=10 \
- trainer.total_epochs=66 2>&1 | tee logs/${Experiment_Name}.log
+ trainer.total_epochs=15 2>&1 | tee logs/${Experiment_Name}.log

@@ -73,6 +73,27 @@ def run_ppo(config, task_runner_class=None) -> None:
             runtime_env_vars["PYTHONPATH"] = f"{LLM_DIR}:{existing_pythonpath}"
         else:
             runtime_env_vars["PYTHONPATH"] = LLM_DIR
+
+        # Propagate WandB-related environment variables into Ray actors.
+        for env_name in [
+            "WANDB_API_KEY",
+            "WANDB_ENTITY",
+            "WANDB_BASE_URL",
+            "WANDB_PROXY",
+            "WANDB_INIT_TIMEOUT",
+            "WANDB_SERVICE_WAIT",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+        ]:
+            env_value = os.environ.get(env_name)
+            if env_value is not None:
+                runtime_env_vars[env_name] = env_value
         runtime_env_kwargs["env_vars"] = runtime_env_vars
 
         runtime_env = OmegaConf.merge(default_runtime_env, runtime_env_kwargs)

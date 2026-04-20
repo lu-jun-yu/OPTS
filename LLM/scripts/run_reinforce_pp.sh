@@ -3,7 +3,7 @@ export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=1.7B
-Experiment_Name=reinforce_pp_0327_${MODEL_SIZE}
+Experiment_Name=reinforce_pp_0326_${MODEL_SIZE}
 
 python3 -m verl.trainer.main_ppo \
  algorithm.adv_estimator=reinforce_plus_plus \
@@ -23,7 +23,7 @@ python3 -m verl.trainer.main_ppo \
  actor_rollout_ref.rollout.name=vllm \
  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=128 \
  actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
- actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
+ actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
  actor_rollout_ref.rollout.n=4 \
  custom_reward_function.path=utils/reward_fn.py \
  custom_reward_function.name=compute_score \
@@ -37,4 +37,4 @@ python3 -m verl.trainer.main_ppo \
  trainer.experiment_name=${Experiment_Name} \
  trainer.save_freq=20 \
  trainer.test_freq=10 \
- trainer.total_epochs=10 2>&1 | tee logs/${Experiment_Name}.log
+ trainer.total_epochs=15 2>&1 | tee logs/${Experiment_Name}.log

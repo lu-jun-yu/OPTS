@@ -12,3 +12,4 @@ Atari_MuJoCo/runs
 .claude
 token.json
 *.log
+*.time

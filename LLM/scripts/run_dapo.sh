@@ -48,4 +48,4 @@ python3 -m verl.trainer.main_ppo \
  trainer.experiment_name=${Experiment_Name} \
  trainer.save_freq=20 \
  trainer.test_freq=10 \
- trainer.total_epochs=10 2>&1 | tee logs/${Experiment_Name}.log
+ trainer.total_epochs=15 2>&1 | tee logs/${Experiment_Name}.log

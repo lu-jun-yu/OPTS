@@ -5,7 +5,7 @@ Inference-time scaling/search experiment for OPTS.
 
 Two modes:
   - reward-guided (reward_mode="reward"): uses actual reward_fn for TUCT guidance
-  - value-guided  (reward_mode="value"):  uses critic's last-position value as reward
+  - value-guided  (reward_mode="value"):  uses critic's last-position sigmoid(value) as reward
 
 Total inference budget = dataset_size * n_samples / batch_size steps,
 matching pass@k cost. Each step performs n_samples rounds of tree-structured
@@ -39,15 +39,13 @@ from verl.single_controller.ray.base import create_colocated_worker_cls
 from verl.utils import hf_tokenizer
 from verl.utils.fs import copy_to_local
 from verl.utils.hdfs_io import makedirs
-from verl.utils.model import compute_position_id_with_mask
 from verl.workers.fsdp_workers import ActorRolloutRefWorker, CriticWorker
 
 from .opts_ttpo.core_algos import (
     compute_treegae_advantage_return,
-    compute_branch_weight,
 )
 from .opts_ttpo.ray_trainer import (
-    compute_aggregated_returns,
+    PromptBuffer,
     compute_episodic_returns,
     compute_response_mask,
     merge_batches,
@@ -60,24 +58,42 @@ from verl.trainer.ppo.reward import compute_reward
 
 
 class InferencePromptBuffer:
-    """Buffer that draws prompts from a dataset, cycling through all prompts.
+    """Thin wrapper around the trainer's fixed-width PromptBuffer.
 
-    Each draw assigns a fresh uid but tracks which original dataset row it came from,
-    enabling result aggregation by prompt. Fresh uids are needed because the same
-    prompt may appear multiple times in the same step's global_batch.
+    Reuses the same RL dataset + collate + PromptBuffer path as training so prompt
+    preprocessing/padding stays consistent. The only inference-specific state kept
+    here is uid -> dataset_idx tracking for result aggregation.
     """
 
-    def __init__(self, dataset, tokenizer, prompt_key, prompt_length, apply_chat_template_kwargs=None):
-        self.dataset = dataset
-        self.tokenizer = tokenizer
-        self.prompt_key = prompt_key
-        self.prompt_length = prompt_length
-        self.apply_chat_template_kwargs = apply_chat_template_kwargs or {}
-        self.total_samples = len(dataset)
+    def __init__(self, data_path, data_config, tokenizer, batch_size, prompt_length):
+        from torchdata.stateful_dataloader import StatefulDataLoader
 
-        # Track dataset fields for reward computation
-        self.data_sources = dataset["data_source"].tolist() if "data_source" in dataset.columns else [None] * self.total_samples
-        self.reward_models = dataset["reward_model"].tolist() if "reward_model" in dataset.columns else [None] * self.total_samples
+        from verl.trainer.main_ppo import create_rl_dataset
+        from verl.utils.dataset.rl_dataset import collate_fn as rl_collate_fn
+
+        dataset_config = OmegaConf.create(OmegaConf.to_container(data_config, resolve=False))
+        dataset_config.val_files = data_path
+        dataset_config.max_prompt_length = prompt_length
+        dataset_config.shuffle = False
+        dataset_config.validation_shuffle = False
+
+        dataset = create_rl_dataset(
+            data_path,
+            dataset_config,
+            tokenizer,
+            processor=None,
+            max_samples=dataset_config.get("val_max_samples", -1),
+        )
+        dataloader = StatefulDataLoader(
+            dataset=dataset,
+            batch_size=batch_size,
+            num_workers=dataset_config.get("dataloader_num_workers", 0),
+            shuffle=False,
+            drop_last=False,
+            collate_fn=rl_collate_fn,
+        )
+        self.prompt_buffer = PromptBuffer(dataloader)
+        self.total_samples = len(dataset)
 
         # Cursor and cycling
         self.cursor = 0
@@ -90,6 +106,7 @@ class InferencePromptBuffer:
     def draw(self, n: int) -> DataProto:
         """Draw n prompts with fresh uids. Cycles through the dataset."""
         self._just_cycled = False
+        batch = self.prompt_buffer.draw(n)
         indices = []
         for _ in range(n):
             indices.append(self.cursor)
@@ -105,40 +122,9 @@ class InferencePromptBuffer:
         for uid, idx in zip(uids, indices):
             self.uid_to_idx[uid] = idx
 
-        # Tokenize selected prompts
-        chat_lst = self.dataset[self.prompt_key].tolist()
-        batch_chats = [chat_lst[i].tolist() if hasattr(chat_lst[i], 'tolist') else chat_lst[i] for i in indices]
-
-        inputs = self.tokenizer.apply_chat_template(
-            batch_chats,
-            add_generation_prompt=True,
-            padding=True,
-            truncation=True,
-            max_length=self.prompt_length,
-            return_tensors="pt",
-            return_dict=True,
-            tokenize=True,
-            **self.apply_chat_template_kwargs,
-        )
-
-        input_ids = inputs["input_ids"]
-        attention_mask = inputs["attention_mask"]
-        position_ids = compute_position_id_with_mask(attention_mask)
-
-        batch = DataProto.from_dict({
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "position_ids": position_ids,
-        })
-
-        raw_prompt_lens = attention_mask.sum(dim=1).cpu().numpy()
+        raw_prompt_lens = batch.batch["attention_mask"].sum(dim=1).cpu().numpy()
         batch.non_tensor_batch["raw_prompt_len"] = raw_prompt_lens
         batch.non_tensor_batch["uid"] = np.array(uids, dtype=object)
-
-        # Set data_source and reward_model for reward computation
-        batch.non_tensor_batch["data_source"] = np.array([self.data_sources[i] for i in indices], dtype=object)
-        batch.non_tensor_batch["reward_model"] = np.array([self.reward_models[i] for i in indices], dtype=object)
-
         return batch
 
     @property
@@ -178,7 +164,44 @@ def decode_responses(batch: DataProto, tokenizer) -> list[str]:
     return responses
 
 
-@hydra.main(config_path="pkg://verl.trainer.config", config_name="generation", version_base=None)
+def _select_first(config, *paths, default=None):
+    for path in paths:
+        value = OmegaConf.select(config, path)
+        if value is not None:
+            return value
+    return default
+
+
+def _require_config_value(config, *paths):
+    value = _select_first(config, *paths)
+    if value is None:
+        joined_paths = ", ".join(paths)
+        raise ValueError(f"Missing required config value. Tried: {joined_paths}")
+    return value
+
+
+def _get_actor_worker_config(config):
+    return _select_first(config, "actor_rollout_ref", default=config)
+
+
+def _get_rollout_config(config):
+    return _require_config_value(config, "actor_rollout_ref.rollout", "rollout")
+
+
+def _restore_sigmoid_value_mapping(values_output: DataProto) -> DataProto:
+    """Map critic outputs back to the trained value semantics.
+
+    The underlying verl value head sigmoid was removed, but the current critic
+    checkpoint was trained with that mapping in place. Apply sigmoid here before
+    the values are used by either reward-guided or value-guided search logic.
+    """
+    if "values" not in values_output.batch:
+        raise KeyError("Critic output does not contain 'values'.")
+    values_output.batch["values"] = torch.sigmoid(values_output.batch["values"])
+    return values_output
+
+
+@hydra.main(config_path="pkg://verl.trainer.config", config_name="ppo_trainer", version_base=None)
 def main(config):
     run_generation(config)
 
@@ -201,28 +224,41 @@ def main_task(config):
     pprint(OmegaConf.to_container(config, resolve=True))
     OmegaConf.resolve(config)
 
-    local_path = copy_to_local(config.model.path)
-    trust_remote_code = config.data.get("trust_remote_code", False)
+    actor_worker_config = _get_actor_worker_config(config)
+    rollout_config = _get_rollout_config(config)
+
+    model_path = _require_config_value(config, "actor_rollout_ref.model.path", "model.path")
+    data_path = _require_config_value(config, "data.path", "data.val_files", "data.train_files")
+    batch_size = _require_config_value(config, "data.batch_size", "data.val_batch_size", "data.train_batch_size")
+    n_samples = _require_config_value(config, "data.n_samples")
+    output_path = _require_config_value(config, "data.output_path")
+    reward_mode = _select_first(config, "data.reward_mode", default="value")
+    trust_remote_code = _select_first(
+        config,
+        "actor_rollout_ref.model.trust_remote_code",
+        "model.trust_remote_code",
+        "data.trust_remote_code",
+        default=False,
+    )
+
+    local_path = copy_to_local(model_path)
     tokenizer = hf_tokenizer(local_path, trust_remote_code=trust_remote_code)
 
-    n_samples = config.data.n_samples
     assert n_samples >= 1, "n_samples should always >= 1"
-    if config.rollout.temperature == 0.0:
+    if rollout_config.temperature == 0.0:
         assert n_samples == 1, "When temperature=0, n_samples must be 1."
 
-    reward_mode = config.data.get("reward_mode", "value")
     assert reward_mode in ("reward", "value"), f"reward_mode must be 'reward' or 'value', got {reward_mode}"
 
-    batch_size = config.data.batch_size
-    prompt_length = config.rollout.prompt_length
-    response_length = config.rollout.response_length
-    c_tuct = config.rollout.get("c", 1.0)
-    max_search_per_tree = config.rollout.get("max_search_per_tree", 1)
+    prompt_length = rollout_config.prompt_length
+    response_length = rollout_config.response_length
+    c_tuct = rollout_config.get("c", 1.0)
+    max_search_per_tree = rollout_config.get("max_search_per_tree", 1)
     gamma = config.algorithm.gamma
     lam = config.algorithm.lam
 
     # Read dataset
-    dataset = pd.read_parquet(config.data.path)
+    dataset = pd.read_parquet(data_path)
     total_samples = len(dataset)
 
     tokenizer.padding_side = "left"
@@ -248,7 +284,11 @@ def main_task(config):
     )
 
     # Create actor rollout and critic workers
-    actor_rollout_cls = RayClassWithInitArgs(cls=ray.remote(ActorRolloutRefWorker), config=config, role="rollout")
+    actor_rollout_cls = RayClassWithInitArgs(
+        cls=ray.remote(ActorRolloutRefWorker),
+        config=actor_worker_config,
+        role="rollout",
+    )
     critic_cls = RayClassWithInitArgs(cls=ray.remote(CriticWorker), config=config.critic)
 
     class_dict = {"actor_rollout": actor_rollout_cls, "critic": critic_cls}
@@ -267,26 +307,31 @@ def main_task(config):
     critic_wg.init_model()
 
     # Build prompt buffer
-    apply_chat_template_kwargs = config.data.get("apply_chat_template_kwargs", {})
     prompt_buffer = InferencePromptBuffer(
-        dataset=dataset,
+        data_path=data_path,
+        data_config=config.data,
         tokenizer=tokenizer,
-        prompt_key=config.data.prompt_key,
+        batch_size=batch_size,
         prompt_length=prompt_length,
-        apply_chat_template_kwargs=apply_chat_template_kwargs,
     )
+    if prompt_buffer.total_samples != total_samples:
+        raise ValueError(
+            "PromptBuffer dataset size does not match the raw parquet size. "
+            "This usually means the reused training data pipeline filtered or reordered samples. "
+            f"prompt_buffer.total_samples={prompt_buffer.total_samples}, total_samples={total_samples}"
+        )
 
     # Total steps = dataset_size * n_samples / batch_size (matching pass@k cost)
     total_steps = -(-total_samples * n_samples // batch_size)  # ceil division
 
-    # Global state
-    prev_mean_return = None
-    all_returns = []
-
-    # Result collection: dataset_idx -> list of (response_str, sample_index)
+    # Result collection: dataset_idx -> list of (response_str, sample_index, global_index)
     idx_responses = defaultdict(list)
-    # Sample counter per dataset row
+    # Sample counter per dataset row (per-prompt, 1-based).
     idx_sample_counter = defaultdict(int)
+    # Global counter across the entire run (1-based). Enables reconstructing the
+    # chronological order for opts@k, where the OPTS run is truncated to budget
+    # k * dataset_size responses and then grouped by prompt.
+    global_sample_counter = 0
 
     print(f"Starting inference-time search: total_steps={total_steps}, "
           f"n_samples={n_samples}, batch_size={batch_size}, "
@@ -297,12 +342,16 @@ def main_task(config):
         global_batch = None
         next_states = {}
         search_count = {}
+        # {uid -> max exploitation at selected node}, used by TUCT to filter
+        # candidates to those above the pool mean. Scoped per-step, matching
+        # opts_ttpo.ray_trainer.fit() line 2019.
+        max_exploitations = {}
 
         for round_idx in range(n_samples):
             # === Construct this round's batch ===
             if round_idx == 0:
                 batch = prompt_buffer.draw(batch_size)
-                batch.meta_info["temperature"] = config.rollout.temperature
+                batch.meta_info["temperature"] = rollout_config.temperature
             else:
                 k = len(next_states)
                 parts = []
@@ -324,12 +373,7 @@ def main_task(config):
                     batch = parts[0]
                 else:
                     break  # no data to process
-                batch.meta_info["temperature"] = config.rollout.temperature
-
-            # Check if buffer just cycled → compute return threshold
-            if prompt_buffer.just_cycled and all_returns:
-                prev_mean_return = sum(all_returns) / len(all_returns)
-                print(f"[step {step_idx + 1}] Buffer cycled. prev_mean_return={prev_mean_return:.4f}")
+                batch.meta_info["temperature"] = rollout_config.temperature
 
             batch.meta_info["round_idx"] = round_idx
 
@@ -343,6 +387,7 @@ def main_task(config):
 
             # === Compute values ===
             values_output = critic_wg.compute_values(output)
+            values_output = _restore_sigmoid_value_mapping(values_output)
             output = output.union(values_output)
 
             # === Compute rewards ===
@@ -395,42 +440,32 @@ def main_task(config):
             global_batch.batch["advantages"] = advantages
             global_batch.batch["returns"] = returns
 
-            # === Collect decoded responses with sample_index ===
+            # === Collect decoded responses with sample_index + global_index ===
             response_strs = decode_responses(output, tokenizer)
             output_uids = output.non_tensor_batch["uid"]
             for resp, uid in zip(response_strs, output_uids):
                 dataset_idx = prompt_buffer.uid_to_idx.get(uid)
                 if dataset_idx is not None:
                     idx_sample_counter[dataset_idx] += 1
-                    idx_responses[dataset_idx].append((resp, idx_sample_counter[dataset_idx]))
+                    global_sample_counter += 1
+                    idx_responses[dataset_idx].append(
+                        (resp, idx_sample_counter[dataset_idx], global_sample_counter)
+                    )
 
             # === TUCT selection for next round ===
             if round_idx < n_samples - 1:
                 selected_states = select_next_states(
                     batch=global_batch,
                     search_count=search_count,
+                    max_exploitations=max_exploitations,
                     max_search_per_tree=max_search_per_tree,
                     c=c_tuct,
                     gamma=gamma,
-                    return_threshold=prev_mean_return,
                     max_prompt_length=prompt_length,
                     batch_size=batch_size,
                     tokenizer=tokenizer,
                 )
                 next_states = selected_to_branch_points(selected_states, global_batch)
-
-        # === Post-step: compute aggregated returns for threshold ===
-        if global_batch is not None:
-            branch_weight = compute_branch_weight(
-                state_branches=global_batch.batch["state_branches"],
-                pid=global_batch.non_tensor_batch["pid"],
-                rid=global_batch.non_tensor_batch["rid"],
-                uid=global_batch.non_tensor_batch["uid"],
-                branch_pos=global_batch.non_tensor_batch["branch_pos"],
-            )
-            global_batch.batch["branch_weight"] = branch_weight
-            step_returns = compute_aggregated_returns(global_batch)
-            all_returns.extend(step_returns)
 
         print(f"[step {step_idx + 1}/{total_steps}] Done. "
               f"Collected {sum(len(v) for v in idx_responses.values())} total responses.")
@@ -438,20 +473,23 @@ def main_task(config):
     # === Assemble output ===
     output_responses = [[] for _ in range(total_samples)]
     output_sample_indices = [[] for _ in range(total_samples)]
+    output_global_indices = [[] for _ in range(total_samples)]
 
     for dataset_idx, resp_list in idx_responses.items():
-        for resp_str, sample_idx in resp_list:
+        for resp_str, sample_idx, global_idx in resp_list:
             output_responses[dataset_idx].append(resp_str)
             output_sample_indices[dataset_idx].append(sample_idx)
+            output_global_indices[dataset_idx].append(global_idx)
 
     dataset["responses"] = output_responses
     dataset["sample_indices"] = output_sample_indices
+    dataset["global_indices"] = output_global_indices
 
     # Write output
-    output_dir = os.path.dirname(config.data.output_path)
+    output_dir = os.path.dirname(output_path)
     makedirs(output_dir, exist_ok=True)
-    dataset.to_parquet(config.data.output_path)
-    print(f"Results saved to {config.data.output_path}")
+    dataset.to_parquet(output_path)
+    print(f"Results saved to {output_path}")
 
 
 if __name__ == "__main__":
