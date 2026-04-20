@@ -37,7 +37,13 @@ from verl.trainer.ppo.metric_utils import (
     process_validation_metrics,
 )
 from verl.trainer.ppo.reward import compute_reward, compute_reward_async
-from verl.trainer.ppo.utils import Role, WorkerType, need_critic, need_reference_policy, need_reward_model
+from verl.trainer.ppo.utils import (
+    Role,
+    WorkerType,
+    need_critic as need_critic_base,
+    need_reference_policy,
+    need_reward_model,
+)
 from verl.utils import tensordict_utils as tu
 from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path, should_save_ckpt_esi
 from verl.utils.config import omega_conf_to_dataclass
@@ -62,6 +68,23 @@ from .core_algos import (
     compute_branch_weight,
 )
 from utils.logger_batch import *
+
+
+def need_critic_for_opts(config) -> bool:
+    """TTPO-specific critic requirement.
+
+    TreeGAE depends on value predictions in the same way standard GAE does, so it
+    should enable the critic by default even though the base PPO helper only knows
+    about the original GAE enum.
+    """
+    if config.critic.enable is not None:
+        return bool(config.critic.enable)
+
+    adv_estimator = config.algorithm.adv_estimator
+    adv_name = adv_estimator.value if hasattr(adv_estimator, "value") else str(adv_estimator)
+    if adv_name in {AdvantageEstimator.GAE.value, AdvantageEstimator.TreeGAE.value}:
+        return True
+    return need_critic_base(config)
 
 
 @dataclass
@@ -523,8 +546,9 @@ def select_next_states(
        + c * exploration ((sibling_count - 1) * max_abs_exploitation).
     4. Apply dual mask: response_mask and prompt_length constraint.
     5. Select argmax(TUCT) per tree.
-    6. Update per-tree max_exploitations with exploitation[max_idx], and only
-       keep candidates whose exploitation[max_idx] is above the pooled mean.
+    6. Register each tree's first qualified exploitation score as its baseline,
+       and only keep candidates whose exploitation[max_idx] is above the pooled
+       mean of these baselines.
     7. Globally sort candidates by exploitation[max_idx], take top batch_size.
 
     Args:
@@ -628,6 +652,8 @@ def select_next_states(
             local_t = u - history_len[idx]
             next_local_t = local_t + 1
 
+            # Keep a suffix margin so TTPO does not spend an entire rollout budget
+            # replacing only the tail end of a response.
             valid_u = active_mask & (local_t + 1 < response_lengths[idx] - 10)
 
             path_idx[:, u] = idx
@@ -680,6 +706,8 @@ def select_next_states(
                 continue
 
             score = max_exploitation_val[i].item()
+            # Record the first qualified exploitation baseline for this tree.
+            # Later rounds compare against this baseline pool instead of updating it.
             if u not in max_exploitations:
                 max_exploitations[u] = score
 
@@ -976,7 +1004,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
         self.use_rm = need_reward_model(self.role_worker_mapping)
         self.use_reward_loop = self.config.reward_model.use_reward_loop
 
-        self.use_critic = need_critic(self.config)
+        self.use_critic = need_critic_for_opts(self.config)
         self.ray_worker_group_cls = ray_worker_group_cls
         self.device_name = device_name if device_name else self.config.trainer.device
         self.validation_generations_logger = ValidationGenerationsLogger(
@@ -2016,7 +2044,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                 global_batch = None
                 next_states = {}
                 search_count = {}  # {uid: count} per training iteration
-                max_exploitations = {}  # {uid: exploitation} per training iteration
+                max_exploitations = {}  # {uid: first qualified exploitation baseline} per training iteration
                 sorted_states = None
                 reward_extra_infos_dict = {}
 

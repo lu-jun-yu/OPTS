@@ -915,6 +915,7 @@ def agg_loss(
     global_batch_size: Optional[int] = None,
     loss_scale_factor: Optional[int] = None,
     branch_weight: Optional[torch.Tensor] = None,
+    dist_group=None,
 ):
     """
     Aggregate the loss across global batch to ensure the loss is invariant to fsdp/megatron parallelism.
@@ -940,6 +941,9 @@ def agg_loss(
             Set this to a constant value to ensure consistent normalization throughout training.
         branch_weight: weight factor for "weighted-token-mean" mode, shape (bs, response_length).
             Required when loss_agg_mode is "weighted-token-mean".
+        dist_group: optional distributed group used to synchronize the weighted denominator.
+            When provided, only the scalar denominator is all-reduced to keep communication
+            and activation memory overhead negligible.
 
     Returns:
         loss: `a scalar torch.Tensor`
@@ -954,8 +958,13 @@ def agg_loss(
         loss = verl_F.masked_sum(loss_mat, loss_mask) / batch_num_tokens * dp_size
     elif loss_agg_mode == "weighted-token-mean":
         inv_weight = 1.0 / branch_weight
-        loss_mat = loss_mat / branch_weight
-        loss = verl_F.masked_sum(loss_mat, loss_mask) / verl_F.masked_sum(inv_weight, loss_mask) * dp_size
+        local_numerator = verl_F.masked_sum(loss_mat / branch_weight, loss_mask)
+        global_denominator = verl_F.masked_sum(inv_weight, loss_mask).detach()
+
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.all_reduce(global_denominator, op=torch.distributed.ReduceOp.SUM, group=dist_group)
+
+        loss = local_numerator / torch.clamp(global_denominator, min=1e-8) * dp_size
     elif loss_agg_mode.startswith("seq-mean"):
         # TODO: Correct and unify the denominator logic.
         if global_batch_size is not None:
@@ -1074,6 +1083,8 @@ def compute_policy_loss_vanilla(
     config: Optional[ActorConfig] = None,
     rollout_is_weights: torch.Tensor | None = None,
     branch_weight: torch.Tensor | None = None,
+    dp_size: int = 1,
+    dist_group=None,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """
     Compute the clipped policy objective and related metrics for PPO.
@@ -1099,6 +1110,10 @@ def compute_policy_loss_vanilla(
         branch_weight: `(torch.Tensor)`:
             Weight factor for TTPO gradient correction, shape (batch_size, response_length).
             When provided, uses "weighted-token-mean" aggregation mode.
+        dp_size: `(int)`:
+            Data-parallel world size for TTPO weighted aggregation.
+        dist_group:
+            Data-parallel process group for TTPO weighted aggregation.
     """
 
     assert config is not None
@@ -1157,6 +1172,8 @@ def compute_policy_loss_vanilla(
             loss_mask=response_mask,
             loss_agg_mode="weighted-token-mean",
             branch_weight=branch_weight,
+            dp_size=dp_size,
+            dist_group=dist_group,
             **config.global_batch_info,
         )
     else:
@@ -1580,6 +1597,8 @@ def compute_value_loss(
     cliprange_value: float,
     loss_agg_mode: str = "token-mean",
     branch_weight: torch.Tensor | None = None,
+    dp_size: int = 1,
+    dist_group=None,
 ):
     """
     Compute the clipped value-function loss for PPO.
@@ -1602,6 +1621,10 @@ def compute_value_loss(
         branch_weight (torch.Tensor, optional):
             Weight factor for TTPO gradient correction, shape (batch_size, response_length).
             When provided, uses "weighted-token-mean" aggregation mode.
+        dp_size (int, optional):
+            Data-parallel world size for TTPO weighted aggregation.
+        dist_group:
+            Data-parallel process group for TTPO weighted aggregation.
 
     Returns:
         vf_loss (torch.FloatTensor):
@@ -1619,6 +1642,8 @@ def compute_value_loss(
             loss_mask=response_mask,
             loss_agg_mode="weighted-token-mean",
             branch_weight=branch_weight,
+            dp_size=dp_size,
+            dist_group=dist_group,
         )
     else:
         vf_loss = 0.5 * agg_loss(loss_mat=clipped_vf_losses, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)

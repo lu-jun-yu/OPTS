@@ -19,9 +19,9 @@ from omegaconf import OmegaConf
 
 from verl.experimental.dataset.sampler import AbstractSampler
 from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
-from trainer.opts_ttpo.ray_trainer import RayOPTSTTPOTrainer
+from trainer.opts_ttpo.ray_trainer import RayOPTSTTPOTrainer, need_critic_for_opts
 from verl.trainer.ppo.reward import load_reward_manager
-from verl.trainer.ppo.utils import need_critic, need_reference_policy
+from verl.trainer.ppo.utils import need_reference_policy
 from verl.utils.config import validate_config
 from verl.utils.device import auto_set_ascend_device_name, is_cuda_available
 from verl.utils.import_utils import load_extern_object
@@ -329,7 +329,7 @@ class TaskRunner:
         validate_config(
             config=config,
             use_reference_policy=need_reference_policy(self.role_worker_mapping),
-            use_critic=need_critic(config),
+            use_critic=need_critic_for_opts(config),
         )
 
         # Download the checkpoint from HDFS to the local machine.
