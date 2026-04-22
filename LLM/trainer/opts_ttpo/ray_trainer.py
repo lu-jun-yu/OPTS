@@ -533,19 +533,19 @@ def select_next_states(
     batch_size: int,
     tokenizer=None,
 ) -> Dict[str, Tuple[int, int]]:
-    """Select next states for expansion using TUCT (aligned with reference).
+    """Select next states for expansion using OTRC (aligned with reference).
 
-    Returns the TUCT-selected nodes (not the branch points). The caller must
+    Returns the OTRC-selected nodes (not the branch points). The caller must
     convert to parent nodes via selected_to_branch_points() before using as
     branch points for prepare_next_round_input / set_opts_ttpo_info.
 
     Algorithm:
     1. For each uid (tree), skip if search_count >= max_search_per_tree.
     2. Trace optimal path through tree (greedy by first-token advantage at branches).
-    3. Compute TUCT along path: exploitation (backward cumulative advantage)
+    3. Compute OTRC along path: exploitation (backward cumulative advantage)
        + c * exploration ((sibling_count - 1) * max_abs_exploitation).
     4. Apply dual mask: response_mask and prompt_length constraint.
-    5. Select argmax(TUCT) per tree.
+    5. Select argmax(OTRC) per tree.
     6. Register each tree's first qualified exploitation score as its baseline,
        and only keep candidates whose exploitation[max_idx] is above the pooled
        mean of these baselines.
@@ -556,13 +556,13 @@ def select_next_states(
         search_count: {uid: count}, cumulative within training iteration.
         max_exploitations: {uid: max exploitation at selected node}.
         max_search_per_tree: Max searches per tree per iteration.
-        c: TUCT exploration coefficient.
+        c: OTRC exploration coefficient.
         max_prompt_length: Maximum allowed prompt length.
         batch_size: Maximum number of candidates to select.
 
     Returns:
         next_states: Dict mapping uid to (traj_idx_in_global, token_pos) of the
-            TUCT-selected node. Must be converted to parent via
+            OTRC-selected node. Must be converted to parent via
             selected_to_branch_points() before use as branch points.
     """
     advantages = batch.batch["advantages"]
@@ -687,22 +687,22 @@ def select_next_states(
             torch.ones_like(max_abs_exploitation),
         )
         exploration = (path_sibling - 1) * max_abs_exploitation.unsqueeze(1)
-        tuct = exploitation - c * exploration
+        otrc_score = exploitation - c * exploration
 
         prompt_valid = prompt_lengths[path_idx] + path_t <= max_prompt_length
         think_valid = path_t <= think_end_pos[path_idx]
         valid_mask = path_mask & prompt_valid & think_valid
-        tuct = torch.where(valid_mask, tuct, neg_inf)
+        otrc_score = torch.where(valid_mask, otrc_score, neg_inf)
 
         row_idx = torch.arange(num_trees, device=device)
-        max_pos = tuct.argmax(dim=1)
-        max_tuct_val = tuct[row_idx, max_pos]
+        max_pos = otrc_score.argmax(dim=1)
+        max_otrc_val = otrc_score[row_idx, max_pos]
         max_exploitation_val = exploitation[row_idx, max_pos]
         selected_traj_idx = path_idx[row_idx, max_pos]
         selected_token_pos = path_t[row_idx, max_pos]
 
         for i, u in enumerate(active_uids):
-            if max_tuct_val[i].item() == float("-inf"):
+            if max_otrc_val[i].item() == float("-inf"):
                 continue
 
             score = max_exploitation_val[i].item()
@@ -747,17 +747,17 @@ def selected_to_branch_points(
     selected_states: Dict[str, Tuple[int, int]],
     batch: DataProto,
 ) -> Dict[str, Tuple[int, int]]:
-    """Convert TUCT-selected nodes to their parent nodes as branch points.
+    """Convert OTRC-selected nodes to their parent nodes as branch points.
 
-    In the TUCT framework, exploitation[k] evaluates from token k onwards
-    (including k itself). When TUCT selects node (ti, tp) as the worst node,
+    In the OTRC framework, exploitation[k] evaluates from token k onwards
+    (including k itself). When OTRC selects node (ti, tp) as the worst node,
     we should branch from its PARENT to replace token tp and everything after,
     matching the reference implementation: parent = parent_indices[selected[i]].
 
     Also updates batch's state_branches in-place at the parent positions.
 
     Args:
-        selected_states: Dict {uid: (traj_idx, token_pos)} of TUCT-selected nodes.
+        selected_states: Dict {uid: (traj_idx, token_pos)} of OTRC-selected nodes.
         batch: DataProto containing tree structure (pid, rid, branch_pos, state_branches).
 
     Returns:
@@ -2039,7 +2039,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                 # === OPTS_TTPO training loop ===
                 n_rounds = self.config.actor_rollout_ref.rollout.n
                 max_search_per_tree = self.config.actor_rollout_ref.rollout.max_search_per_tree
-                c_tuct = self.config.actor_rollout_ref.rollout.c
+                c_otrc = self.config.actor_rollout_ref.rollout.c
 
                 global_batch = None
                 next_states = {}
@@ -2287,7 +2287,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 )
                             log_batch_state(global_batch, stage="after_advantage", step=self.global_steps, round_idx=round_idx)
 
-                        # TUCT selection (not last round)
+                        # OTRC selection (not last round)
                         if round_idx < n_rounds - 1:
                             with timed_block("select_next_states", step=self.global_steps, round_idx=round_idx):
                                 selected_states = select_next_states(
@@ -2295,7 +2295,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                     search_count=search_count,
                                     max_exploitations=max_exploitations,
                                     max_search_per_tree=max_search_per_tree,
-                                    c=c_tuct,
+                                    c=c_otrc,
                                     gamma=self.config.algorithm.gamma,
                                     max_prompt_length=self.config.data.max_prompt_length,
                                     batch_size=batch_size,

@@ -24,7 +24,7 @@ OPTS is a novel tree search method designed for on-policy reinforcement learning
 
 Key features of OPTS:
 - **Sampling-based expansion**: Instead of enumerating all actions, each round generates a batch of trajectories, progressively building the tree.
-- **TUCT (Trajectory-level Upper Confidence bound for Trees)**: A selection criterion that balances exploitation (expected improvement from branching) and exploration (penalizing over-searched nodes) to choose optimal states for the next round of expansion.
+- **OTRC (On-policy Trajectory Rebranching Criterion)**: A selection criterion that balances exploitation and exploration to choose rebranching states for the next round of expansion.
 - **Backtracking to earlier states**: OPTS can branch from any state along the trajectory, not just leaf nodes, enabling re-exploration from earlier decision points—particularly beneficial in language generation settings.
 
 | Feature | MCTS | OPTS |

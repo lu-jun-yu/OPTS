@@ -15,7 +15,7 @@ OPTS_TTPO（On-policy Parallel Tree Search + Tree Trajectory Policy Optimization
 **1. OPTS（同策略并行树搜索）**
 - 不同于传统 MCTS 的完全扩展方式，OPTS 采用采样实例树的形式
 - 每步（step）进行 `n_rounds` 轮循环采样，每轮生成一个 batch 的轨迹，逐步构建树结构
-- 使用 TUCT（Trajectory-level Upper Confidence bound for Trees）选择下一轮扩展的最优状态
+- 使用 OTRC（On-policy Trajectory Rebranching Criterion）选择下一轮扩展的最优状态
 - 支持回溯到早期状态进行重新扩展，这在语言场景中是有益的
 
 **2. TTPO（树轨迹策略优化）**
@@ -40,15 +40,15 @@ OPTS_TTPO 在 PPO 的基础上，新增以下参数：
 ```yaml
 actor_rollout_ref:
   rollout:
-    n: 8                    # 循环采样的轮数
+    n: 4                    # 循环采样的轮数
     max_search_per_tree: 4  # 每棵树每个训练迭代最大搜索次数
-    c: 1.0                  # TUCT 探索项系数
+    c: 1.0                  # OTRC 探索项系数
 ```
 
 **参数说明：**
 - `n`（n_rounds）：总共进行的采样轮数，决定树的深度和广度
-- `max_search_per_tree`：每棵树（uid）在一个训练 step 内允许的最大搜索次数，达到上限后该树不再被 TUCT 选中
-- `c`：TUCT 公式中 exploration 项的系数，控制利用与探索的平衡
+- `max_search_per_tree`：每棵树（uid）在一个训练 step 内允许的最大搜索次数，达到上限后该树不再被 OTRC 选中
+- `c`：OTRC 公式中 exploration 项的系数，控制利用与探索的平衡
 
 
 ## 3 数据结构详解
@@ -106,7 +106,7 @@ uid (Unique ID / Tree ID)
 ├── 标识原始 prompt，同时作为树标识符
 ├── 同一 uid 下的所有轨迹共享同一个树结构
 ├── 第一轮采样时由 uuid.uuid4() 生成
-└── 用于按 prompt 分组进行 TUCT 状态选择
+└── 用于按 prompt 分组进行 OTRC 状态选择
 
 rid (Response ID)
 ├── 每条 response 轨迹的唯一标识
@@ -141,7 +141,7 @@ next_states（函数参数，不存储在 non_tensor_batch 中）
 ├── value: (parent_index, branch_pos)
 │   ├── parent_index: 父轨迹在全局 batch 中的索引
 │   └── branch_pos: 父轨迹中被选中状态的 token 位置索引
-├── 由 selected_to_branch_points 从 TUCT 选择结果转换得到
+├── 由 selected_to_branch_points 从 OTRC 选择结果转换得到
 └── 用于 set_opts_ttpo_info 和 prepare_next_round_input
 ```
 
@@ -168,7 +168,7 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 
 **state_branches[i, t]**：轨迹 i 的状态 t 处的分支数
 - 初始化：全部为 1
-- 当 TUCT 选择从状态 (i, t) 分支时：`state_branches[i, t] += 1`
+- 当 OTRC 选择从状态 (i, t) 分支时：`state_branches[i, t] += 1`
 - 更新在 `selected_to_branch_points` 中完成
 - 用于计算 branch_weight
 
@@ -198,7 +198,7 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 │  │  │     b. 前向：生成轨迹，计算各种值                  │ │  │
 │  │  │     c. 设置树结构信息，合并到全局 batch             │ │  │
 │  │  │     d. 反向：TreeGAE 计算优势                     │ │  │
-│  │  │     e. 选择：TUCT 选择下一轮扩展状态（非最后一轮）  │ │  │
+│  │  │     e. 选择：OTRC 选择下一轮扩展状态（非最后一轮）  │ │  │
 │  │  └──────────────────────────────────────────────────┘ │  │
 │  │                          ↓                             │  │
 │  │  ┌──────────────────────────────────────────────────┐ │  │
@@ -266,9 +266,9 @@ for epoch in ...:
             -------- e. 选择（非最后一轮） --------
 
             if 非最后一轮:
-                select_next_states：用 TUCT 选择下一轮扩展状态
+                select_next_states：用 OTRC 选择下一轮扩展状态
                   - 跳过搜索次数已达上限的树
-                  - 沿最优路径计算 TUCT，选择 argmax
+                  - 沿最优路径计算 OTRC，选择 argmax
                   - 记录各树的 max_exploitations[uid] = exploitation[k]
                   - 用 max_exploitations 的均值做门控（仅保留 exploitation[k] 更大的候选）
                   - 应用 prompt 长度约束和 </think> 位置掩码
@@ -322,10 +322,10 @@ $$
 1. 第一个循环对新样本执行标准 GAE（从后向前）
 2. 第二个循环从 next_states 指定的父轨迹开始，从 branch_pos 向前传播优势值
 3. 传播过程中，遇到分支位置时取所有子分支首 token 优势的均值
-4. 使用 ThreadPoolExecutor 并行处理同一层级的多个父轨迹
-5. 逐层向上传播直到根（while current_level 不为空）
+4. 使用 child_first_adv_sum 缓存子分支首 token 的 advantage 和
+5. 在统一 response 坐标上做全局逆序扫描，对受影响子图做增量更新
 
-### 5.2 TUCT
+### 5.2 OTRC
 
 #### 5.2.1 最优路径追踪
 
@@ -372,15 +372,15 @@ $$
 - $\text{sibling\_count}[k]$ = `state_branches[path[k-1]]`，即路径上前一个节点的分支数（第一个节点的 sibling_count 为 1）
 - $\max|\text{exploitation}|$ 是整条路径上 exploitation 绝对值的最大值（若为 0 则设为 1.0），用于将 exploration 项标准化到与 exploitation 同一量级
 
-#### 5.2.4 TUCT 与选择
+#### 5.2.4 OTRC 与选择
 
 $$
-\text{TUCT}[k] = \text{exploitation}[k] - c \cdot \text{exploration}[k]
+\text{OTRC}[k] = \text{exploitation}[k] - c \cdot \text{exploration}[k]
 $$
 
 选择流程：
 1. 跳过 `search_count >= max_search_per_tree` 的树
-2. 对每棵树沿最优路径计算 TUCT，取 argmax
+2. 对每棵树沿最优路径计算 OTRC，取 argmax
 3. 记录 `max_exploitations[uid] = exploitation[argmax]`（LLM 中使用原始 exploitation，不做长度归一化）
 4. 用 `max_exploitations` 的正值均值做门控，仅保留 `exploitation[argmax]` 超过均值的候选
 5. 应用掩码：prompt 长度约束 + `</think>` 位置约束（确保分支在思考阶段内）
@@ -389,7 +389,7 @@ $$
 
 **step_mean_return 更新机制**：
 - 每个 step 结束时，step_mean_return 更新为该 step 内所有 uid 的 aggregated_return 的均值
-- 该值仅作为 `opts_ttpo/step_mean_return` 监控指标，不参与 TUCT 选择或 checkpoint 恢复
+- 该值仅作为 `opts_ttpo/step_mean_return` 监控指标，不参与 OTRC 选择或 checkpoint 恢复
 
 ### 5.3 TTPO 策略梯度
 
@@ -455,10 +455,10 @@ $$
 ```
 LLM/trainer/opts_ttpo/
 ├── __init__.py
-├── main_opts_ttpo.py     # 入口文件
+├── ../main_opts_ttpo.py  # 入口文件
 ├── ray_trainer.py        # RayOPTSTTPOTrainer 类及辅助函数
 ├── core_algos.py         # 核心算法函数（TreeGAE、branch_weight、loss 聚合等）
-└── opts_ttpo.md          # 本文档
+└── README.md          # 本文档
 ```
 
 ### 6.2 核心函数列表
@@ -467,8 +467,8 @@ LLM/trainer/opts_ttpo/
 |--------|----------|------|
 | `set_opts_ttpo_info` | ray_trainer.py | 设置树结构信息：rid, pid, branch_pos, cid；在父轨迹 cid 中注册子节点 |
 | `compute_episodic_returns` | ray_trainer.py | 沿祖先链累加奖励，计算完整 episodic return |
-| `select_next_states` | ray_trainer.py | TUCT 状态选择：最优路径追踪、exploitation/exploration 计算、全局排序 |
-| `selected_to_branch_points` | ray_trainer.py | 将 TUCT 选中节点转换为父节点作为分支点，更新 state_branches |
+| `select_next_states` | ray_trainer.py | OTRC 状态选择：最优路径追踪、exploitation/exploration 计算、全局排序 |
+| `selected_to_branch_points` | ray_trainer.py | 将 OTRC 选中节点转换为父节点作为分支点，更新 state_branches |
 | `prepare_next_round_input` | ray_trainer.py | 构建下一轮采样的输入：提取 prompt + 部分响应，重新 left-pad |
 | `merge_batches` | ray_trainer.py | 合并两个 DataProto batch |
 | `compute_aggregated_returns` | ray_trainer.py | 按 uid 分组计算 weight 加权平均 episodic return |
@@ -488,9 +488,9 @@ LLM/trainer/opts_ttpo/
 ```yaml
 actor_rollout_ref:
   rollout:
-    n: 8                    # 循环采样的轮数
+    n: 4                    # 循环采样的轮数
     max_search_per_tree: 4  # 每棵树每迭代最大搜索次数
-    c: 1.0                  # TUCT 探索系数
+    c: 1.0                  # OTRC 探索系数
 
 algorithm:
   adv_estimator: treegae    # 使用 TreeGAE 优势估计
@@ -539,5 +539,5 @@ OPTS_TTPO 需要从已有的 `input_ids` 续写生成，而不是从 `raw_prompt
    - `cid` 存储为 `np.array([OrderedDict() for ...], dtype=object)`
    - `next_states` 是 `Dict[str, Tuple[int, int]]`，不能存入 `non_tensor_batch`，应作为函数参数传递
 3. **step_mean_return 更新粒度**：在 step 级别更新，每个 step 结束时将各 uid 的 aggregated_return 取均值，仅用于监控
-4. **TUCT 分支点转换**：`select_next_states` 返回的是 TUCT 选中的节点本身，需要通过 `selected_to_branch_points` 转换为其父节点，因为分支是从父节点重新采样新动作
-5. **`</think>` 掩码**：TUCT 选择时掩盖 `</think>` 之后的位置，确保分支发生在思考阶段内
+4. **OTRC 分支点转换**：`select_next_states` 返回的是 OTRC 选中的节点本身，需要通过 `selected_to_branch_points` 转换为其父节点，因为分支是从父节点重新采样新动作
+5. **`</think>` 掩码**：OTRC 选择时掩盖 `</think>` 之后的位置，确保分支发生在思考阶段内

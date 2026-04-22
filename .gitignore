@@ -13,3 +13,5 @@ Atari_MuJoCo/runs
 token.json
 *.log
 *.time
+LLM/verl/
+Atari_MuJoCo/cleanrl/

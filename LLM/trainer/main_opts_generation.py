@@ -4,12 +4,12 @@
 Inference-time scaling/search experiment for OPTS.
 
 Two modes:
-  - reward-guided (reward_mode="reward"): uses actual reward_fn for TUCT guidance
+  - reward-guided (reward_mode="reward"): uses actual reward_fn for OTRC guidance
   - value-guided  (reward_mode="value"):  uses critic's last-position sigmoid(value) as reward
 
 Total inference budget = dataset_size * n_samples / batch_size steps,
 matching pass@k cost. Each step performs n_samples rounds of tree-structured
-sampling with TUCT-based search.
+sampling with OTRC-based search.
 
 Results include sample_index per response for scaling analysis:
   filter sample_index <= k to get n_samples=k results.
@@ -252,7 +252,7 @@ def main_task(config):
 
     prompt_length = rollout_config.prompt_length
     response_length = rollout_config.response_length
-    c_tuct = rollout_config.get("c", 1.0)
+    c_otrc = rollout_config.get("c", 1.0)
     max_search_per_tree = rollout_config.get("max_search_per_tree", 1)
     gamma = config.algorithm.gamma
     lam = config.algorithm.lam
@@ -335,14 +335,14 @@ def main_task(config):
 
     print(f"Starting inference-time search: total_steps={total_steps}, "
           f"n_samples={n_samples}, batch_size={batch_size}, "
-          f"reward_mode={reward_mode}, c={c_tuct}, max_search_per_tree={max_search_per_tree}")
+          f"reward_mode={reward_mode}, c={c_otrc}, max_search_per_tree={max_search_per_tree}")
 
     for step_idx in range(total_steps):
         print(f"[step {step_idx + 1}/{total_steps}] Start.")
         global_batch = None
         next_states = {}
         search_count = {}
-        # {uid -> max exploitation at selected node}, used by TUCT to filter
+        # {uid -> max exploitation at selected node}, used by OTRC to filter
         # candidates to those above the pool mean. Scoped per-step, matching
         # opts_ttpo.ray_trainer.fit() line 2019.
         max_exploitations = {}
@@ -452,14 +452,14 @@ def main_task(config):
                         (resp, idx_sample_counter[dataset_idx], global_sample_counter)
                     )
 
-            # === TUCT selection for next round ===
+            # === OTRC selection for next round ===
             if round_idx < n_samples - 1:
                 selected_states = select_next_states(
                     batch=global_batch,
                     search_count=search_count,
                     max_exploitations=max_exploitations,
                     max_search_per_tree=max_search_per_tree,
-                    c=c_tuct,
+                    c=c_otrc,
                     gamma=gamma,
                     max_prompt_length=prompt_length,
                     batch_size=batch_size,
