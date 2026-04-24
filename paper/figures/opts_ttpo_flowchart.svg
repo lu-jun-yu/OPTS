@@ -1,0 +1,230 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1800 1260" role="img" aria-labelledby="title desc">
+  <title id="title">OPTS-TTPO 算法流程图</title>
+  <desc id="desc">基于 LLM/trainer/opts_ttpo 实现的 OPTS-TTPO 训练流程，包括多轮树搜索、TreeGAE、OTRC 与 branch-weighted PPO 更新。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f7f2ea"/>
+      <stop offset="100%" stop-color="#eef4f7"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#152030" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#344054"/>
+    </marker>
+    <marker id="dashArrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7a8699"/>
+    </marker>
+    <style>
+      .title { font: 700 34px 'Segoe UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif; fill: #14213d; }
+      .subtitle { font: 400 17px 'Segoe UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif; fill: #475467; }
+      .section { font: 700 22px 'Segoe UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif; fill: #14213d; }
+      .label { font: 700 17px 'Segoe UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif; fill: #14213d; }
+      .body { font: 400 15px 'Segoe UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif; fill: #243447; }
+      .small { font: 400 13px 'Segoe UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif; fill: #5b6675; }
+      .badge { font: 700 13px 'Segoe UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif; fill: #ffffff; }
+      .box { rx: 26; ry: 26; filter: url(#shadow); }
+      .callout { rx: 24; ry: 24; filter: url(#shadow); }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1800" height="1260" fill="url(#bg)"/>
+
+  <text x="80" y="86" class="title">OPTS-TTPO 算法流程图</text>
+  <text x="80" y="120" class="subtitle">依据 `LLM/trainer/opts_ttpo/ray_trainer.py` 与 `core_algos.py` 的实际调用顺序绘制</text>
+
+  <!-- Top context -->
+  <g>
+    <rect x="80" y="160" width="500" height="110" class="box" fill="#e8f1fb" stroke="#2f6b9a" stroke-width="2.5"/>
+    <circle cx="118" cy="197" r="18" fill="#2f6b9a"/>
+    <text x="118" y="202" text-anchor="middle" class="badge">A</text>
+    <text x="150" y="198" class="label">输入来源</text>
+    <text x="150" y="226" class="body">PromptBuffer 按需抽样 prompt；round=0 全是新树</text>
+    <text x="150" y="248" class="body">后续 round 用 `prepare_next_round_input(...)` 从已选分支点继续生成</text>
+  </g>
+
+  <g>
+    <rect x="620" y="160" width="500" height="110" class="box" fill="#eaf7ef" stroke="#2d8c5a" stroke-width="2.5"/>
+    <circle cx="658" cy="197" r="18" fill="#2d8c5a"/>
+    <text x="658" y="202" text-anchor="middle" class="badge">B</text>
+    <text x="690" y="198" class="label">参与模块</text>
+    <text x="690" y="226" class="body">Actor-Rollout 负责生成、old/ref log prob；Critic 负责 values</text>
+    <text x="690" y="248" class="body">Reward 函数给出 `token_level_scores / token_level_rewards`</text>
+  </g>
+
+  <g>
+    <rect x="1160" y="160" width="560" height="110" class="box" fill="#fff4d6" stroke="#b28704" stroke-width="2.5"/>
+    <circle cx="1198" cy="197" r="18" fill="#b28704"/>
+    <text x="1198" y="202" text-anchor="middle" class="badge">C</text>
+    <text x="1230" y="198" class="label">关键超参</text>
+    <text x="1230" y="226" class="body">`n_rounds`, `max_search_per_tree`, `c_otrc`, `gamma`, `lam`</text>
+    <text x="1230" y="248" class="body">OTRC 控制“哪里继续搜索”；TTPO 控制“如何无偏更新策略”</text>
+  </g>
+
+  <!-- Main step container -->
+  <rect x="60" y="320" width="1680" height="545" rx="34" ry="34" fill="#ffffff" fill-opacity="0.58" stroke="#cfd8e3" stroke-width="2"/>
+  <text x="92" y="362" class="section">单个 Training Step: `RayOPTSTTPOTrainer.fit()`</text>
+
+  <!-- Round loop -->
+  <rect x="86" y="388" width="1220" height="438" rx="28" ry="28" fill="#fffaf0" stroke="#d0a11f" stroke-width="2.5" stroke-dasharray="10 8"/>
+  <rect x="110" y="402" width="225" height="40" rx="20" ry="20" fill="#d0a11f"/>
+  <text x="223" y="428" text-anchor="middle" class="badge">Round Loop: for round_idx in range(n_rounds)</text>
+
+  <!-- Box 1 -->
+  <g>
+    <rect x="124" y="468" width="320" height="138" class="box" fill="#e8f1fb" stroke="#2f6b9a" stroke-width="2.5"/>
+    <text x="150" y="498" class="label">1. 构造本轮 batch</text>
+    <text x="150" y="524" class="body">round=0: draw 新 prompt，分配新的 `uid`</text>
+    <text x="150" y="546" class="body">round&gt;0: 混合两部分</text>
+    <text x="150" y="568" class="body">• 已选树: `prepare_next_round_input(global_batch, next_states)`</text>
+    <text x="150" y="590" class="body">• 不足的槽位: 再补新的 prompt</text>
+  </g>
+
+  <!-- Box 2 -->
+  <g>
+    <rect x="492" y="468" width="310" height="138" class="box" fill="#e8f1fb" stroke="#2f6b9a" stroke-width="2.5"/>
+    <text x="518" y="498" class="label">2. 生成与前向计算</text>
+    <text x="518" y="524" class="body">`generate_sequences(...)` 继续写完整 response</text>
+    <text x="518" y="546" class="body">计算 reward / old_log_probs / ref_log_prob / values</text>
+    <text x="518" y="568" class="body">如果启用 KL 或 rollout correction，也在这里并入 batch</text>
+  </g>
+
+  <!-- Box 3 -->
+  <g>
+    <rect x="848" y="456" width="430" height="162" class="box" fill="#fef1d8" stroke="#b28704" stroke-width="2.5"/>
+    <text x="874" y="486" class="label">3. 注册树结构并并入 `global_batch`</text>
+    <text x="874" y="512" class="body">`set_opts_ttpo_info(...)` 写入 `rid / pid / branch_pos / cid`</text>
+    <text x="874" y="534" class="body">`compute_episodic_returns(...)` 沿祖先链累加奖励</text>
+    <text x="874" y="556" class="body">初始化 `state_branches=1`, `advantages=0`, `returns=0`</text>
+    <text x="874" y="578" class="body">把本轮样本 merge 到全局树批次，得到 `new_sample_indices`</text>
+    <text x="874" y="600" class="body">后续所有优势与 OTRC 都在这个 `global_batch` 上做</text>
+  </g>
+
+  <!-- Box 4 -->
+  <g>
+    <rect x="256" y="654" width="416" height="138" class="box" fill="#fff4d6" stroke="#b28704" stroke-width="2.5"/>
+    <text x="282" y="684" class="label">4. TreeGAE 增量反向传播</text>
+    <text x="282" y="710" class="body">`compute_treegae_advantage_return(...)`</text>
+    <text x="282" y="732" class="body">仅从 `new_sample_indices` 出发重算受影响子图</text>
+    <text x="282" y="754" class="body">在分支节点处，把 continuation 与所有 child 的首 token advantage 取均值</text>
+    <text x="282" y="776" class="body">输出更新后的 `advantages` 与 `returns`</text>
+  </g>
+
+  <!-- Decision -->
+  <g>
+    <polygon points="760,675 842,620 924,675 842,730" fill="#ffffff" stroke="#344054" stroke-width="2.5" filter="url(#shadow)"/>
+    <text x="842" y="669" text-anchor="middle" class="label">最后一轮</text>
+    <text x="842" y="693" text-anchor="middle" class="label">round?</text>
+  </g>
+
+  <!-- Box 5 -->
+  <g>
+    <rect x="966" y="640" width="312" height="152" class="box" fill="#eaf7ef" stroke="#2d8c5a" stroke-width="2.5"/>
+    <text x="992" y="670" class="label">5. OTRC 选点</text>
+    <text x="992" y="696" class="body">`select_next_states(global_batch, ...)`</text>
+    <text x="992" y="718" class="body">按每棵树的贪心最优路径计算 exploitation / exploration</text>
+    <text x="992" y="740" class="body">应用 prompt 长度约束与 `&lt;/think&gt;` 掩码</text>
+    <text x="992" y="762" class="body">输出“被选中的节点”而不是立即分支点</text>
+  </g>
+
+  <!-- Box 6 -->
+  <g>
+    <rect x="966" y="810" width="312" height="104" class="box" fill="#eaf7ef" stroke="#2d8c5a" stroke-width="2.5"/>
+    <text x="992" y="840" class="label">6. 转成真正分支点</text>
+    <text x="992" y="866" class="body">`selected_to_branch_points(...)` 取所选节点的父节点</text>
+    <text x="992" y="888" class="body">并执行 `state_branches[parent] += 1`，形成下轮 `next_states`</text>
+  </g>
+
+  <!-- Callouts -->
+  <g>
+    <rect x="1336" y="430" width="360" height="156" class="callout" fill="#fffdf8" stroke="#d0a11f" stroke-width="2"/>
+    <text x="1362" y="460" class="label">TreeGAE 细节</text>
+    <text x="1362" y="486" class="body">非分支位置: A_hat_t = delta_t + gamma * lambda * A_hat_(t+1)</text>
+    <text x="1362" y="508" class="body">分支位置: 把 child 首 token 的 advantage</text>
+    <text x="1362" y="530" class="body">与当前 continuation 的 advantage 一起平均</text>
+    <text x="1362" y="552" class="body">实现上是对全局对齐坐标做一次 reverse scan</text>
+  </g>
+
+  <g>
+    <rect x="1336" y="612" width="360" height="188" class="callout" fill="#f8fffb" stroke="#2d8c5a" stroke-width="2"/>
+    <text x="1362" y="642" class="label">OTRC 细节</text>
+    <text x="1362" y="668" class="body">先在每棵树上沿“最大首 token advantage”贪心前进</text>
+    <text x="1362" y="690" class="body">E_k = - sum gamma^(t-k) * A_hat_t</text>
+    <text x="1362" y="712" class="body">U_k = (sibling_count - 1) * max_j |E_j|</text>
+    <text x="1362" y="734" class="body">OTRC_k = E_k - c * U_k</text>
+    <text x="1362" y="756" class="body">选中的其实是“坏节点”；下一轮要从它的父节点重采样</text>
+    <text x="1362" y="778" class="body">这样才会替换该节点及其后缀</text>
+  </g>
+
+  <!-- Arrows inside round loop -->
+  <path d="M 444 537 L 492 537" fill="none" stroke="#344054" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M 802 537 L 848 537" fill="none" stroke="#344054" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M 1030 618 L 1030 636 L 672 636 L 672 723 L 734 723" fill="none" stroke="#344054" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M 672 723 L 760 723" fill="none" stroke="#344054" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M 924 675 L 966 675" fill="none" stroke="#344054" stroke-width="3" marker-end="url(#arrow)"/>
+  <text x="944" y="662" class="small">否</text>
+  <path d="M 1122 792 L 1122 810" fill="none" stroke="#344054" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M 1110 914 L 1110 940 L 284 940 L 284 606" fill="none" stroke="#344054" stroke-width="3" marker-end="url(#arrow)"/>
+  <text x="1126" y="926" class="small">进入下一轮</text>
+  <path d="M 842 730 L 842 888" fill="none" stroke="#344054" stroke-width="3" marker-end="url(#arrow)"/>
+  <text x="856" y="816" class="small">是</text>
+
+  <!-- Post processing -->
+  <rect x="86" y="900" width="1654" height="266" rx="28" ry="28" fill="#fff7f5" stroke="#d77a61" stroke-width="2.5"/>
+  <rect x="110" y="914" width="274" height="40" rx="20" ry="20" fill="#d77a61"/>
+  <text x="247" y="940" text-anchor="middle" class="badge">Post-processing + TTPO Update</text>
+
+  <g>
+    <rect x="126" y="988" width="330" height="120" class="box" fill="#fdebe8" stroke="#b55239" stroke-width="2.5"/>
+    <text x="152" y="1018" class="label">7. 计算 branch weight</text>
+    <text x="152" y="1044" class="body">`compute_branch_weight(...)` 沿祖先链追溯到根</text>
+    <text x="152" y="1066" class="body">根处乘同 uid 的 root count，轨迹内再做 cumprod</text>
+    <text x="152" y="1088" class="body">得到每个 token 的 `W(x)`</text>
+  </g>
+
+  <g>
+    <rect x="500" y="988" width="330" height="120" class="box" fill="#fdebe8" stroke="#b55239" stroke-width="2.5"/>
+    <text x="526" y="1018" class="label">8. 加权白化优势</text>
+    <text x="526" y="1044" class="body">`weighted_masked_whiten(...)`</text>
+    <text x="526" y="1066" class="body">统计量全部按 `1 / branch_weight` 加权</text>
+    <text x="526" y="1088" class="body">避免高分支区域在 whitening 时再次被放大</text>
+  </g>
+
+  <g>
+    <rect x="874" y="976" width="396" height="144" class="box" fill="#fdebe8" stroke="#b55239" stroke-width="2.5"/>
+    <text x="900" y="1006" class="label">9. Branch-weighted PPO 更新</text>
+    <text x="900" y="1032" class="body">Critic: `compute_value_loss(..., branch_weight=W)`</text>
+    <text x="900" y="1054" class="body">Actor: `compute_policy_loss_vanilla(..., branch_weight=W)`</text>
+    <text x="900" y="1076" class="body">`agg_loss` 自动切到 `weighted-token-mean`</text>
+    <text x="900" y="1098" class="body">loss = sum(loss_t / W_t) / sum(1 / W_t)</text>
+  </g>
+
+  <g>
+    <rect x="1314" y="988" width="390" height="120" class="box" fill="#fdebe8" stroke="#b55239" stroke-width="2.5"/>
+    <text x="1340" y="1018" class="label">10. 输出</text>
+    <text x="1340" y="1044" class="body">更新 actor / critic 参数</text>
+    <text x="1340" y="1066" class="body">记录 `opts_ttpo/step_mean_return` 与各类 PPO 指标</text>
+    <text x="1340" y="1088" class="body">进入下一个 training step</text>
+  </g>
+
+  <!-- TTPO callout -->
+  <g>
+    <rect x="1278" y="896" width="426" height="68" class="callout" fill="#fffdfb" stroke="#b55239" stroke-width="2"/>
+    <text x="1304" y="924" class="label">TTPO 校正核心</text>
+    <text x="1304" y="948" class="body">`branch_weight` 同时作用于优势白化、policy loss 和 value loss，保证树采样下的无偏更新</text>
+  </g>
+
+  <!-- Post arrows -->
+  <path d="M 842 888 L 842 1048 L 126 1048" fill="none" stroke="#344054" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M 456 1048 L 500 1048" fill="none" stroke="#344054" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M 830 1048 L 874 1048" fill="none" stroke="#344054" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M 1270 1048 L 1314 1048" fill="none" stroke="#344054" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- Dashed connectors to callouts -->
+  <path d="M 672 724 C 760 724, 860 520, 1336 520" fill="none" stroke="#7a8699" stroke-width="2.5" stroke-dasharray="8 8" marker-end="url(#dashArrow)"/>
+  <path d="M 1278 714 C 1310 714, 1320 714, 1336 714" fill="none" stroke="#7a8699" stroke-width="2.5" stroke-dasharray="8 8" marker-end="url(#dashArrow)"/>
+  <path d="M 1072 976 C 1180 940, 1208 930, 1278 930" fill="none" stroke="#7a8699" stroke-width="2.5" stroke-dasharray="8 8" marker-end="url(#dashArrow)"/>
+
+  <!-- Footer -->
+  <text x="80" y="1210" class="small">代码锚点: `ray_trainer.py::fit / select_next_states / selected_to_branch_points / weighted_masked_whiten`，`core_algos.py::compute_treegae_advantage_return / compute_branch_weight / compute_policy_loss_vanilla / compute_value_loss`</text>
+</svg>

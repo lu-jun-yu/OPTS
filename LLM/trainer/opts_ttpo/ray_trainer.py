@@ -336,12 +336,14 @@ def merge_batches(batch1: DataProto, batch2: DataProto) -> DataProto:
 def prepare_next_round_input(
     global_batch: DataProto,
     next_states: Dict[str, Tuple[int, int]],
+    pad_token_id: int,
 ) -> DataProto:
     """Prepare input batch for next round based on selected states.
 
     Args:
         global_batch: Global batch containing all trajectories.
         next_states: Dict mapping uid to (parent_idx, branch_pos).
+        pad_token_id: Tokenizer pad token id used for left padding prompt tokens.
     """
     sel_indices = [idx for idx, _ in next_states.values()]
     sel_positions = [pos for _, pos in next_states.values()]
@@ -354,7 +356,7 @@ def prepare_next_round_input(
     # Fill tensors: extract valid tokens only, left-pad
     # Each sample has different start/end indices, so we must loop
     batch_size = len(next_states)
-    padded_ids = torch.zeros(batch_size, prompt_len, dtype=torch.long)
+    padded_ids = torch.full((batch_size, prompt_len), pad_token_id, dtype=torch.long)
     padded_mask = torch.zeros(batch_size, prompt_len, dtype=torch.long)
 
     for i in range(batch_size):
@@ -652,6 +654,7 @@ def select_next_states(
             local_t = u - history_len[idx]
             next_local_t = local_t + 1
 
+            # LLM budget is measured in episodes, so we intentionally do not add a tau-based length penalty here.
             # Keep a suffix margin so TTPO does not spend an entire rollout budget
             # replacing only the tail end of a response.
             valid_u = active_mask & (local_t + 1 < response_lengths[idx] - 10)
@@ -2074,6 +2077,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 continued = prepare_next_round_input(
                                     global_batch=global_batch,
                                     next_states=next_states,
+                                    pad_token_id=self.tokenizer.pad_token_id,
                                 )
                                 parts.append(continued)
                             if k < batch_size:

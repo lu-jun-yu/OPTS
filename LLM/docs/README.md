@@ -25,7 +25,7 @@ OPTS is a novel tree search method designed for on-policy reinforcement learning
 Key features of OPTS:
 - **Sampling-based expansion**: Instead of enumerating all actions, each round generates a batch of trajectories, progressively building the tree.
 - **OTRC (On-policy Trajectory Rebranching Criterion)**: A selection criterion that balances exploitation and exploration to choose rebranching states for the next round of expansion.
-- **Backtracking to earlier states**: OPTS can branch from any state along the trajectory, not just leaf nodes, enabling re-exploration from earlier decision points—particularly beneficial in language generation settings.
+- **Backtracking to earlier states**: OPTS can branch from any state along the trajectory, not just leaf nodes, enabling re-exploration from earlier decision points, particularly beneficial in language generation settings.
 
 | Feature | MCTS | OPTS |
 |---------|------|------|
@@ -58,8 +58,22 @@ $$
 ```bash
 git clone https://github.com/lu-jun-yu/OPTS.git
 cd OPTS
-git submodule init
-git submodule update
+```
+
+`LLM/verl` and `Atari_MuJoCo/cleanrl` are kept under `OPTS/` as independent Git repositories. They are not managed as Git submodules.
+
+If these directories are missing on a fresh machine, clone your forks directly into place:
+
+```bash
+git clone https://github.com/lu-jun-yu/verl.git LLM/verl
+git clone https://github.com/lu-jun-yu/cleanrl.git Atari_MuJoCo/cleanrl
+```
+
+To update them later, enter each repository and pull from its own `main` branch:
+
+```bash
+cd LLM/verl && git switch main && git pull --rebase origin main
+cd Atari_MuJoCo/cleanrl && git switch main && git pull --rebase origin main
 ```
 
 ### Atari & MuJoCo
@@ -161,16 +175,16 @@ pip install --no-deps -e .
 
 ```bash
 cd Atari_MuJoCo
-scripts/run_ppo_atari.sh                          # Requirement: CPU Cores > 57
-scripts/run_all_baselines_continuous_action.sh    # Requirement: CPU Cores > 25
+scripts/run_ppo_atari.sh
+scripts/run_all_baselines_continuous_action.sh
 ```
 
 **Run OPTS-TTPO:**
 
 ```bash
 cd Atari_MuJoCo
-scripts/run_opts_ttpo_atari.sh                    # Requirement: CPU Cores > 57
-scripts/run_opts_ttpo_continuous_action.sh        # Requirement: CPU Cores > 25
+scripts/run_opts_ttpo_atari.sh
+scripts/run_opts_ttpo_continuous_action.sh
 ```
 
 **Visualization:**
@@ -224,7 +238,7 @@ scripts/run_opts_generation.sh
 
 ## Data
 
-The training and test data are already included in the `LLM/data/` directory—no additional download is needed.
+The training and test data are already included in the `LLM/data/` directory; no additional download is needed.
 
 | Split | Dataset | Source |
 |-------|---------|--------|
@@ -264,36 +278,36 @@ Coming soon.
 
 ## Project Structure
 
-```
+```text
 OPTS/
-├── Atari_MuJoCo/
-│   ├── cleanrl/                         # CleanRL framework (git submodule)
-│   │   └── cleanrl/
-│   │       ├── ppo_atari.py             # PPO baseline for Atari
-│   │       ├── ppo_continuous_action.py # PPO baseline for MuJoCo
-│   │       ├── rpo_continuous_action.py # RPO baseline for MuJoCo
-│   │       ├── opts_ttpo_atari.py       # OPTS-TTPO for Atari
-│   │       └── opts_ttpo_continuous_action.py  # OPTS-TTPO for MuJoCo
-│   ├── scripts/                         # Training launch scripts
-│   └── visual/                          # Visualization tools
-│       ├── plot_atari.py
-│       └── plot_mujoco.py
-├── LLM/
-│   ├── verl/                            # VERL framework (git submodule)
-│   ├── trainer/
-│   │   ├── opts_ttpo/                   # OPTS-TTPO trainer for LLM
-│   │   │   ├── ray_trainer.py           # RayOPTSTTPOTrainer (tree search + training loop)
-│   │   │   └── core_algos.py            # Core algorithms (TreeGAE, branch weight, loss)
-│   │   ├── main_opts_ttpo.py            # Train-time searching entry point
-│   │   ├── main_opts_generation.py      # Test-time searching entry point
-│   │   └── main_eval.py                 # Evaluation entry point
-│   ├── utils/
-│   │   └── reward_fn.py                 # Custom reward function
-│   ├── data_preprocess/                 # Data preprocessing scripts
-│   ├── data/                            # Training and test datasets (parquet)
-│   ├── scripts/                         # Training launch scripts
-│   └── models/                          # Model checkpoints (downloaded by user)
-└── README.md
+|-- Atari_MuJoCo/
+|   |-- cleanrl/                         # CleanRL fork, maintained as an independent repository
+|   |   `-- cleanrl/
+|   |       |-- ppo_atari.py
+|   |       |-- ppo_continuous_action.py
+|   |       |-- rpo_continuous_action.py
+|   |       |-- opts_ttpo_atari.py
+|   |       `-- opts_ttpo_continuous_action.py
+|   |-- scripts/
+|   `-- visual/
+|       |-- plot_atari.py
+|       `-- plot_mujoco.py
+|-- LLM/
+|   |-- verl/                            # VERL fork, maintained as an independent repository
+|   |-- trainer/
+|   |   |-- opts_ttpo/
+|   |   |   |-- ray_trainer.py
+|   |   |   `-- core_algos.py
+|   |   |-- main_opts_ttpo.py
+|   |   |-- main_opts_generation.py
+|   |   `-- main_eval.py
+|   |-- utils/
+|   |   `-- reward_fn.py
+|   |-- data_preprocess/
+|   |-- data/
+|   |-- scripts/
+|   `-- models/
+`-- README.md
 ```
 
 ## Citation
@@ -310,5 +324,11 @@ This project is licensed under the [Apache License 2.0](LICENSE).
 
 This project builds upon the following open-source frameworks:
 
-- **Atari & MuJoCo**: [CleanRL](https://github.com/vwxyzjn/cleanrl) — A clean and simple implementation of RL algorithms.
-- **LLM**: [VERL](https://github.com/verl-project/verl) — A flexible and efficient RL training framework for LLMs.
+- **Atari & MuJoCo**: [CleanRL](https://github.com/vwxyzjn/cleanrl) - A clean and simple implementation of RL algorithms.
+- **LLM**: [VERL](https://github.com/verl-project/verl) - A flexible and efficient RL training framework for LLMs.
+
+## Maintenance Notes
+
+- `OPTS`, `LLM/verl`, and `Atari_MuJoCo/cleanrl` are maintained as three separate Git repositories.
+- Commit code changes inside the repository that owns the files you changed.
+- Do not run `git submodule update --init --recursive`; this project no longer uses submodules.

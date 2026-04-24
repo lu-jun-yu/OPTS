@@ -359,6 +359,7 @@ def main_task(config):
                     continued = prepare_next_round_input(
                         global_batch=global_batch,
                         next_states=next_states,
+                        pad_token_id=tokenizer.pad_token_id,
                     )
                     parts.append(continued)
                 remaining = batch_size - k
