@@ -692,7 +692,7 @@ def select_next_states(
         exploration = (path_sibling - 1) * max_abs_exploitation.unsqueeze(1)
         otrc_score = exploitation - c * exploration
 
-        prompt_valid = prompt_lengths[path_idx] + path_t <= max_prompt_length
+        prompt_valid = prompt_lengths[path_idx] + path_t < max_prompt_length
         think_valid = path_t <= think_end_pos[path_idx]
         valid_mask = path_mask & prompt_valid & think_valid
         otrc_score = torch.where(valid_mask, otrc_score, neg_inf)

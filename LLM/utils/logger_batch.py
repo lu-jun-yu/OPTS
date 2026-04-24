@@ -28,6 +28,29 @@ if not logger_batch.handlers:
     logger_batch.addHandler(handler)
 
 
+def _flatten_valid(tensor: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+    if mask is None:
+        return tensor.reshape(-1)
+    valid = mask.to(dtype=torch.bool)
+    return tensor[valid]
+
+
+def _log_tensor_stats(prefix: str, name: str, tensor: torch.Tensor, mask: torch.Tensor | None = None) -> None:
+    valid_values = _flatten_valid(tensor, mask)
+    if valid_values.numel() == 0:
+        logger_batch.info(f"{prefix} {name}: no valid elements")
+        return
+
+    valid_values = valid_values.float()
+    logger_batch.info(
+        f"{prefix} {name}: "
+        f"min={valid_values.min().item():.4f}, "
+        f"max={valid_values.max().item():.4f}, "
+        f"mean={valid_values.mean().item():.4f}, "
+        f"std={valid_values.std(unbiased=False).item():.4f}"
+    )
+
+
 @contextmanager
 def timed_block(name: str, step: int = -1, round_idx: int = -1):
     """Context manager to log the execution time of a code block.
@@ -69,53 +92,31 @@ def log_batch_state(batch: DataProto, stage: str, step: int = -1, round_idx: int
     logger_batch.info(f"{prefix} === Batch State ===")
     logger_batch.info(f"{prefix} batch_size: {batch_size}")
 
-    # Tensor keys and shapes
-    tensor_keys = list(batch.batch.keys())
-    logger_batch.info(f"{prefix} tensor_keys: {tensor_keys}")
-    for key in tensor_keys:
-        tensor = batch.batch[key]
-        if hasattr(tensor, 'shape'):
-            logger_batch.info(f"{prefix}   {key}: shape={tensor.shape}, dtype={tensor.dtype}")
-        else:
-            logger_batch.info(f"{prefix}   {key}: type={type(tensor)}")
-
-    # Non-tensor batch keys
-    non_tensor_keys = list(batch.non_tensor_batch.keys()) if hasattr(batch, 'non_tensor_batch') else []
-    logger_batch.info(f"{prefix} non_tensor_keys: {non_tensor_keys}")
-    for key in non_tensor_keys:
-        val = batch.non_tensor_batch[key]
-        if isinstance(val, np.ndarray):
-            logger_batch.info(f"{prefix}   {key}: shape={val.shape}, dtype={val.dtype}")
-        else:
-            logger_batch.info(f"{prefix}   {key}: type={type(val)}, len={len(val) if hasattr(val, '__len__') else 'N/A'}")
-
-    # Meta info
-    meta_keys = list(batch.meta_info.keys()) if hasattr(batch, 'meta_info') else []
-    logger_batch.info(f"{prefix} meta_info_keys: {meta_keys}")
-
     # Key statistics for important tensors
     if 'attention_mask' in batch.batch:
         mask = batch.batch['attention_mask']
         seq_lens = mask.sum(dim=-1)
         logger_batch.info(f"{prefix} seq_lens: min={seq_lens.min().item()}, max={seq_lens.max().item()}, mean={seq_lens.float().mean().item():.1f}")
 
+    response_mask = batch.batch.get('response_mask')
     if 'response_mask' in batch.batch:
-        resp_mask = batch.batch['response_mask']
-        resp_lens = resp_mask.sum(dim=-1)
+        resp_lens = response_mask.sum(dim=-1)
         logger_batch.info(f"{prefix} response_lens: min={resp_lens.min().item()}, max={resp_lens.max().item()}, mean={resp_lens.float().mean().item():.1f}")
 
     if 'token_level_rewards' in batch.batch:
         rewards = batch.batch['token_level_rewards']
+        if response_mask is not None:
+            rewards = rewards * response_mask.to(rewards.dtype)
         total_rewards = rewards.sum(dim=-1)
         logger_batch.info(f"{prefix} total_rewards: min={total_rewards.min().item():.4f}, max={total_rewards.max().item():.4f}, mean={total_rewards.mean().item():.4f}")
 
     if 'advantages' in batch.batch:
         adv = batch.batch['advantages']
-        logger_batch.info(f"{prefix} advantages: min={adv.min().item():.4f}, max={adv.max().item():.4f}, mean={adv.mean().item():.4f}, std={adv.std().item():.4f}")
+        _log_tensor_stats(prefix, "advantages", adv, response_mask)
 
     if 'values' in batch.batch:
         vals = batch.batch['values']
-        logger_batch.info(f"{prefix} values: min={vals.min().item():.4f}, max={vals.max().item():.4f}, mean={vals.mean().item():.4f}")
+        _log_tensor_stats(prefix, "values", vals, response_mask)
 
     logger_batch.info(f"{prefix} === End Batch State ===")
 
