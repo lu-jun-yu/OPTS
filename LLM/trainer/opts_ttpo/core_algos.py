@@ -2058,7 +2058,7 @@ def compute_branch_weight(
 
     # Compute initial weight by tracing the full ancestor chain to the root
     def _compute_init_weight(i: int) -> torch.Tensor:
-        weight = torch.tensor(1.0, dtype=state_branches.dtype)
+        weight = torch.tensor(1.0, dtype=state_branches.dtype, device=state_branches.device)
         current_idx, current_bp = i, branch_pos[i]
         # Iteratively trace parent -> grandparent -> ... -> root
         while pid[current_idx] is not None and pid[current_idx] in rid2idx:
@@ -2073,7 +2073,10 @@ def compute_branch_weight(
 
     # Within-trajectory propagation: weight[t] = weight[t-1] * state_branches[t-1]
     # This is init_weight * cumprod(state_branches[:, :-1])
-    padded = torch.cat([torch.ones(batch_size, 1), state_branches[:, :-1]], dim=1)
+    padded = torch.cat(
+        [torch.ones(batch_size, 1, dtype=state_branches.dtype, device=state_branches.device), state_branches[:, :-1]],
+        dim=1,
+    )
     cumulative = torch.cumprod(padded, dim=1)
     branch_weight = init_weights.unsqueeze(1) * cumulative
 

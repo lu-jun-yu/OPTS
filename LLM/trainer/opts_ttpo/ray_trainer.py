@@ -383,7 +383,10 @@ def prepare_next_round_input(
 
     for key in ["uid", "data_source", "reward_model", "extra_info", "raw_prompt", "raw_prompt_len"]:
         if key in global_batch.non_tensor_batch:
-            new_batch.non_tensor_batch[key] = global_batch.non_tensor_batch[key][sel_indices]
+            selected_values = global_batch.non_tensor_batch[key][sel_indices]
+            if key == "extra_info":
+                selected_values = np.array([copy.copy(v) for v in selected_values], dtype=object)
+            new_batch.non_tensor_batch[key] = selected_values
 
     new_batch.meta_info = global_batch.meta_info.copy()
     return new_batch
@@ -654,9 +657,8 @@ def select_next_states(
             local_t = u - history_len[idx]
             next_local_t = local_t + 1
 
-            # LLM budget is measured in episodes, so we intentionally do not add a tau-based length penalty here.
-            # Keep a suffix margin so TTPO does not spend an entire rollout budget
-            # replacing only the tail end of a response.
+            # LLM inference budget is measured in episodes, not environment steps.
+            # Keep a suffix margin so one extra episode does not only replace a short tail.
             valid_u = active_mask & (local_t + 1 < response_lengths[idx] - 10)
 
             path_idx[:, u] = idx
@@ -1275,6 +1277,10 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
 
         if "extra_info" not in batch.non_tensor_batch:
             batch.non_tensor_batch["extra_info"] = np.array([{} for _ in range(batch_size)], dtype=object)
+        else:
+            batch.non_tensor_batch["extra_info"] = np.array(
+                [copy.copy(v) for v in batch.non_tensor_batch["extra_info"]], dtype=object
+            )
 
         for i in range(batch_size):
             raw_prompt_len = int(batch.non_tensor_batch["raw_prompt_len"][i])
