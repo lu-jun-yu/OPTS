@@ -114,6 +114,10 @@ def log_batch_state(batch: DataProto, stage: str, step: int = -1, round_idx: int
         adv = batch.batch['advantages']
         _log_tensor_stats(prefix, "advantages", adv, response_mask)
 
+    if 'returns' in batch.batch:
+        rets = batch.batch['returns']
+        _log_tensor_stats(prefix, "returns", rets, response_mask)
+
     if 'values' in batch.batch:
         vals = batch.batch['values']
         _log_tensor_stats(prefix, "values", vals, response_mask)

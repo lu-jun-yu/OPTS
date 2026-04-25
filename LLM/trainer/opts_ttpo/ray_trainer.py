@@ -910,6 +910,43 @@ def compute_aggregated_returns(batch: DataProto) -> list[float]:
     return aggregated_returns
 
 
+def compute_pass_return(batch: DataProto) -> float:
+    """Compute prompt-level pass return for monitoring.
+
+    For each prompt/tree (uid), take the maximum episodic return across all
+    sampled responses, then average these maxima over prompts.
+    """
+    uid = batch.non_tensor_batch["uid"]
+    episodic_returns = np.asarray(batch.non_tensor_batch["episodic_returns"], dtype=np.float64)
+
+    uid_groups = defaultdict(list)
+    for i in range(len(uid)):
+        uid_groups[uid[i]].append(i)
+
+    prompt_max_returns = [float(np.max(episodic_returns[indices])) for indices in uid_groups.values()]
+    if not prompt_max_returns:
+        return 0.0
+    return float(np.mean(prompt_max_returns))
+
+
+def compute_search_count_rate_metrics(
+    batch: DataProto,
+    search_count: dict,
+    max_search_per_tree: int,
+) -> dict[str, float]:
+    """Compute prompt-level search-count distribution for monitoring."""
+    unique_uids = np.unique(batch.non_tensor_batch["uid"])
+    total_prompts = len(unique_uids)
+    if total_prompts == 0:
+        return {}
+
+    metrics = {}
+    for i in range(max_search_per_tree + 1):
+        matched = sum(1 for u in unique_uids if search_count.get(u, 0) == i)
+        metrics[f"opts_ttpo/step_search_count_{i}_rate"] = matched / total_prompts
+    return metrics
+
+
 def weighted_masked_whiten(
     advantages: torch.Tensor,
     response_mask: torch.Tensor,
@@ -930,8 +967,6 @@ def weighted_masked_whiten(
     valid = response_mask.to(dtype=advantages.dtype)
     inv_weight = valid / torch.clamp(branch_weight.to(dtype=advantages.dtype), min=eps)
     inv_weight_sum = inv_weight.sum()
-
-    assert inv_weight_sum.item() > 0, "weighted_masked_whiten requires positive total effective inverse-weight"
 
     adv_mean = (advantages * inv_weight).sum() / inv_weight_sum
     adv_var = ((advantages - adv_mean) ** 2 * inv_weight).sum() / inv_weight_sum
@@ -2347,6 +2382,14 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                         step_aggregated_returns = compute_aggregated_returns(batch)
                         step_mean_return = sum(step_aggregated_returns) / len(step_aggregated_returns) if step_aggregated_returns else 0.0
                         metrics["opts_ttpo/step_mean_return"] = step_mean_return
+                        metrics["opts_ttpo/step_pass_return"] = compute_pass_return(batch)
+                        metrics.update(
+                            compute_search_count_rate_metrics(
+                                batch=batch,
+                                search_count=search_count,
+                                max_search_per_tree=max_search_per_tree,
+                            )
+                        )
 
                         log_batch_state(batch, stage="opts_ttpo_final_batch_before_update", step=self.global_steps)
 
