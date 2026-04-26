@@ -137,6 +137,56 @@ def _algo_matches_filter(algo_name: str, date: str, filt: str) -> bool:
     return filt == algo_name or filt == algo_id_with_date
 
 
+def _aggregate_seed_curves_stepwise(
+    seed_curves: Dict[int, Tuple[List[float], List[float]]],
+    task_name: Optional[str] = None,
+    algo_name: Optional[str] = None,
+) -> Tuple[List[float], List[float]]:
+    """
+    参考 plot_mujoco.py：各 seed 曲线长度不一致时，先截断到最短长度，
+    再按索引（step-level）跨 seed 逐点求平均。
+    """
+    if not seed_curves:
+        return [], []
+
+    sorted_seeds = sorted(seed_curves.keys())
+    valid = []
+    for s in sorted_seeds:
+        steps, returns = seed_curves[s]
+        if steps and returns:
+            valid.append((s, steps, returns))
+    if not valid:
+        return [], []
+
+    step_lens = {s: len(steps) for s, steps, _ in valid}
+    ret_lens = {s: len(rets) for s, _, rets in valid}
+    aligned_lens = {s: min(step_lens[s], ret_lens[s]) for s, _, _ in valid}
+    min_len = min(aligned_lens.values())
+    if min_len <= 0:
+        return [], []
+
+    if len(set(aligned_lens.values())) > 1:
+        ctx_task = task_name if task_name is not None else "<unknown_task>"
+        ctx_algo = algo_name if algo_name is not None else "<unknown_algo>"
+        detail = ", ".join(
+            f"seed{s}:{aligned_lens[s]}(step={step_lens[s]},return={ret_lens[s]})"
+            for s in sorted(aligned_lens.keys())
+        )
+        print(
+            f"[WARNING] step-level 截断触发: task={ctx_task}, algo={ctx_algo}, "
+            f"min_len={min_len}, lengths=[{detail}]"
+        )
+
+    aggregated_steps = list(valid[0][1][:min_len])
+    aggregated_returns = []
+    for i in range(min_len):
+        row = []
+        for _, _, rets in valid:
+            row.append(float(rets[i]))
+        aggregated_returns.append(float(mean(row)))
+    return aggregated_steps, aggregated_returns
+
+
 def _collect_task_algo_scores(
     results_dir: Path,
     algo_filters: Tuple[str, str],
@@ -145,12 +195,13 @@ def _collect_task_algo_scores(
     last_log_points: int,
 ) -> Dict[str, Dict[str, List[float]]]:
     """
-    返回 task -> algo_key_str -> [每个匹配 json 算出的 (mean_all, mean_tail) 可再聚合]
-    这里先存每条 run 的两个标量，外层再对 mean 聚合。
+    返回 task -> algo_key_str -> [score]
+    其中 score 来自“先按 seed 做 step-level 平均（长度不对齐时截断最短），
+    再对聚合曲线求全局均值/尾部均值”。
     """
-    # task -> algo0 / algo1 -> list of (mean_all, mean_tail)
-    raw: Dict[str, Dict[int, List[Tuple[float, float]]]] = defaultdict(
-        lambda: {0: [], 1: []}
+    # task -> algo(0/1) -> seed -> (date, steps, returns)
+    raw: Dict[str, Dict[int, Dict[int, Tuple[str, List[float], List[float]]]]] = defaultdict(
+        lambda: {0: {}, 1: {}}
     )
 
     for filepath in results_dir.rglob("*.json"):
@@ -173,23 +224,41 @@ def _collect_task_algo_scores(
         if which is None:
             continue
 
-        _, returns = load_episodic_returns(filepath)
+        steps, returns = load_episodic_returns(filepath)
         if not returns:
             continue
-        arr = [float(x) for x in returns]
-        mean_all = float(mean(arr))
-        tail_n = min(last_log_points, len(arr))
-        mean_tail = float(mean(arr[-tail_n:]))
 
-        raw[task][which].append((mean_all, mean_tail))
+        # 同一 task/algo/seed 若有多条记录，优先保留日期更晚的一条
+        prev = raw[task][which].get(seed)
+        if prev is None or date > prev[0]:
+            raw[task][which][seed] = (date, [float(x) for x in steps], [float(x) for x in returns])
 
     out: Dict[str, Dict[str, List[float]]] = {}
     for task, sides in raw.items():
+        seed_curves_a = {s: (v[1], v[2]) for s, v in sides[0].items()}
+        seed_curves_b = {s: (v[1], v[2]) for s, v in sides[1].items()}
+
+        _, agg_a = _aggregate_seed_curves_stepwise(seed_curves_a, task, algo_filters[0])
+        _, agg_b = _aggregate_seed_curves_stepwise(seed_curves_b, task, algo_filters[1])
+
+        all_a: List[float] = []
+        all_b: List[float] = []
+        tail_a: List[float] = []
+        tail_b: List[float] = []
+        if agg_a:
+            all_a = [float(mean(agg_a))]
+            tail_n_a = min(last_log_points, len(agg_a))
+            tail_a = [float(mean(agg_a[-tail_n_a:]))]
+        if agg_b:
+            all_b = [float(mean(agg_b))]
+            tail_n_b = min(last_log_points, len(agg_b))
+            tail_b = [float(mean(agg_b[-tail_n_b:]))]
+
         out[task] = {
-            algo_filters[0]: [x[0] for x in sides[0]],
-            algo_filters[1]: [x[0] for x in sides[1]],
-            f"{algo_filters[0]}::__tail__": [x[1] for x in sides[0]],
-            f"{algo_filters[1]}::__tail__": [x[1] for x in sides[1]],
+            algo_filters[0]: all_a,
+            algo_filters[1]: all_b,
+            f"{algo_filters[0]}::__tail__": tail_a,
+            f"{algo_filters[1]}::__tail__": tail_b,
         }
     return out
 
@@ -203,7 +272,7 @@ def _aggregate_scores(pairs: List[float]) -> float:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
-    seed_filters: Optional[set] = None
+    seed_filters: Optional[set] = {1, 2, 3}
     last_log_points = 100
     task_subset: Optional[set] = None
 
