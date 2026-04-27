@@ -34,30 +34,7 @@ $$
 $$
 如果直接把树上的所有节点当作等权样本，则位于高分支区域的后缀会被重复计数，从而改变经验样本分布并引入偏差。TTPO 的核心思想是：不修改策略梯度的基本形式，而是对树节点按其采样放大量的倒数进行校正。
 
-**定理 1（树轨迹加权恒等式）。** 设 $f$ 为任意可积节点函数，$\tau\sim \pi_\theta$ 为链式 on-policy 轨迹，$\mathcal{T}_{\pi_\theta}$ 为由同一策略生成的树轨迹，且每个分支点的 continuation 在条件于该分支状态时独立采样。则有
-
-$$
-\mathbb{E}_{\tau\sim \pi_\theta}\!\left[\sum_t f(s_t,a_t)\right]
-=\mathbb{E}_{\mathcal{T}_{\pi_\theta}}\!\left[\sum_{x\in\mathcal{T}_{\pi_\theta}} \frac{f(x)}{W(x)}\right].
-$$
-
-**证明。** 对于链式轨迹中的任意位置 $(\tau,t)$，记 $x_t(\tau)$ 为该位置对应的节点出现，$N\!\left(x_t(\tau);\mathcal{T}_{\pi_\theta}\right)$ 为该节点出现在树中被复制的总次数。条件于链式轨迹 $\tau$，每个祖先分支点 $u\in\operatorname{Anc}(x_t(\tau))$ 都会把其后缀独立复制 $m(u)$ 次，而根 rollout 被复制 $M_{\mathrm{root}}$ 次，因此
-$$
-\mathbb{E}\!\left[N\!\left(x_t(\tau);\mathcal{T}_{\pi_\theta}\right)\mid \tau\right] = M_{\mathrm{root}}\prod_{u\in\operatorname{Anc}(x_t(\tau))} m(u) = W\!\left(x_t(\tau)\right).
-$$
-利用全期望公式与求和交换，可得
-$$
-\begin{aligned} \mathbb{E}_{\mathcal{T}_{\pi_\theta}}\!\left[\sum_{x\in\mathcal{T}_{\pi_\theta}}\frac{f(x)}{W(x)}\right] &= \mathbb{E}_{\tau\sim \pi_\theta}\!\left[\mathbb{E}\!\left[\sum_t \frac{N(x_t(\tau);\mathcal{T}_{\pi_\theta})}{W(x_t(\tau))}f(x_t(\tau)) \;\middle|\; \tau\right]\right] \\ &= \mathbb{E}_{\tau\sim \pi_\theta}\!\left[\sum_t \frac{\mathbb{E}[N(x_t(\tau);\mathcal{T}_{\pi_\theta})\mid\tau]}{W(x_t(\tau))} f(x_t(\tau))\right] \\ &= \mathbb{E}_{\tau\sim \pi_\theta}\!\left[\sum_t f(x_t(\tau))\right]. \end{aligned}
-$$
-证毕。 $\square$
-
-将定理 1 应用于
-$$
-f(s_t,a_t)=\hat A_t \nabla_\theta \log \pi_\theta(a_t\mid s_t),
-$$
-即可得到树轨迹上的无偏策略梯度校正。
-
-**推论 1（TTPO 的无偏策略梯度）。**
+**定理 1（TTPO 的无偏策略梯度）。** 设 $\mathcal{T}_{\pi_\theta}$ 由同一策略生成，且每个分支点的 continuation 在条件于该分支状态时独立采样。则有
 $$
 \nabla_\theta J(\theta) = \mathbb{E}_{\mathcal{T}_{\pi_\theta}}\!\left[
 \sum_{x\in\mathcal{T}_{\pi_\theta}}
@@ -65,7 +42,52 @@ $$
 \hat A(x)\nabla_\theta\log \pi_\theta(a\mid s)
 \right].
 $$
-因此，$1/W(x)$ 不是启发式重加权，而是由树采样分布与链式 on-policy 分布之间的期望计数关系直接推出的校正因子。
+
+**证明。** 对分支操作次数作归纳。没有分支时，树轨迹退化为普通链式轨迹，上式就是标准策略梯度定理。
+
+假设当前树 $\mathcal{T}$ 的加权策略梯度估计已经无偏。现在选择某个已有节点 $u$，从 $u$ 再采样一条新的 continuation，得到新树 $\mathcal{T}^+$。设
+$$
+A(u):=M_{\mathrm{root}}\prod_{v\in\operatorname{Anc}(u)} m(v)
+$$
+为到达节点 $u$ 之前已经累积的分支因子。若当前 $u$ 之后已有 $b$ 条 continuation，则节点 $u$ 之前的前缀和节点 $u$ 本身都不变，变化只出现在 $u$ 之后的 strict suffix。把这 $b$ 条 strict suffix 的总梯度贡献记为
+$$
+g_1(u),\ldots,g_b(u),
+$$
+其中每个 $g_j(u)$ 内部已经包含更深层分支的校正，但暂不乘 $u$ 这一层的平均因子；其余节点的总贡献记为 $g_{\mathrm{pre}}(u)$。于是
+$$
+\hat g(\mathcal{T})
+=
+g_{\mathrm{pre}}(u)+\frac{1}{A(u)}\frac{1}{b}\sum_{j=1}^{b} g_j(u).
+$$
+加入新 continuation 后，
+$$
+\hat g(\mathcal{T}^+)
+=
+g_{\mathrm{pre}}(u)+\frac{1}{A(u)}\frac{1}{b+1}\sum_{j=1}^{b+1} g_j(u).
+$$
+条件于节点 $u$，这些 continuation 都来自同一个 on-policy 条件分布，因此
+$$
+\mathbb{E}\!\left[\frac{1}{b+1}\sum_{j=1}^{b+1}g_j(u)\middle|u\right]
+=
+\mathbb{E}\!\left[g_1(u)\middle|u\right]
+=
+\mathbb{E}\!\left[\frac{1}{b}\sum_{j=1}^{b}g_j(u)\middle|u\right].
+$$
+从而
+$$
+\mathbb{E}\!\left[\hat g(\mathcal{T}^+)\middle|u\right]
+=
+\mathbb{E}\!\left[\hat g(\mathcal{T})\middle|u\right].
+$$
+也就是说，每增加一次同策略分支，只是把节点 $u$ 之后 continuation 的算术平均从 $b$ 个样本更新为 $b+1$ 个样本，策略梯度估计的条件期望保持不变。由归纳法，任意树轨迹上都有
+$$
+\mathbb{E}\!\left[\hat g(\mathcal{T}_{\pi_\theta})\right]
+=
+\nabla_\theta J(\theta).
+$$
+证毕。 $\square$
+
+因此，$1/W(x)$ 正好把每个分支点之后的多个 continuation 还原为对同一条件分布的平均。
 
 #### 3.1.3 TreeGAE 及其无偏性
 
@@ -83,7 +105,7 @@ $$
 $$
 A^{\lambda,\phi}(x)=\delta^\phi(x)+\gamma\lambda\,\mathbb{E}_{C\sim p(\cdot\mid x)}\!\left[A^{\lambda,\phi}(C)\right],
 $$
-其中 $p(\cdot\mid x)$ 表示从节点 $x$ 继续按当前策略采样 continuation 所得到的条件分布；若 $x$ 为叶节点，则 $A^{\lambda,\phi}(x)=\delta^\phi(x)$。这个定义表明，TreeGAE 要估计的并不是“真实优势本身”，而是由当前 critic 基线诱导的 tree-$\lambda$ target；只有当 $V_\phi=V^\pi$ 时，它才退化为对真实 tree-$\lambda$ advantage 的估计。
+其中 $p(\cdot\mid x)$ 表示从节点 $x$ 继续按当前策略采样 continuation 所得到的条件分布；若 $x$ 为叶节点，则 $A^{\lambda,\phi}(x)=\delta^\phi(x)$。TreeGAE 估计的对象就是由当前 critic 基线诱导的 tree-$\lambda$ target；当 $V_\phi=V^\pi$ 时，它退化为真实的 tree-$\lambda$ advantage。
 
 据此，我们定义 TreeGAE 估计量：
 $$
@@ -102,19 +124,29 @@ $$
 
 **证明。** 对树深度作反向归纳。若 $x$ 为叶节点，则
 $$
-\hat A^{\mathrm{TreeGAE}}(x)=\delta^\phi(x)=A^{\lambda,\phi}(x),
+\hat A^{\mathrm{TreeGAE}}(x)=\delta^\phi(x)=A^{\lambda,\phi}(x).
 $$
-结论显然成立。假设对所有比 $x$ 更深的节点 $c\in \operatorname{Ch}(x)$，已有
+若 $x$ 不是叶节点，假设对所有更深的节点 $c\in \operatorname{Ch}(x)$，已有
 $$
 \mathbb{E}\!\left[\hat A^{\mathrm{TreeGAE}}(c)\mid c\right]=A^{\lambda,\phi}(c).
 $$
-则由 TreeGAE 定义与条件独立同分布假设，
+则
 $$
-\begin{aligned} \mathbb{E}\!\left[\hat A^{\mathrm{TreeGAE}}(x)\mid x\right] &= \delta^\phi(x)+\gamma\lambda\,\mathbb{E}\!\left[\frac{1}{|\operatorname{Ch}(x)|}\sum_{c\in \operatorname{Ch}(x)} \hat A^{\mathrm{TreeGAE}}(c)\;\middle|\; x\right] \\ &= \delta^\phi(x)+\gamma\lambda\,\frac{1}{|\operatorname{Ch}(x)|}\sum_{c\in \operatorname{Ch}(x)}\mathbb{E}\!\left[\mathbb{E}\!\left[\hat A^{\mathrm{TreeGAE}}(c)\mid c\right]\middle|\; x\right] \\ &= \delta^\phi(x)+\gamma\lambda\,\frac{1}{|\operatorname{Ch}(x)|}\sum_{c\in \operatorname{Ch}(x)}\mathbb{E}\!\left[A^{\lambda,\phi}(c)\mid x\right] \\ &= \delta^\phi(x)+\gamma\lambda\,\mathbb{E}_{C\sim p(\cdot\mid x)}\!\left[A^{\lambda,\phi}(C)\right] \\ &= A^{\lambda,\phi}(x). \end{aligned}
+\begin{aligned}
+\mathbb{E}\!\left[\hat A^{\mathrm{TreeGAE}}(x)\mid x\right]
+&=
+\delta^\phi(x)+\gamma\lambda\,\mathbb{E}\!\left[\frac{1}{|\operatorname{Ch}(x)|}\sum_{c\in \operatorname{Ch}(x)} \hat A^{\mathrm{TreeGAE}}(c)\middle| x\right] \\
+&=
+\delta^\phi(x)+\gamma\lambda\,\mathbb{E}_{C\sim p(\cdot\mid x)}\!\left[\mathbb{E}\!\left[\hat A^{\mathrm{TreeGAE}}(C)\mid C\right]\right] \\
+&=
+\delta^\phi(x)+\gamma\lambda\,\mathbb{E}_{C\sim p(\cdot\mid x)}\!\left[A^{\lambda,\phi}(C)\right] \\
+&=
+A^{\lambda,\phi}(x).
+\end{aligned}
 $$
 归纳完成。 $\square$
 
-定理 2 说明，TreeGAE 的算术平均并非启发式“平摊”处理，而是对子 continuation 条件期望的无偏 Monte Carlo 估计。因此，只要所有 continuation 都来自相同的 on-policy 条件分布，TreeGAE 就是标准 GAE 在树结构上的自然推广。
+定理 2 说明，分支节点处对 continuation 取算术平均，对应于对子 continuation 条件期望的无偏 Monte Carlo 估计。因此，只要所有 continuation 都来自相同的 on-policy 条件分布，TreeGAE 就是标准 GAE 在树结构上的自然推广。
 
 #### 3.1.4 Branch-weighted PPO 目标
 
