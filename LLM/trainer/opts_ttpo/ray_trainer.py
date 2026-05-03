@@ -2372,6 +2372,10 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                             branch_pos=batch.non_tensor_batch["branch_pos"],
                         )
                         batch.batch["branch_weight"] = branch_weight
+                        # Pre-compute global weighted-token-mean denominator sum_t(mask_t/W_t)
+                        # so per-micro-batch agg_loss can use it directly (no all_reduce).
+                        inv_w = batch.batch["response_mask"].float() / branch_weight.clamp(min=1e-8)
+                        batch.meta_info["weighted_inv_weight_sum"] = float(inv_w.sum().item())
                         batch.batch["advantages"] = weighted_masked_whiten(
                             advantages=batch.batch["advantages"],
                             response_mask=batch.batch["response_mask"],

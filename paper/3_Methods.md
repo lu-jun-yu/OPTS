@@ -1,34 +1,20 @@
 ## 3 方法
 
-本节给出 OPTS-TTPO 的完整方法推导。第 3.1 节介绍树轨迹策略优化 TTPO，包括同策略树轨迹的形式化定义、树轨迹策略梯度修正及其无偏性、TreeGAE 的定义与无偏性，以及由此导出的 branch-weighted PPO 目标。第 3.2 节介绍同策略并行树搜索 OPTS，说明如何从回报缺口的分解出发构造重分支准则 OTRC，并给出与训练预算对齐的搜索流程。
+本节给出 OPTS-TTPO 的完整方法推导。第 3.1 节介绍树轨迹策略优化 TTPO，包括同策略树轨迹策略梯度修正、TreeGAE 的定义与无偏性，以及由此导出的 branch-weighted PPO 目标。第 3.2 节转向同策略并行树搜索 (OPTS)，从回报缺口的残差分解推导最优轨迹重分支准则 (OTRC)，并给出其无长度惩罚与长度惩罚的两种形式，最后整理完整的 OPTS 训练流程。
 
 ### 3.1 TTPO：Tree Trajectory Policy Optimization
 
-#### 3.1.1 同策略树轨迹
+#### 3.1.2 同策略树轨迹与梯度修正及其无偏性
 
 设当前策略为 $\pi_\theta$。标准 on-policy rollout 从初始状态分布出发仅生成一条链式轨迹
 $$
 \tau=(s_0,a_0,s_1,a_1,\ldots),\qquad a_t\sim \pi_\theta(\cdot\mid s_t).
 $$
-本文考虑更一般的**同策略树轨迹** $\mathcal{T}_{\pi_\theta}$：在一条已采样轨迹的某个中间状态处，算法可以回到该状态并再次从同一策略 $\pi_\theta$ 采样新的 continuation。因而，同一状态之后可能对应多个同策略后缀，整体样本结构不再是单链，而是一棵由根轨迹及若干重分支 continuation 组成的树。
+本文考虑更一般的**同策略树轨迹** $\mathcal{T}_{\pi_\theta}$：在一条已采样轨迹的某个中间状态处，算法可以回到该状态，并再次从同一策略 $\pi_\theta$ 采样新的 continuation。于是，同一状态之后可能对应多个同策略后缀，样本结构由单链扩展为一棵轨迹树。
 
-形式上，我们把树中的每一个节点记为一个**节点出现** $x=(s,a)$，表示某条根到叶路径上的一个具体状态-动作对；之所以强调“节点出现”，是因为相同的状态值可能在不同深度或不同分支上重复出现。记 $\operatorname{Anc}(x)$ 为从根到 $x$ 的路径上所有祖先分支点的集合，$m(u)$ 为分支点 $u$ 的 continuation 数。若一棵树的根 rollout 被重复采样 $M_{\mathrm{root}}$ 次，则该树对节点 $x$ 的采样放大量定义为
-$$
-W(x)\;=\;M_{\mathrm{root}}\prod_{u\in\operatorname{Anc}(x)} m(u).
-$$
-该量刻画了树采样机制相对于标准链式采样对节点 $x$ 的期望重复计数倍数。直观地，$x$ 之前经历的分支点越多、这些分支点的 continuation 数越大，则 $x$ 及其后续片段在训练样本中被过采样的程度越高。
+形式上，我们把树中的每个节点记为一个**节点出现** $x=(s,a)$，表示某条根到叶路径上的具体状态-动作对。记 $\operatorname{Anc}(x)$ 为从根到 $x$ 的路径上所有祖先分支点的集合，$m(u)$ 为分支点 $u$ 的 continuation 数。用 $W(x)$ 表示节点 $x$ 相对于标准链式采样的采样放大量；下面先证明用 $1/W(x)$ 校正的无偏性，再在证明之后给出 $W(x)$ 的实际计算。
 
-分支权重可以沿树自顶向下递推计算。设根轨迹上节点的初始权重为 $M_{\mathrm{root}}$。若节点 $y$ 的父节点不是分支点，则 $W(y)=W(\operatorname{parent}(y))$；若其父节点是分支点 $u$，且 $u$ 处实际生成了 $m(u)$ 个 continuation，则
-$$
-W(y)=W(u)\,m(u).
-$$
-换言之，每穿过一个分支点，就把其所有后代节点的权重再乘以该分支点的 continuation 数。举例而言，若根轨迹仅采样一次，某节点 $x$ 之前依次经过两个分支点，分别产生 $3$ 个和 $2$ 个 continuation，则该节点的分支权重为 $W(x)=1\times 3\times 2=6$；这意味着在树采样下，$x$ 所在后缀的经验出现次数相对于自然 rollout 被放大了 $6$ 倍，因此在梯度估计中必须以 $1/6$ 进行校正。
-
-在实现上，离散/连续控制通过环境状态的 snapshot / restore 实现回溯，LLM 推理通过共享前缀并重新生成后缀实现回溯；两种场景都对应于同一个抽象，即“从同一策略条件状态出发并行采样多个 continuation”。
-
-#### 3.1.2 树轨迹策略梯度修正及其无偏性
-
-链式 on-policy 轨迹上的策略梯度写作
+链式 on-policy 轨迹上的策略梯度为
 $$
 \nabla_\theta J(\theta)=\mathbb{E}_{\tau\sim \pi_\theta}\!\left[\sum_t \hat A_t \nabla_\theta\log \pi_\theta(a_t\mid s_t)\right].
 $$
@@ -45,11 +31,7 @@ $$
 
 **证明。** 对分支操作次数作归纳。没有分支时，树轨迹退化为普通链式轨迹，上式就是标准策略梯度定理。
 
-假设当前树 $\mathcal{T}$ 的加权策略梯度估计已经无偏。现在选择某个已有节点 $u$，从 $u$ 再采样一条新的 continuation，得到新树 $\mathcal{T}^+$。设
-$$
-A(u):=M_{\mathrm{root}}\prod_{v\in\operatorname{Anc}(u)} m(v)
-$$
-为到达节点 $u$ 之前已经累积的分支因子。若当前 $u$ 之后已有 $b$ 条 continuation，则节点 $u$ 之前的前缀和节点 $u$ 本身都不变，变化只出现在 $u$ 之后的 strict suffix。把这 $b$ 条 strict suffix 的总梯度贡献记为
+假设当前树 $\mathcal{T}$ 的加权策略梯度估计已经无偏。现在选择某个已有节点 $u$，从 $u$ 再采样一条新的 continuation，得到新树 $\mathcal{T}^+$。设 $P(u)$ 为到达节点 $u$ 之前已经累积的前缀放大量。若当前 $u$ 之后已有 $b$ 条 continuation，则节点 $u$ 之前的前缀和节点 $u$ 本身都不变，变化只出现在 $u$ 之后的 strict suffix。把这 $b$ 条 strict suffix 的总梯度贡献记为
 $$
 g_1(u),\ldots,g_b(u),
 $$
@@ -57,13 +39,13 @@ $$
 $$
 \hat g(\mathcal{T})
 =
-g_{\mathrm{pre}}(u)+\frac{1}{A(u)}\frac{1}{b}\sum_{j=1}^{b} g_j(u).
+g_{\mathrm{pre}}(u)+\frac{1}{P(u)}\frac{1}{b}\sum_{j=1}^{b} g_j(u).
 $$
 加入新 continuation 后，
 $$
 \hat g(\mathcal{T}^+)
 =
-g_{\mathrm{pre}}(u)+\frac{1}{A(u)}\frac{1}{b+1}\sum_{j=1}^{b+1} g_j(u).
+g_{\mathrm{pre}}(u)+\frac{1}{P(u)}\frac{1}{b+1}\sum_{j=1}^{b+1} g_j(u).
 $$
 条件于节点 $u$，这些 continuation 都来自同一个 on-policy 条件分布，因此
 $$
@@ -87,7 +69,17 @@ $$
 $$
 证毕。 $\square$
 
-因此，$1/W(x)$ 正好把每个分支点之后的多个 continuation 还原为对同一条件分布的平均。
+证明表明，$1/W(x)$ 的作用是把每个分支点之后的多个 continuation 还原为对同一条件分布的平均。实际计算时，若一棵树的根 rollout 被重复采样 $M_{\mathrm{root}}$ 次，则节点 $x$ 的采样放大量为
+$$
+W(x)=M_{\mathrm{root}}\prod_{u\in\operatorname{Anc}(x)} m(u).
+$$
+也可以沿树自顶向下递推：根轨迹上节点的初始权重为 $M_{\mathrm{root}}$；若节点 $y$ 的父节点不是分支点，则 $W(y)=W(\operatorname{parent}(y))$；若其父节点是分支点 $u$，且 $u$ 处生成了 $m(u)$ 个 continuation，则
+$$
+W(y)=W(u)\,m(u).
+$$
+例如，根轨迹采样一次，某节点 $x$ 之前依次经过两个分支点，分别产生 $3$ 个和 $2$ 个 continuation，则 $W(x)=6$，梯度估计中相应使用 $1/6$ 校正。
+
+实现上，离散/连续控制通过环境状态的 snapshot / restore 实现回溯，LLM 推理通过共享前缀并重新生成后缀实现回溯；两种场景都对应于同一个抽象，即从同一策略条件状态出发并行采样多个 continuation。
 
 #### 3.1.3 TreeGAE 及其无偏性
 
