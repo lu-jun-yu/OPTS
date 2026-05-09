@@ -42,3 +42,17 @@ pip install --no-deps -e .
 ```
 
 The Conda environment setup is complete.
+
+## 5. Download the Base Model
+
+```bash
+cd ~/OPTS/LLM
+hf download Qwen/Qwen3-1.7B --local-dir models/Qwen3-1.7B
+```
+
+## 6. Start the Baseline Run
+
+```bash
+cd ~/OPTS/LLM
+scripts/run_reinforce_pp_baseline.sh
+```
