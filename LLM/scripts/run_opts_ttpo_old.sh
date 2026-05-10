@@ -26,6 +26,10 @@ python3 -m trainer.main_opts_ttpo \
  actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
  actor_rollout_ref.rollout.search=opts \
  actor_rollout_ref.rollout.n=4 \
+ actor_rollout_ref.rollout.val_kwargs.n=32 \
+ actor_rollout_ref.rollout.val_kwargs.do_sample=True \
+ actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
+ actor_rollout_ref.rollout.val_kwargs.top_p=1.0 \
  actor_rollout_ref.rollout.c=1.0 \
  actor_rollout_ref.rollout.max_search_per_tree=4 \
  critic.enable=True \
