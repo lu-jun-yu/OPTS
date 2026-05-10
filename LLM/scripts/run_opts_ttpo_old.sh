@@ -45,5 +45,5 @@ python3 -m trainer.main_opts_ttpo \
  trainer.project_name=opts_ttpo_${MODEL_SIZE} \
  trainer.experiment_name=${Experiment_Name} \
  trainer.save_freq=20 \
- trainer.test_freq=10 \
+ trainer.test_freq=20 \
  trainer.total_epochs=15 2>&1 | tee logs/${Experiment_Name}.log

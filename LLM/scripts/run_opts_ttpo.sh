@@ -227,6 +227,10 @@ build_train_cmd() {
         actor_rollout_ref.rollout.gpu_memory_utilization=0.8
         actor_rollout_ref.rollout.search=opts
         actor_rollout_ref.rollout.n=4
+        actor_rollout_ref.rollout.val_kwargs.n=32
+        actor_rollout_ref.rollout.val_kwargs.do_sample=True
+        actor_rollout_ref.rollout.val_kwargs.temperature=1.0
+        actor_rollout_ref.rollout.val_kwargs.top_p=1.0
         actor_rollout_ref.rollout.c=1.0
         actor_rollout_ref.rollout.max_search_per_tree=4
         critic.enable=True
@@ -245,7 +249,7 @@ build_train_cmd() {
         trainer.project_name="opts_ttpo_${MODEL_SIZE}"
         trainer.experiment_name="${EXPERIMENT_NAME}"
         trainer.save_freq=20
-        trainer.test_freq=10
+        trainer.test_freq=20
         trainer.total_epochs=15
         +trainer.wandb_init_timeout="${WANDB_INIT_TIMEOUT}"
         +trainer.wandb_service_wait="${WANDB_SERVICE_WAIT}"

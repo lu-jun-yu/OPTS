@@ -8,7 +8,7 @@ so the response should be: "...thinking...</think>\n...\\boxed{answer}..."
 """
 
 import re
-from typing import Optional, Tuple
+from typing import Optional
 
 from math_verify import parse, verify
 
@@ -98,7 +98,7 @@ def compute_score(
     correct_reward: float = 0.9,
     extra_info: Optional[dict] = None,
     **kwargs,
-) -> float:
+) -> dict:
     """Compute the score for a response.
 
     Total reward = format_reward + correct_reward (if both conditions met)
@@ -111,7 +111,9 @@ def compute_score(
         extra_info: Optional extra info dict, may contain 'full_response_str' for tree search.
 
     Returns:
-        The computed score (0, 0.1, 0.9, or 1.0).
+        A dictionary containing the training reward (`score`), pure answer
+        correctness (`acc`), format correctness, and the extracted answer
+        (`pred`) used by validation-time avg/pass/cons metrics.
     """
     # OPTS_TTPO: Use full response string if available (for tree search)
     if extra_info and "full_response_str" in extra_info:
@@ -120,13 +122,21 @@ def compute_score(
     total_score = 0.0
 
     # Check format: must have </think> followed by \boxed{...}
-    if check_format(solution_str):
+    format_ok = check_format(solution_str)
+    if format_ok:
         total_score += format_reward
 
     # Check answer correctness (using math-verify for robust matching)
     answer_content = extract_answer(solution_str)
+    acc = 0.0
     if answer_content is not None:
         if validate_answer(answer_content, ground_truth):
+            acc = 1.0
             total_score += correct_reward
 
-    return total_score
+    return {
+        "score": total_score,
+        "acc": acc,
+        "format": 1.0 if format_ok else 0.0,
+        "pred": answer_content if answer_content is not None else "",
+    }

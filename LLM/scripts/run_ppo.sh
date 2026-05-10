@@ -24,6 +24,10 @@ python3 -m verl.trainer.main_ppo \
  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=128 \
  actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
  actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
+ actor_rollout_ref.rollout.val_kwargs.n=32 \
+ actor_rollout_ref.rollout.val_kwargs.do_sample=True \
+ actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
+ actor_rollout_ref.rollout.val_kwargs.top_p=1.0 \
  critic.enable=True \
  critic.optim.lr=1e-5 \
  critic.model.path=models/Qwen3-${MODEL_SIZE} \
@@ -40,5 +44,5 @@ python3 -m verl.trainer.main_ppo \
  trainer.project_name=opts_ttpo_${MODEL_SIZE} \
  trainer.experiment_name=${Experiment_Name} \
  trainer.save_freq=20 \
- trainer.test_freq=10 \
+ trainer.test_freq=20 \
  trainer.total_epochs=66 2>&1 | tee logs/${Experiment_Name}.log

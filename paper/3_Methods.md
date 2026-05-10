@@ -1,284 +1,276 @@
 ## 3 方法
 
-本节给出 OPTS-TTPO 的完整方法推导。第 3.1 节介绍树轨迹策略优化 TTPO，包括同策略树轨迹策略梯度修正、TreeGAE 的定义与无偏性，以及由此导出的 branch-weighted PPO 目标。第 3.2 节转向同策略并行树搜索 (OPTS)，从回报缺口的残差分解推导最优轨迹重分支准则 (OTRC)，并给出其无长度惩罚与长度惩罚的两种形式，最后整理完整的 OPTS 训练流程。
+本节给出 OPTS-TTPO。第 3.1 节介绍树轨迹策略优化 (TTPO)：分支校正策略梯度、TreeGAE 与 TTPO 目标。第 3.2 节推导同策略并行树搜索 (OPTS) 的重分支准则 OTRC。第 3.3 节整理完整训练流程。
 
-### 3.1 TTPO：Tree Trajectory Policy Optimization
+### 3.1 Tree Trajectory Policy Optimization
 
-#### 3.1.2 同策略树轨迹与梯度修正及其无偏性
+#### 3.1.1 Branch-corrected Policy Gradient for Tree Trajectories
 
-设当前策略为 $\pi_\theta$。标准 on-policy rollout 从初始状态分布出发仅生成一条链式轨迹
+设当前策略为 $\pi_\theta$。下文把采样结构中的每个状态-动作位置称为节点 $x$，并记其状态、动作与真实优势为 $s_x,a_x,A_x$；在树轨迹中，即便两个节点对应相同的状态-动作对，只要它们位于不同分支中，也视为不同节点。标准 on-policy rollout 生成链式轨迹
 $$
-\tau=(s_0,a_0,s_1,a_1,\ldots),\qquad a_t\sim \pi_\theta(\cdot\mid s_t).
+\tau=(s_0,a_0,s_1,a_1,\ldots),\qquad a_t\sim \pi_\theta(\cdot\mid s_t),
 $$
-本文考虑更一般的**同策略树轨迹** $\mathcal{T}_{\pi_\theta}$：在一条已采样轨迹的某个中间状态处，算法可以回到该状态，并再次从同一策略 $\pi_\theta$ 采样新的 continuation。于是，同一状态之后可能对应多个同策略后缀，样本结构由单链扩展为一棵轨迹树。
-
-形式上，我们把树中的每个节点记为一个**节点出现** $x=(s,a)$，表示某条根到叶路径上的具体状态-动作对。记 $\operatorname{Anc}(x)$ 为从根到 $x$ 的路径上所有祖先分支点的集合，$m(u)$ 为分支点 $u$ 的 continuation 数。用 $W(x)$ 表示节点 $x$ 相对于标准链式采样的采样放大量；下面先证明用 $1/W(x)$ 校正的无偏性，再在证明之后给出 $W(x)$ 的实际计算。
-
-链式 on-policy 轨迹上的策略梯度为
+标准策略梯度定理给出
 $$
-\nabla_\theta J(\theta)=\mathbb{E}_{\tau\sim \pi_\theta}\!\left[\sum_t \hat A_t \nabla_\theta\log \pi_\theta(a_t\mid s_t)\right].
-$$
-如果直接把树上的所有节点当作等权样本，则位于高分支区域的后缀会被重复计数，从而改变经验样本分布并引入偏差。TTPO 的核心思想是：不修改策略梯度的基本形式，而是对树节点按其采样放大量的倒数进行校正。
-
-**定理 1（TTPO 的无偏策略梯度）。** 设 $\mathcal{T}_{\pi_\theta}$ 由同一策略生成，且每个分支点的 continuation 在条件于该分支状态时独立采样。则有
-$$
-\nabla_\theta J(\theta) = \mathbb{E}_{\mathcal{T}_{\pi_\theta}}\!\left[
-\sum_{x\in\mathcal{T}_{\pi_\theta}}
-\frac{1}{W(x)}
-\hat A(x)\nabla_\theta\log \pi_\theta(a\mid s)
+\nabla_\theta J(\theta)
+=
+\mathbb{E}_{\tau\sim\pi_\theta}\!\left[
+\sum_{t}A_t\nabla_\theta\log\pi_\theta(a_t\mid s_t)
 \right].
 $$
 
-**证明。** 对分支操作次数作归纳。没有分支时，树轨迹退化为普通链式轨迹，上式就是标准策略梯度定理。
+同策略树轨迹 $\mathcal{T}_{\pi_\theta}$ 允许算法回到已采样节点，并再次从 $\pi_\theta$ 采样新的 continuation，即从该节点继续采样得到的后缀轨迹。令 $\operatorname{Anc}(x)$ 表示从根到 $x$ 之前的祖先节点集合；$m(u)$ 表示节点 $u$ 的 continuation 数，非分支节点 $m(u)=1$，叶子节点 $m(u)=0$。
 
-假设当前树 $\mathcal{T}$ 的加权策略梯度估计已经无偏。现在选择某个已有节点 $u$，从 $u$ 再采样一条新的 continuation，得到新树 $\mathcal{T}^+$。设 $P(u)$ 为到达节点 $u$ 之前已经累积的前缀放大量。若当前 $u$ 之后已有 $b$ 条 continuation，则节点 $u$ 之前的前缀和节点 $u$ 本身都不变，变化只出现在 $u$ 之后的 strict suffix。把这 $b$ 条 strict suffix 的总梯度贡献记为
+令 $\tau_u$ 表示 $u$ 之后的严格后缀轨迹，并定义其条件期望梯度贡献为
 $$
-g_1(u),\ldots,g_b(u),
+\mu(u)
+:=
+\mathbb{E}_{\tau_u\sim \pi_\theta(\cdot\mid u)}
+\!\left[
+\sum_{x\in\tau_u}A_x\nabla_\theta\log\pi_\theta(a_x\mid s_x)
+\middle|u
+\right],
 $$
-其中每个 $g_j(u)$ 内部已经包含更深层分支的校正，但暂不乘 $u$ 这一层的平均因子；其余节点的总贡献记为 $g_{\mathrm{pre}}(u)$。于是
+其中严格后缀不含 $u$ 本身。若从 $u$ 出发有多条 continuation，记 $G_j(u)=\sum_{x\in\tau_{u,j}}A_x\nabla_\theta\log\pi_\theta(a_x\mid s_x)$，则 $\mathbb{E}[G_j(u)\mid u]=\mu(u)$。
+
+等权求和会放大分支点后的节点的梯度贡献：若 $u$ 后有 $b$ 条同分布 continuation，则 $\mathbb{E}[\sum_{j=1}^{b}G_j(u)\mid u]=b\,\mu(u)$，而在标准链式采样中原本只应贡献 $\mu(u)$。对于每个节点，该放大会随着分支增多，沿祖先分支数累乘。下文用 $W(x)$ 表示节点 $x$ 的分支放大因子，用 $1/W(x)$ 作为分支校正权重。
+
+**基础情形 1：从单链到二叉树**。设链式轨迹在节点 $u$ 后被重新采样一次，得到两条 continuation $\tau_{u,1}$ 与 $\tau_{u,2}$。为保持后缀贡献的条件期望仍为 $\mu(u)$，应对二者取平均，因此二叉树上的梯度估计为
 $$
 \hat g(\mathcal{T})
 =
-g_{\mathrm{pre}}(u)+\frac{1}{P(u)}\frac{1}{b}\sum_{j=1}^{b} g_j(u).
+\sum_{x\in\tau_{\preceq u}}A_x\nabla_\theta\log\pi_\theta(a_x\mid s_x)
++
+\frac{1}{2}\sum_{i=1}^{2}G_i(u).
 $$
-加入新 continuation 后，
-$$
-\hat g(\mathcal{T}^+)
-=
-g_{\mathrm{pre}}(u)+\frac{1}{P(u)}\frac{1}{b+1}\sum_{j=1}^{b+1} g_j(u).
-$$
-条件于节点 $u$，这些 continuation 都来自同一个 on-policy 条件分布，因此
-$$
-\mathbb{E}\!\left[\frac{1}{b+1}\sum_{j=1}^{b+1}g_j(u)\middle|u\right]
-=
-\mathbb{E}\!\left[g_1(u)\middle|u\right]
-=
-\mathbb{E}\!\left[\frac{1}{b}\sum_{j=1}^{b}g_j(u)\middle|u\right].
-$$
-从而
-$$
-\mathbb{E}\!\left[\hat g(\mathcal{T}^+)\middle|u\right]
-=
-\mathbb{E}\!\left[\hat g(\mathcal{T})\middle|u\right].
-$$
-也就是说，每增加一次同策略分支，只是把节点 $u$ 之后 continuation 的算术平均从 $b$ 个样本更新为 $b+1$ 个样本，策略梯度估计的条件期望保持不变。由归纳法，任意树轨迹上都有
-$$
-\mathbb{E}\!\left[\hat g(\mathcal{T}_{\pi_\theta})\right]
-=
-\nabla_\theta J(\theta).
-$$
-证毕。 $\square$
+由于两条 continuation 条件于 $u$ 独立同分布（i.i.d.），$\frac{1}{2}(G_1(u)+G_2(u))$ 与分支前的后缀贡献同期望；前缀 $\tau_{\preceq u}$ 不变。因此 $u$ 严格后缀的分支校正权重为 $1/2$，分支放大因子为 $W(x)=2$；前缀节点仍有 $W(x)=1$。
 
-证明表明，$1/W(x)$ 的作用是把每个分支点之后的多个 continuation 还原为对同一条件分布的平均。实际计算时，若一棵树的根 rollout 被重复采样 $M_{\mathrm{root}}$ 次，则节点 $x$ 的采样放大量为
+**基础情形 2：已有二叉树再分支**。设当前树已有二叉分支点 $v$，现在在 $u$ 处新增一条 continuation。若 $u$ 位于 $v$ 之前，则旧后缀虽含 $v$ 处二叉子树，但已按基础情形 1 聚合，故旧后缀 $G_1(u)$ 与新后缀 $G_2(u)$ 同期望，在 $u$ 处平均即可。若 $u=v$，则把 $\frac{1}{2}\sum_{j=1}^2G_j(v)$ 更新为 $\frac{1}{3}\sum_{j=1}^3G_j(v)$，条件期望仍为 $\mu(v)$。若 $u$ 位于 $v$ 的某条后缀中，来自 $v$ 的校正权重 $1/2$ 是公共因子，且条件于 $u$，
 $$
-W(x)=M_{\mathrm{root}}\prod_{u\in\operatorname{Anc}(x)} m(u).
+\mathbb{E}\!\left[
+\frac{1}{2}\cdot\frac{1}{2}\left(G_1(u)+G_2(u)\right)
+\middle|u\right]=\mathbb{E}\!\left[\frac{1}{2}G_1(u)\middle|u\right].
 $$
-也可以沿树自顶向下递推：根轨迹上节点的初始权重为 $M_{\mathrm{root}}$；若节点 $y$ 的父节点不是分支点，则 $W(y)=W(\operatorname{parent}(y))$；若其父节点是分支点 $u$，且 $u$ 处生成了 $m(u)$ 个 continuation，则
-$$
-W(y)=W(u)\,m(u).
-$$
-例如，根轨迹采样一次，某节点 $x$ 之前依次经过两个分支点，分别产生 $3$ 个和 $2$ 个 continuation，则 $W(x)=6$，梯度估计中相应使用 $1/6$ 校正。
+两个基础情形说明，新增 continuation 时只需在 $u$ 严格后缀上把平均从 $b$ 条更新为 $b+1$ 条，并保留既有上游平均因子，则可以保证策略梯度聚合后无偏。
 
-实现上，离散/连续控制通过环境状态的 snapshot / restore 实现回溯，LLM 推理通过共享前缀并重新生成后缀实现回溯；两种场景都对应于同一个抽象，即从同一策略条件状态出发并行采样多个 continuation。
+**归纳假设**。假设当前树 $\mathcal{T}$ 按照上述方式得到的加权策略梯度无偏，且任意节点 $x$ 的分支放大因子为 $W(x)=\prod_{z\in\operatorname{Anc}(x)}m(z)$，校正权重为 $1/W(x)$。
 
-#### 3.1.3 TreeGAE 及其无偏性
-
-标准 GAE 递推
-$$
-\hat A_t^{\mathrm{GAE}} = \delta_t+\gamma\lambda \hat A_{t+1}^{\mathrm{GAE}}
-$$
-默认每个位置只有唯一 continuation。树轨迹中这一假设不再成立：从某个节点 $x$ 出发，下一步可能对应多个同策略 continuation。为此，我们把链式 GAE 推广到树结构。
-
-记 $\operatorname{Ch}(x)$ 为节点 $x$ 之后所有 continuation 的首节点集合；若 $x$ 为叶节点，则 $\operatorname{Ch}(x)=\varnothing$。给定 critic $V_\phi$，定义节点 $x$ 的一步 TD 残差为
-$$
-\delta^\phi(x)=r(x)+\gamma V_\phi(s'(x)) - V_\phi(s(x)),
-$$
-其中 $s'(x)$ 为执行节点 $x$ 对应动作后的下一状态。进一步定义由 $V_\phi$ 诱导的**树 $\lambda$-优势目标**
-$$
-A^{\lambda,\phi}(x)=\delta^\phi(x)+\gamma\lambda\,\mathbb{E}_{C\sim p(\cdot\mid x)}\!\left[A^{\lambda,\phi}(C)\right],
-$$
-其中 $p(\cdot\mid x)$ 表示从节点 $x$ 继续按当前策略采样 continuation 所得到的条件分布；若 $x$ 为叶节点，则 $A^{\lambda,\phi}(x)=\delta^\phi(x)$。TreeGAE 估计的对象就是由当前 critic 基线诱导的 tree-$\lambda$ target；当 $V_\phi=V^\pi$ 时，它退化为真实的 tree-$\lambda$ advantage。
-
-据此，我们定义 TreeGAE 估计量：
-$$
-\hat A^{\mathrm{TreeGAE}}(x)=\delta^\phi(x)+\gamma\lambda\,\frac{1}{|\operatorname{Ch}(x)|}\sum_{c\in \operatorname{Ch}(x)}\hat A^{\mathrm{TreeGAE}}(c),
-$$
-并约定叶节点处
-$$
-\hat A^{\mathrm{TreeGAE}}(x)=\delta^\phi(x).
-$$
-当 $|\operatorname{Ch}(x)|=1$ 时，上式恰好退化为标准 GAE；当 $|\operatorname{Ch}(x)|>1$ 时，则对所有子 continuation 的首节点优势取算术平均后再向上回传。
-
-**定理 2（TreeGAE 的无偏性）。** 假设对任意节点 $x$，其子 continuation $\operatorname{Ch}(x)$ 条件于 $x$ 独立同分布地来自同一 on-policy continuation 分布 $p(\cdot\mid x)$。则对任意节点 $x$，
-$$
-\mathbb{E}\!\left[\hat A^{\mathrm{TreeGAE}}(x)\mid x\right] = A^{\lambda,\phi}(x).
-$$
-
-**证明。** 对树深度作反向归纳。若 $x$ 为叶节点，则
-$$
-\hat A^{\mathrm{TreeGAE}}(x)=\delta^\phi(x)=A^{\lambda,\phi}(x).
-$$
-若 $x$ 不是叶节点，假设对所有更深的节点 $c\in \operatorname{Ch}(x)$，已有
-$$
-\mathbb{E}\!\left[\hat A^{\mathrm{TreeGAE}}(c)\mid c\right]=A^{\lambda,\phi}(c).
-$$
-则
+**归纳步骤**。选择任意节点 $u$，设其已有 $b=m(u)\ge 1$ 条 continuation；从 $u$ 再采样一条 on-policy continuation 得 $\mathcal{T}^{+}$。令 $\hat g_{\setminus u}$ 表示不属于 $u$ 严格后缀的贡献；$G_j(u)$ 表示去掉上游权重 $1/W(u)$ 与本层平均 $1/b$ 后的第 $j$ 条后缀贡献，内部更深分支已按归纳假设聚合。于是
 $$
 \begin{aligned}
-\mathbb{E}\!\left[\hat A^{\mathrm{TreeGAE}}(x)\mid x\right]
-&=
-\delta^\phi(x)+\gamma\lambda\,\mathbb{E}\!\left[\frac{1}{|\operatorname{Ch}(x)|}\sum_{c\in \operatorname{Ch}(x)} \hat A^{\mathrm{TreeGAE}}(c)\middle| x\right] \\
-&=
-\delta^\phi(x)+\gamma\lambda\,\mathbb{E}_{C\sim p(\cdot\mid x)}\!\left[\mathbb{E}\!\left[\hat A^{\mathrm{TreeGAE}}(C)\mid C\right]\right] \\
-&=
-\delta^\phi(x)+\gamma\lambda\,\mathbb{E}_{C\sim p(\cdot\mid x)}\!\left[A^{\lambda,\phi}(C)\right] \\
-&=
-A^{\lambda,\phi}(x).
+\hat g(\mathcal{T})
+&=\hat g_{\setminus u}
++\frac{1}{W(u)}\frac{1}{b}\sum_{j=1}^{b}G_j(u),\\
+\hat g(\mathcal{T}^{+})
+&=\hat g_{\setminus u}
++\frac{1}{W(u)}\frac{1}{b+1}\sum_{j=1}^{b+1}G_j(u).
 \end{aligned}
 $$
-归纳完成。 $\square$
-
-定理 2 说明，分支节点处对 continuation 取算术平均，对应于对子 continuation 条件期望的无偏 Monte Carlo 估计。因此，只要所有 continuation 都来自相同的 on-policy 条件分布，TreeGAE 就是标准 GAE 在树结构上的自然推广。
-
-#### 3.1.4 Branch-weighted PPO 目标
-
-在树轨迹上得到无偏的优势估计之后，PPO 风格的 actor 与 critic 更新只需在样本测度上与第 3.1.2 节的校正保持一致即可。记
+由归纳假设与新 continuation 的 on-policy 采样，$\mathbb{E}[G_j(u)\mid u]=\mu(u),\,j=1,\ldots,b+1$。从而
 $$
-r_t(\theta)=\frac{\pi_\theta(a_t\mid s_t)}{\pi_{\theta_{\mathrm{old}}}(a_t\mid s_t)}, \qquad W_t=W(s_t,a_t),
+\mathbb{E}\!\left[
+\frac{1}{b+1}\sum_{j=1}^{b+1}G_j(u)
+\middle|u\right]
+=
+\mu(u)
+=
+\mathbb{E}\!\left[
+\frac{1}{b}\sum_{j=1}^{b}G_j(u)
+\middle|u\right],
 $$
-则 TTPO 的策略损失为
+故 $\mathbb{E}[\hat g(\mathcal{T}^{+})\mid u]=\mathbb{E}[\hat g(\mathcal{T})\mid u]$，新树仍满足 $W(x)=\prod_{z\in\operatorname{Anc}(x)}m(z)$。
+
+**定理 1（树轨迹策略梯度）** 设 $\mathcal{T}_{\pi_\theta}$ 由同一策略生成，且每个节点的 continuation 条件于该节点以 i.i.d. 方式按 $\pi_\theta$ 采样。对任意节点定义分支放大因子
 $$
-\mathcal{L}^{\mathrm{TTPO}}_{\pi}=\frac{
-\sum_t \frac{1}{W_t}
+W(x)=\prod_{u\in\operatorname{Anc}(x)}m(u),
+$$
+其中空乘积为 $1$。等价地，$W$ 可自顶向下递推：根节点处的放大因子为 $1$；若 $x$ 的父节点为 $p$，则 $W(x)=W(p)m(p)$。由上述归纳可得同策略树轨迹的无偏梯度估计：
+$$
+\nabla_\theta J(\theta)
+=
+\mathbb{E}_{\mathcal{T}_{\pi_\theta}}\!\left[
+\sum_{x\in\mathcal{T}_{\pi_\theta}}
+\frac{1}{W(x)}A_x\nabla_\theta\log\pi_\theta(a_x\mid s_x)
+\right].
+$$
+
+#### 3.1.2 Tree-based Generalized Advantage Estimation
+
+本节先在理想 value $V^\pi$ 下推导 TreeGAE，再替换为实际 critic $\hat V$。对任意 value $V$，记
+$$
+\delta^V_x:=r_x+\gamma V(s'_x)-V(s_x),
+$$
+其中 $r_x$ 为即时奖励，$s'_x$ 为执行动作 $a_x$ 后的下一状态；特别地，$\delta^\pi_x:=\delta^{V^\pi}_x$，$\hat\delta_x:=\delta^{\hat V}_x$。设 $x'\sim\pi_\theta(\cdot\mid x)$ 为环境转移与策略共同诱导的下一个状态-动作节点。链式 GAE 递推为
+$$
+A^{\mathrm{GAE}}_x
+=
+\delta^\pi_x+\gamma\lambda A^{\mathrm{GAE}}_{x'}.
+$$
+若下游递推在期望上给出真实优势，则结合条件期望的传递性与 $V^\pi$ 的性质 $\mathbb{E}[\delta^\pi_x\mid x]=A_x$、$\mathbb{E}_{x'\sim \pi_\theta(\cdot\mid x)}[A_{x'}]=0$，链式 GAE 在期望上保持为真实优势：
+$$
+\mathbb{E}[A^{\mathrm{GAE}}_x\mid x]
+=
+A_x+\gamma\lambda\,
+\mathbb{E}_{x'\sim\pi_\theta(\cdot\mid x)}[A_{x'}]
+=A_x.
+$$
+
+若树节点 $x$ 有 $m(x)$ 条 continuation，首节点为 $x'_1,\ldots,x'_{m(x)}$，它们条件于 $x$ 是同一诱导分布的 i.i.d. 样本。用其平均替代链式递推中的唯一下游项，有
+$$
+\mathbb{E}\!\left[
+\delta^\pi_x+\gamma\lambda
+\frac{1}{m(x)}\sum_{j=1}^{m(x)} A^{\mathrm{GAE}}_{x'_j}
+\middle|x\right]
+=
+\mathbb{E}\!\left[
+\delta^\pi_x+\gamma\lambda A^{\mathrm{GAE}}_{x'}
+\middle|x\right]
+=A_x.
+$$
+因此，算术平均是保持 GAE 递推期望一致的树结构替代项。
+
+有限树轨迹上，叶节点递推终止于当前 TD 残差；非叶节点按上述平均方式回传。将 $V^\pi$ 替换为 $\hat V$，得到 TreeGAE：
+
+**定理 2（TreeGAE 递推公式）** 假设任意非叶节点 $x$ 的 continuation 首节点 $x'_1,\ldots,x'_{m(x)}$ 条件于 $x$ 是诱导下一个节点分布中的 i.i.d. 样本，则
+$$
+\hat A^{\mathrm{TreeGAE}}_x=
+\begin{cases}
+\hat\delta_x, & x\text{ 为叶节点},\\[2mm]
+\hat\delta_x+\gamma\lambda\,\dfrac{1}{m(x)}
+\sum_{j=1}^{m(x)}\hat A^{\mathrm{TreeGAE}}_{x'_j},
+& x\text{ 不是叶节点}.
+\end{cases}
+$$
+
+#### 3.1.3 TTPO Objective
+
+令 $\mathcal{B}$ 为当前 batch 的树节点集合，并使用 $1/W(x)$ 作为节点 $x$ 的分支校正权重。记 $\hat A_x=\hat A^{\mathrm{TreeGAE}}_x$，PPO ratio 为
+$$
+r(\theta)=\frac{\pi_\theta(a_x\mid s_x)}{\pi_{\theta_{\mathrm{old}}}(a_x\mid s_x)},
+$$
+TTPO actor 目标为
+$$
+\mathcal{L}_{\pi}=\frac{
+\sum_{x\in\mathcal{B}}\frac{1}{W(x)}
 \min\!\bigl(
-r_t(\theta)\hat A_t,\;
-\operatorname{clip}(r_t(\theta),1-\epsilon,1+\epsilon)\hat A_t
+r(\theta)\hat A_x,\;
+\operatorname{clip}(r(\theta),1-\epsilon,1+\epsilon)\hat A_x
 \bigr)
 }{
-\sum_t \frac{1}{W_t}
+\sum_{x\in\mathcal{B}}\frac{1}{W(x)}
 }.
 $$
-相应地，价值函数损失写为
+critic 目标同样使用该权重：
 $$
-\mathcal{L}^{\mathrm{TTPO}}_{V}=\frac{
-\sum_t \frac{1}{W_t}
+\mathcal{L}_{V}=\frac{
+\sum_{x\in\mathcal{B}}\frac{1}{W(x)}
 \max\!\bigl[
-(V_\phi(s_t)-\hat R_t)^2,\;
-(V_\phi^{\mathrm{clip}}(s_t)-\hat R_t)^2
+(\hat V(s_x)-\hat R_x)^2,\;
+(\hat V^{\mathrm{clip}}(s_x)-\hat R_x)^2
 \bigr]
 }{
-\sum_t \frac{1}{W_t}
+\sum_{x\in\mathcal{B}}\frac{1}{W(x)}
 }.
 $$
-同样的权重也用于优势归一化。设
-$$
-\mu_A=\frac{\sum_t \hat A_t/W_t}{\sum_t 1/W_t}, \qquad \sigma_A^2=\frac{\sum_t (\hat A_t-\mu_A)^2/W_t}{\sum_t 1/W_t},
-$$
-则标准化优势定义为
-$$
-\tilde A_t=\frac{\hat A_t-\mu_A}{\sqrt{\sigma_A^2+\varepsilon}}.
-$$
-这一归一化与策略损失使用同一加权测度，从而避免高分支区域在 whiten 过程中再次被隐式放大。
+Advantage whitening 也使用同一校正测度；公式见附录 A。
 
-### 3.2 OPTS：On-policy Parallel Tree Search
+### 3.2 On-policy Parallel Tree Search
 
-TTPO 回答“如何从树样本更新策略”，OPTS 回答“树应当在哪里继续生长”。与面向策略投影的宽度式 MCTS 不同，OPTS 是一个面向策略梯度的并行重分支机制：每一轮搜索都在每棵尚未搜满的树上选择一个最值得继续扩展的位置，再从该位置的父节点重新采样新的 continuation。
+TTPO 解决“如何从树样本更新策略”，OPTS 解决“树应在哪里继续生长”。
 
 #### 3.2.1 贪心参考路径
 
-给定当前树轨迹，我们首先在每棵树中定义一条**贪心参考路径**。从根节点出发，若当前节点存在多个 continuation，则选择首节点 TreeGAE 优势最大的那个 continuation 继续前进，直到叶节点为止。该路径并不试图恢复全局最优解，而是把搜索集中在当前样本证据下最有希望的后缀上，从而把“在哪里分支”转化为“在这条参考路径的哪个位置重分支”。
+对每棵树，从根节点出发，若当前节点存在多个 continuation，则选择首节点 TreeGAE 最大的 continuation，直到叶节点，得到贪心参考路径。随后只在该路径上选择重分支位置。
 
 #### 3.2.2 OTRC 的开发项
 
 设当前贪心参考路径为
 $$
-(s_0,a_0),(s_1,a_1),\ldots,(s_{n-1},a_{n-1}).
+\tau^\star=(s_0,a_0,r_0,s_1,a_1,r_1,\ldots,s_{n-1},a_{n-1},r_{n-1},s_n),
 $$
-若在位置 $k$ 之后继续搜索，一个自然的问题是：原路径从 $k$ 开始的后缀相对于一个“更好的 continuation”究竟还存在多大改进空间。为刻画这一量，我们考虑后缀回报缺口
+其中位置 $t$ 对应树节点 $x_t$。若在位置 $k$ 后继续搜索，我们关心从 $s_k$ 重新产生后缀轨迹的期望回报，相比当前贪心后缀能改进多少。定义后缀期望改进量
 $$
-\Delta_k(V):=V(s_k)-G_k,
+\Delta_k^\pi:=V^\pi(s_k)-G_k,
 \qquad
 G_k=\sum_{t=k}^{n-1}\gamma^{t-k}r_t,
 $$
-其中 $V$ 是任意基线函数。
+其中 $G_k$ 是当前贪心后缀的实际 return，$V^\pi(s_k)$ 是从 $s_k$ 出发按策略产生后缀的期望 return。假设参考路径有限，且 $V^\pi(s_n)=0$。令
+$$
+\delta^\pi_t
+=
+r_t+\gamma V^\pi(s_{t+1})-V^\pi(s_t).
+$$
+则
+$$
+\begin{aligned}
+-\sum_{t=k}^{n-1}\gamma^{t-k}\delta^\pi_t
+&= -G_k + V^\pi(s_k)-\gamma^{n-k}V^\pi(s_n)\\
+&= \Delta_k^\pi.
+\end{aligned}
+$$
+于是得到：
 
-**引理 1（回报缺口的残差分解）。** 对任意基线函数 $V$，令
+**引理 1（后缀期望改进量的残差分解）** 对有限贪心参考路径，若 $V^\pi(s_n)=0$，则
 $$
-\delta_t^{V}=r_t+\gamma V(s_{t+1})-V(s_t),
-$$
-则有
-$$
-\Delta_k(V) = -\sum_{t=k}^{n-1}\gamma^{t-k}\delta_t^{V}
-+\gamma^{n-k}V(s_n).
+\Delta_k^\pi
+=
+-\sum_{t=k}^{n-1}\gamma^{t-k}\delta^\pi_t.
 $$
 
-**证明。** 直接展开残差和：
+该分解把“后缀期望改进”转化为沿参考路径估计 TD 残差。路径采样完成后，$r_t,s_t,s_{t+1}$ 均固定；若 $V^\pi$ 已知，$\delta^\pi_t$ 也是确定量。直接用 $\hat\delta_t=r_t+\gamma\hat V(s_{t+1})-\hat V(s_t)$ 估计它没有额外采样方差，但继承 value 估计偏差。另一种做法是用 TreeGAE 引入下游 continuation 随机性：条件于当前一步转移，若 $\hat V=V^\pi$，则第 3.1.2 节给出
 $$
-\begin{aligned} -\sum_{t=k}^{n-1}\gamma^{t-k}\delta_t^V &= -\sum_{t=k}^{n-1}\gamma^{t-k}r_t-\sum_{t=k}^{n-1}\gamma^{t-k+1}V(s_{t+1})+\sum_{t=k}^{n-1}\gamma^{t-k}V(s_t) \\ &= -G_k-\sum_{t=k+1}^{n}\gamma^{t-k}V(s_t)+\sum_{t=k}^{n-1}\gamma^{t-k}V(s_t) \\ &= -G_k + V(s_k)-\gamma^{n-k}V(s_n). \end{aligned}
+\mathbb{E}\!\left[
+\hat A^{\mathrm{TreeGAE}}_t
+\middle|
+s_t,a_t,r_t,s_{t+1}
+\right]
+=
+\delta^\pi_t.
 $$
-移项即得结论。 $\square$
+实际使用 $\hat V$ 时，偏差主要来自 value 估计，$\lambda$ 控制引入多少下游轨迹信息。
 
-引理 1 表明，决定某一后缀是否值得重分支的关键量不是整条后缀的绝对回报，而是其局部残差沿路径的累计。关键之处在于，**OTRC 并不是把 critic 直接当作真实值函数来使用**；相反，它在残差层面工作，把优势估计作为局部残差的低方差代理。
-
-具体地，令 $\hat A_t$ 为第 3.1.3 节定义的 TreeGAE 估计量，并定义开发项
+据此，令 $\hat A_t:=\hat A^{\mathrm{TreeGAE}}_t$，定义 OTRC 的开发项为
 $$
 E_k:=-\sum_{t=k}^{n-1}\gamma^{t-k}\hat A_t.
 $$
-这里 $\hat A_t$ 不是通过“假设 $V_\phi=V^\pi$”得到的，而是直接作为残差序列的估计量使用：当 $\lambda=0$ 时，TreeGAE 退化为一步 TD 残差 $\delta_t^\phi$；当 $\lambda>0$ 时，它对同一残差序列进行指数平滑，从而以较低方差保留后缀质量信息。
-
-**命题 1（开发项的期望形式）。** 设 $\hat A_t$ 由 TreeGAE 给出，则
+在理想 value 情形下，固定每个一步转移并仅对后续 on-policy continuation 取期望，则
 $$
-\mathbb{E}[E_k] = -\sum_{t=k}^{n-1}\gamma^{t-k}A^{\lambda,\phi}_t,
+\mathbb{E}_{\mathrm{cont}}\!\left[E_k\right]
+=
+-\sum_{t=k}^{n-1}\gamma^{t-k}\delta^\pi_t
+=
+\Delta_k^\pi.
 $$
-其中 $A^{\lambda,\phi}_t$ 表示当前参考路径第 $t$ 个节点对应的 tree-$\lambda$ target。特别地，当 $\lambda=0$ 时，
-$$
-\mathbb{E}[E_k] = -\sum_{t=k}^{n-1}\gamma^{t-k}\delta_t^\phi,
-$$
-与引理 1 中的 TD 残差累计项一致。
-
-**证明。** 由定理 2 与期望的线性性，
-$$
-\mathbb{E}[E_k] = -\sum_{t=k}^{n-1}\gamma^{t-k}\mathbb{E}[\hat A_t] = -\sum_{t=k}^{n-1}\gamma^{t-k}A_t^{\lambda,\phi}.
-$$
-当 $\lambda=0$ 时，$A_t^{0,\phi}=\delta_t^\phi$，因此退化为一步 TD 残差的折扣累加。 $\square$
-
-命题 1 解释了 OTRC 中“用优势替换 $\delta_t$”的含义：替换发生在**局部残差估计层面**，而不是通过把 $V_\phi$ 视作真实值函数 $V^\pi$ 来完成。这样做的好处是，OTRC 可以直接复用训练时已经计算好的优势估计，并获得比原始一步 TD 残差更稳定的分支信号。
+因此，$E_k$ 是后缀期望改进量 $\Delta_k^\pi$ 的 TreeGAE 代理，为“在哪里继续分支”提供开发信号。
 
 #### 3.2.3 OTRC 的探索项与重分支分数
 
-开发项 $E_k$ 只衡量“从位置 $k$ 继续搜索可能带来多大改善”，尚未惩罚那些已经被反复扩展的位置。为此，我们引入 sibling-count 驱动的探索项
+开发项 $E_k$ 衡量从 $x_k$ 继续搜索的潜在收益。为避免反复扩展同一区域，引入 sibling-count 探索项
 $$
 U_k=(B_k-1)\max_j |E_j|,
 $$
-其中 $B_k$ 表示参考路径上位置 $k$ 的父节点已经拥有的 continuation 数。$\max_j |E_j|$ 仅用于把探索项缩放到与开发项相近的量级，从而减少超参数在不同任务上的敏感性。
+其中 $B_k$ 为 $x_k$ 父节点已有的 continuation 数。尺度因子 $\max_j|E_j|$ 使探索项与开发项量级接近，降低 $c$ 对奖励尺度的敏感性；该选择无需额外统计窗口，可在每条参考路径内直接计算。
 
 于是，同策略轨迹重分支准则定义为
 $$
 \mathrm{OTRC}_k = E_k - c\,U_k,
 $$
-其中 $c>0$ 为探索系数。对每棵树，我们在当前贪心参考路径上选择
+其中 $c>0$。对每棵树，在当前贪心参考路径上选择
 $$
 k^\star=\arg\max_k \mathrm{OTRC}_k
 $$
-作为最优重分支位置；随后从 $\operatorname{parent}(k^\star)$ 重新采样动作并生成新的 continuation。之所以从父节点而非 $k^\star$ 本身分支，是因为“重分支”的语义是：在到达 $k^\star$ 之前的最后一个决策点重新采样不同动作。
+作为重分支位置；随后从 $\operatorname{parent}(x_{k^\star})$ 重新采样动作并生成新的 continuation，即重采样到达 $x_{k^\star}$ 前的最后一个决策。
 
-#### 3.2.4 预算对齐与长度惩罚
+### 3.3 OPTS-TTPO Training Procedure
 
-对于 LLM 推理，预算按完整 episode 或完整回答计量，因此 OTRC 直接使用 $E_k$ 即可。对于 Atari 和 MuJoCo 这类 action-level budget 任务，更深的重分支意味着真实消耗更多环境交互步数；因而我们在开发项上加入长度惩罚，得到
-$$
-E_k^{(\tau)} = \frac{-\sum_{t=k}^{n-1}\gamma^{t-k}\hat A_t}{(n-k)^\tau},
-\qquad \tau\ge 0.
-$$
-其中 $\tau=0$ 对应 episode-level budget，$\tau>0$ 则鼓励在相同预算下优先选择更具单位成本收益的重分支位置。需要强调的是，这一长度惩罚是对开发项的预算化延拓，而不是一个与 OTRC 无关的额外启发项。
+综合 TTPO 与 OPTS，单次训练 step 如下。
 
-#### 3.2.5 训练流程与跨域实例化
-
-综合 TTPO 与 OPTS，单次训练 step 可概括为如下流程。
-
-1. 进行 $R$ 轮搜索 rollout。第一轮从初始状态分布或 prompt 集合采样新的根轨迹；后续轮次对每棵仍继续搜索的树，根据 OTRC 选出的 $\operatorname{parent}(k^\star)$ 并行生成新 continuation。
-2. 将本轮新采样得到的节点并入已有树结构，并更新相应的 parent-child 关系、分支位置和 continuation 数。
-3. 在合并后的树上自底向上计算 TreeGAE；非分支节点执行标准 GAE 递推，分支节点对所有子 continuation 首节点的优势取平均后再回传。
-4. 根据第 3.1.2 节定义的 $W(x)$ 计算 branch weight，并按第 3.1.4 节构造 branch-weighted actor/critic 损失。
+1. 进行 $R$ 轮搜索 rollout。第一轮采样根轨迹；后续轮次对仍继续搜索的树，根据 OTRC 选出的 $\operatorname{parent}(x_{k^\star})$ 并行生成新 continuation。
+2. 将新节点并入树结构，更新 parent-child 关系、分支位置和 continuation 数。
+3. 自底向上计算 TreeGAE；非分支节点执行标准 GAE，分支节点平均所有子 continuation 首节点优势后回传。
+4. 根据第 3.1.1 节计算分支放大因子 $W(x)$，并使用其倒数 $1/W(x)$ 作为分支校正权重，按第 3.1.3 节构造 TTPO actor/critic 损失。
 5. 使用 $\mathcal{L}_V^{\mathrm{TTPO}}$ 更新 critic，再使用 $\mathcal{L}_\pi^{\mathrm{TTPO}}$ 更新 actor。
 
-三类任务共享上述抽象，但实例化方式不同。LLM 训练中，树通过“共享前缀、扩展后缀”实现；测试时搜索则在固定推理预算下重复执行 OTRC 选点与 continuation 扩展，并输出 `avg@k / pass@k / cons@k` 所需的样本索引。Atari 与 MuJoCo 中，树通过环境状态 snapshot / restore 实现；两者与 LLM 的差别主要体现在预算计量方式和长度惩罚系数 $\tau$，而非方法本身。
+跨域预算对齐与长度惩罚的实现细节见附录 B。
+
+OPTS 利用当前树中的后验样本信息选择扩展位置，不再严格满足第 3.1.1 节的 i.i.d. 采样假设，因此 OPTS-TTPO 不继承给定同策略树轨迹下的严格无偏性。我们将其视为 bias-variance trade-off：搜索可能引入样本选择偏差，但会把预算集中到梯度估计误差更低的后缀区域。第 4.4 节的 MuJoCo 诊断显示，不同任务与 batch size 下，OPTS-TTPO 的策略梯度估计误差始终低于 matched-budget PPO。

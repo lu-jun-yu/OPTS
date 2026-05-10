@@ -25,6 +25,10 @@ python3 -m verl.trainer.main_ppo \
  actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
  actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
  actor_rollout_ref.rollout.n=4 \
+ actor_rollout_ref.rollout.val_kwargs.n=32 \
+ actor_rollout_ref.rollout.val_kwargs.do_sample=True \
+ actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
+ actor_rollout_ref.rollout.val_kwargs.top_p=1.0 \
  custom_reward_function.path=utils/reward_fn.py \
  custom_reward_function.name=compute_score \
  algorithm.use_kl_in_reward=False \
@@ -36,5 +40,5 @@ python3 -m verl.trainer.main_ppo \
  trainer.project_name=opts_ttpo_${MODEL_SIZE} \
  trainer.experiment_name=${Experiment_Name} \
  trainer.save_freq=20 \
- trainer.test_freq=10 \
+ trainer.test_freq=20 \
  trainer.total_epochs=15 2>&1 | tee logs/${Experiment_Name}.log
