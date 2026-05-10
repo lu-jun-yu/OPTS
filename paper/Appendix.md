@@ -21,13 +21,13 @@ E_k=-\sum_{t=k}^{n-1}\gamma^{t-k}\hat A_{x_t}
 $$
 可直接使用，不额外加入长度惩罚。
 
-对于 Atari 和 MuJoCo 这类 action-level budget 任务，更深位置的重分支会消耗更多环境交互步数。为使得不同位置的得分更接近“单位预算收益”，我们使用长度归一化的开发项
+对于 Atari 和 MuJoCo 这类 action-level budget 任务，更靠近根节点的位置的重分支会消耗更多环境交互步数。为使得不同位置的得分更接近“单位预算收益”，我们使用长度归一化的开发项
 $$
 E_k^{(\tau)}=
 \frac{-\sum_{t=k}^{n-1}\gamma^{t-k}\hat A_{x_t}}{(n-k)^\tau},
 \qquad \tau\ge 0.
 $$
-其中 $\tau=0$ 对应 episode-level budget，不进行长度惩罚；$\tau>0$ 则更偏向在相同 action budget 下收益更高的位置。本文在 LLM 实例中使用 $\tau=0$，在 Atari 与 MuJoCo 实例中使用 $\tau>0$ 的 action-level budget 版本。该项是对 OTRC 开发项的预算化延拓，而不是独立于 OTRC 的额外启发式目标。
+其中 $\tau=0$ 对应 episode-level budget，不进行长度惩罚；$\tau>0$ 则更偏向在相同 action budget 下收益更高的位置。本文在 LLM 实例中使用 $\tau=0$，在 Atari 与 MuJoCo 实例中使用 $\tau=0.7>0$ 的 action-level budget 版本。该项是对 OTRC 开发项的预算化延拓，而不是独立于 OTRC 的额外启发式目标。
 
 ### C. Atari-57 完整学习曲线
 

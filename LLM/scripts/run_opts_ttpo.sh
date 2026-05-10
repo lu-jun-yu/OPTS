@@ -232,7 +232,7 @@ build_train_cmd() {
         actor_rollout_ref.rollout.val_kwargs.temperature=1.0
         actor_rollout_ref.rollout.val_kwargs.top_p=1.0
         actor_rollout_ref.rollout.c=1.0
-        actor_rollout_ref.rollout.max_search_per_tree=4
+        actor_rollout_ref.rollout.max_search_per_tree=3
         critic.enable=True
         critic.optim.lr=1e-5
         critic.model.path="models/Qwen3-${MODEL_SIZE}"
