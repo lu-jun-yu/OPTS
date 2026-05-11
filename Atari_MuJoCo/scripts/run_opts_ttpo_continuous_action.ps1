@@ -19,7 +19,8 @@ foreach ($config in $taskConfigs_ttpo) {
         --env-id $task `
         --total-timesteps $steps `
         --num-steps 4096 `
-        --num-envs 1
+        --num-envs 1 `
+        --tau 0.7
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Error running task $task" -ForegroundColor Red
         exit $LASTEXITCODE

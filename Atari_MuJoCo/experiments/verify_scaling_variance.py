@@ -111,10 +111,10 @@ def collect_ppo_steps(env, agent, num_steps, device, resume_state=None):
     }
 
 
-def collect_opts_steps(env, agent, num_steps, device, max_search, c,
+def collect_opts_steps(env, agent, num_steps, device, max_search, c, tau,
                        gamma=0.99, gae_lambda=0.95):
     """OPTS 树搜索 rollout（单环境）。
-    不使用 return_threshold，改为按所选位置是否是最后一个位置过滤。
+    使用 opts_ttpo_continuous_action.py 当前的 OTRC 选择逻辑。
     """
     env_idx = 0
     num_envs = 1
@@ -133,6 +133,7 @@ def collect_opts_steps(env, agent, num_steps, device, max_search, c,
     root_branch_counts = [{}]
     search_count = [{}]
     max_exploitations = [{}]
+    skip_init_search = [False]
 
     obs_np, _ = env.reset()
     next_obs = torch.Tensor(obs_np).to(device)
@@ -192,8 +193,10 @@ def collect_opts_steps(env, agent, num_steps, device, max_search, c,
                 search_count=search_count,
                 max_search=max_search,
                 max_exploitations=max_exploitations,
+                skip_init_search=skip_init_search,
                 c=c,
                 gamma=gamma,
+                tau=tau,
             )
 
             sel = selected[0]
@@ -309,7 +312,7 @@ def load_or_collect_ppo(env, agent, num_steps, device, cache_path, gamma, gae_la
 
 
 def load_or_collect_opts(env, agent, num_steps, device, cache_path,
-                         max_search, c, gamma, gae_lambda):
+                         max_search, c, tau, gamma, gae_lambda):
     """加载/收集 OPTS rollout 缓存。
     缓存够用则截取，不够则重新从头跑。
     """
@@ -324,7 +327,7 @@ def load_or_collect_opts(env, agent, num_steps, device, cache_path,
     #         print(f"  OPTS: cache has {cached_steps} steps but need {num_steps}, re-collecting...")
 
     print(f"  OPTS: collecting {num_steps} steps...")
-    data = collect_opts_steps(env, agent, num_steps, device, max_search, c,
+    data = collect_opts_steps(env, agent, num_steps, device, max_search, c, tau,
                               gamma, gae_lambda)
     torch.save(data, cache_path)
     print(f"  OPTS: saved cache ({num_steps} steps)")
@@ -399,6 +402,8 @@ if __name__ == "__main__":
     parser.add_argument("--output-dir", type=str, default="results/variance/verify2")
     parser.add_argument("--max-search-per-tree", type=int, default=4)
     parser.add_argument("--c", type=float, default=1.0)
+    parser.add_argument("--tau", type=float, default=0.7,
+                        help="tau for the OTRC node selection")
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument("--num-bootstrap", type=int, default=200,
@@ -463,10 +468,13 @@ if __name__ == "__main__":
     restore_normalization(env_opts, checkpoint)
 
     # OPTS 只跑 num-steps，bootstrap 使用全部数据
-    opts_cache_path = os.path.join(cache_dir, f"{args.env_id}_seed{args.seed}_opts_ms{args.max_search_per_tree}.pt")
+    opts_cache_path = os.path.join(
+        cache_dir,
+        f"{args.env_id}_seed{args.seed}_opts_ms{args.max_search_per_tree}_tau{args.tau}.pt",
+    )
     opts_obs, opts_act, opts_adv, opts_weights = load_or_collect_opts(
         env_opts, agent, args.num_steps, device, opts_cache_path,
-        args.max_search_per_tree, args.c, args.gamma, args.gae_lambda)
+        args.max_search_per_tree, args.c, args.tau, args.gamma, args.gae_lambda)
     env_opts.close()
 
     print(f"OPTS bootstrap variance estimation (from all {args.num_steps} steps, "
@@ -483,6 +491,9 @@ if __name__ == "__main__":
         "total_steps": args.total_steps,
         "num_steps": args.num_steps,
         "num_bootstrap": args.num_bootstrap,
+        "max_search_per_tree": args.max_search_per_tree,
+        "c": args.c,
+        "tau": args.tau,
         "batch_sizes": sorted(set(ppo_variances.keys()) | set(opts_variances.keys())),
         "ppo_variance": {str(k): v for k, v in sorted(ppo_variances.items())},
         "opts_variance": {str(k): v for k, v in sorted(opts_variances.items())},

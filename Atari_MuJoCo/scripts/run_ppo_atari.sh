@@ -54,7 +54,7 @@ ATARI_GAMES=(
     SolarisNoFrameskip-v4
     SpaceInvadersNoFrameskip-v4
     StarGunnerNoFrameskip-v4
-    SurroundNoFrameskip-v4
+    ALE/Surround-v5
     TennisNoFrameskip-v4
     TimePilotNoFrameskip-v4
     TutankhamNoFrameskip-v4
@@ -73,8 +73,8 @@ for seed in "${SEEDS[@]}"; do
         python cleanrl/cleanrl/ppo_atari.py \
             --env-id $task \
             --total-timesteps 10000000 \
-            --num-steps 4096 \
-            --num-envs 1 \
+            --num-steps 128 \
+            --num-envs 8 \
             --no-cuda \
             --seed $seed &
     done

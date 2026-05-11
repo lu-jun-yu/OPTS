@@ -88,6 +88,7 @@ visual/
 | `--total-steps` | `1000000` | 验证2 中用于计算 `g_expected` 的 PPO 全量 step 数 |
 | `--alpha` | 0.3 | 正/负样本的 step 比例（验证1）；批量脚本传入 `0.42` |
 | `--max-search-per-tree` | 4 | OPTS 每棵树的最大搜索次数 |
+| `--tau` | 0.7 | OPTS OTRC 节点选择的路径长度缩放系数 |
 | `--c` | 1.0 | OPTS OTRC 探索系数 |
 | `--gamma` | 0.99 | 折扣因子 |
 | `--gae-lambda` | 0.95 | GAE lambda |

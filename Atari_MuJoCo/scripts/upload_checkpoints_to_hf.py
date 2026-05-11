@@ -67,7 +67,7 @@ agent.load_state_dict(checkpoint["model_state_dict"])
 ```bash
 python cleanrl/cleanrl/opts_ttpo_continuous_action.py \\
     --env-id HalfCheetah-v4 --seed 1 \\
-    --total-timesteps 1000000 --num-steps 4096 --save-model
+    --total-timesteps 1000000 --num-steps 4096 --tau 0.7 --save-model
 ```
 
 ## Hyperparameters
