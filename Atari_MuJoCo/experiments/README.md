@@ -7,7 +7,7 @@
 ## 实验设置
 
 - **任务**: HalfCheetah-v4, Walker2d-v4, Hopper-v4, Ant-v4, Humanoid-v4
-- **预训练模型**: 每个任务使用 OPTS_TTPO 训练 1M step (seed=1)，保存完整 checkpoint（含 normalization 统计量）
+- **预训练模型**: 每个任务使用 PPO 训练 1M step (seed=1)，保存完整 checkpoint（含 normalization 统计量）
 - **验证 seed**: 1-5，使用相同的预训练模型，仅改变数据收集时的随机种子
 
 ## 验证1: 正轨迹的策略梯度方差 < 负轨迹的策略梯度方差
