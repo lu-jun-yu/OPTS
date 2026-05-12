@@ -28,7 +28,7 @@ python3 -m verl.trainer.main_ppo \
  actor_rollout_ref.rollout.val_kwargs.n=32 \
  actor_rollout_ref.rollout.val_kwargs.do_sample=True \
  actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
- actor_rollout_ref.rollout.val_kwargs.top_p=1.0 \
+ actor_rollout_ref.rollout.val_kwargs.top_p=0.95 \
  custom_reward_function.path=utils/reward_fn.py \
  custom_reward_function.name=compute_score \
  algorithm.use_kl_in_reward=False \

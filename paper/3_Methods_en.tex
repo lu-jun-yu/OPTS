@@ -1,0 +1,259 @@
+\section{Methods}
+
+This section presents OPTS-TTPO. Section~3.1 introduces Tree Trajectory Policy Optimization (TTPO), including the branch-corrected policy gradient, TreeGAE, and the TTPO objective. Section~3.2 derives the rebranching criterion OTRC for On-policy Parallel Tree Search (OPTS). Section~3.3 summarizes the full training procedure.
+
+\subsection{Tree Trajectory Policy Optimization}
+
+\subsubsection{Branch-corrected Policy Gradient for Tree Trajectories}
+
+Let the current policy be $\pi_\theta$. We refer to each state-action position in the sampling structure as a node $x$, and denote its state, action, and true advantage by $s_x$, $a_x$, and $A_x$. In a tree trajectory, two nodes are treated as distinct whenever they lie on different branches, even if they correspond to the same state-action pair. A standard on-policy rollout produces a chain trajectory $\tau=(s_0,a_0,s_1,a_1,\ldots)$ with $a_t\sim\pi_\theta(\cdot\mid s_t)$, and the standard policy gradient theorem gives $\nabla_\theta J(\theta)=\mathbb{E}_{\tau\sim\pi_\theta}[\sum_t A_t\nabla_\theta\log\pi_\theta(a_t\mid s_t)]$.
+
+An on-policy tree trajectory $\mathcal{T}_{\pi_\theta}$ allows the algorithm to return to a previously sampled node and sample a new continuation from $\pi_\theta$, where a continuation denotes the suffix trajectory generated from that node onward. Let $\operatorname{Anc}(x)$ be the set of ancestor nodes before $x$ on the path from the root, and let $m(u)$ be the number of continuations from node $u$. Non-branching nodes have $m(u)=1$, while leaf nodes have $m(u)=0$.
+
+Let $\tau_u$ denote the strict suffix trajectory after $u$. We define its conditional expected gradient contribution as
+\[
+\mu(u)
+=
+\mathbb{E}_{\tau_u\sim \pi_\theta(\cdot\mid u)}
+\left[
+\sum_{x\in\tau_u}
+A_x\nabla_\theta\log\pi_\theta(a_x\mid s_x)
+\right],
+\]
+where the strict suffix does not include $u$ itself. If there are multiple continuations from $u$, we write $G_j(u)=\sum_{x\in\tau_{u,j}} A_x\nabla_\theta\log\pi_\theta(a_x\mid s_x)$, so that $\mathbb{E}[G_j(u)\mid u]=\mu(u)$.
+
+Although each continuation is sampled from the current policy, the branching node is externally chosen by the algorithm and is therefore not part of the standard on-policy chain sampling process. A naive equal-weighted sum over all tree nodes over-counts the suffix after a branching node: if $u$ has $b$ identically distributed continuations, then $\mathbb{E}[\sum_{j=1}^b G_j(u)\mid u]=b\,\mu(u)$, whereas a standard chain rollout should contribute only $\mu(u)$ in expectation. For any node, this amplification accumulates multiplicatively along the branching factors of its ancestors. We use $W(x)$ to denote the branch amplification factor of node $x$, and $1/W(x)$ as its branch correction weight.
+
+\paragraph{Base case 1: from a chain to a binary tree.}
+Suppose a chain trajectory is resampled once after node $u$, producing two continuations $\tau_{u,1}$ and $\tau_{u,2}$. To preserve the expected suffix contribution $\mu(u)$, the two continuations should be averaged. The gradient estimator on the resulting binary tree is
+\[
+\hat g(\mathcal{T})
+=
+\sum_{x\in\tau_{\preceq u}}
+A_x\nabla_\theta\log\pi_\theta(a_x\mid s_x)
++
+\frac{1}{2}\sum_{i=1}^{2}G_i(u).
+\]
+Since the two continuations are i.i.d. conditional on $u$, $\frac{1}{2}(G_1(u)+G_2(u))$ has the same expectation as the original suffix contribution. The prefix $\tau_{\preceq u}$ is unchanged. Thus the strict suffix after $u$ has branch correction weight $1/2$, equivalently branch amplification factor $W(x)=2$, while prefix nodes still have $W(x)=1$.
+
+\paragraph{Base case 2: branching again in an existing binary tree.}
+Assume that the current tree already has a binary branching node $v$, and we now add one continuation at node $u$. If $u$ lies before $v$, the old suffix may contain the binary subtree at $v$, but it has already been aggregated as in Base Case~1. Hence the old suffix $G_1(u)$ and the new suffix $G_2(u)$ have the same expectation, and averaging them at $u$ is sufficient. If $u=v$, we update $\frac{1}{2}\sum_{j=1}^2G_j(v)$ to $\frac{1}{3}\sum_{j=1}^3G_j(v)$, whose conditional expectation remains $\mu(v)$. If $u$ lies in one of the suffixes of $v$, the correction weight $1/2$ inherited from $v$ is a common factor; therefore we average the two continuations from $u$ as in Base Case~1 and then multiply by this common upstream factor.
+
+These two base cases show that, when a new continuation is added at $u$, it is enough to replace the average over $b$ strict suffix continuations by the average over $b+1$ continuations, while preserving all existing upstream averaging factors. This keeps the aggregated policy gradient unbiased.
+
+\paragraph{Induction hypothesis.}
+Assume that the current tree $\mathcal{T}$ yields an unbiased weighted policy gradient under the above aggregation rule, and that each node $x$ has branch amplification factor $W(x)=\prod_{z\in\operatorname{Anc}(x)}m(z)$, with correction weight $1/W(x)$.
+
+\paragraph{Induction step.}
+Choose an arbitrary node $u$, and suppose it currently has $b=m(u)\ge 1$ continuations. We sample one additional on-policy continuation from $u$ and obtain $\mathcal{T}^+$. Let $\hat g_{\setminus u}$ denote all contributions that are not in the strict suffix of $u$. Let $G_j(u)$ denote the $j$-th suffix contribution after removing the upstream weight $1/W(u)$ and the local averaging factor $1/b$; any deeper branching inside the suffix has already been aggregated according to the induction hypothesis. Then
+\[
+\begin{aligned}
+\hat g(\mathcal{T})
+&=
+\hat g_{\setminus u}
++
+\frac{1}{W(u)}\frac{1}{b}\sum_{j=1}^{b}G_j(u),\\
+\hat g(\mathcal{T}^{+})
+&=
+\hat g_{\setminus u}
++
+\frac{1}{W(u)}\frac{1}{b+1}\sum_{j=1}^{b+1}G_j(u).
+\end{aligned}
+\]
+By the induction hypothesis and the on-policy sampling of the new continuation,
+$\mathbb{E}[G_j(u)\mid u]=\mu(u)$ for $j=1,\ldots,b+1$. Therefore
+\[
+\mathbb{E}\left[\frac{1}{b+1}\sum_{j=1}^{b+1}G_j(u)\middle|u\right]=\mathbb{E}\left[\frac{1}{b}\sum_{j=1}^{b}G_j(u)\middle|u\right].
+\]
+
+It follows that $\mathbb{E}[\hat g(\mathcal{T}^+)\mid u]=\mathbb{E}[\hat g(\mathcal{T})\mid u]$, and the updated tree still satisfies
+$W(x)=\prod_{z\in\operatorname{Anc}(x)}m(z)$.
+
+\paragraph{Theorem 1: tree-trajectory policy gradient.}
+Let $\mathcal{T}_{\pi_\theta}$ be generated by the same policy, and assume that the continuations from each node are sampled i.i.d. from $\pi_\theta$ conditional on that node. For any node, define the branch amplification factor
+\begin{equation}
+\label{eq:branch-amplification}
+W(x)=\prod_{u\in\operatorname{Anc}(x)}m(u),
+\end{equation}
+where the empty product is $1$. Equivalently, $W$ can be computed top-down: the root has amplification factor $1$, and if $p$ is the parent of $x$, then $W(x)=W(p)m(p)$. The induction above gives the unbiased policy gradient estimator on an on-policy tree trajectory:
+\begin{equation}
+\label{eq:tree-policy-gradient}
+\nabla_\theta J(\theta)
+=
+\mathbb{E}_{\mathcal{T}_{\pi_\theta}}
+\left[
+\sum_{x\in\mathcal{T}_{\pi_\theta}}
+\frac{1}{W(x)}
+A_x\nabla_\theta\log\pi_\theta(a_x\mid s_x)
+\right].
+\end{equation}
+
+\subsubsection{Tree-based Generalized Advantage Estimation}
+
+We first derive TreeGAE under the ideal value function $V^\pi$, and then replace it with the learned critic $\hat V$. For any value function $V$, define $\delta^V_x:=r_x+\gamma V(s'_x)-V(s_x)$, where $r_x$ is the immediate reward and $s'_x$ is the next state after taking action $a_x$. In particular, $\delta^\pi_x:=\delta^{V^\pi}_x$ and $\hat\delta_x:=\delta^{\hat V}_x$. Let $x'\sim\pi_\theta(\cdot\mid x)$ denote the next state-action node induced jointly by the environment transition and the policy. The chain GAE recursion is $A^{\mathrm{GAE}}_x=\delta^\pi_x+\gamma\lambda A^{\mathrm{GAE}}_{x'}$.
+
+When $\gamma=1$ and the downstream recursion is correct in expectation, the chain GAE remains an unbiased estimate of the true advantage in expectation. Indeed, using the law of iterated expectation and the properties of $V^\pi$,
+$\mathbb{E}[\delta^\pi_x\mid x]=A_x$ and
+$\mathbb{E}_{x'\sim\pi_\theta(\cdot\mid x)}[A_{x'}]=0$, we have
+\[
+\mathbb{E}[A^{\mathrm{GAE}}_x\mid x]
+=
+A_x+\gamma\lambda\,
+\mathbb{E}_{x'\sim\pi_\theta(\cdot\mid x)}[A_{x'}]
+=
+A_x.
+\]
+
+If a tree node $x$ has $m(x)$ continuations with first nodes $x'_1,\ldots,x'_{m(x)}$, these first nodes are i.i.d. samples from the same induced next-node distribution conditional on $x$. Replacing the single downstream term in the chain recursion by their average gives, under the same conditions,
+\[
+\mathbb{E}\left[
+\delta^\pi_x+\gamma\lambda
+\frac{1}{m(x)}\sum_{j=1}^{m(x)}A^{\mathrm{GAE}}_{x'_j}
+\middle|x\right]
+=
+A_x.
+\]
+Thus, arithmetic averaging is the tree-structured replacement that preserves the expected GAE recursion. When $\gamma<1$, the recursion corresponds to the standard discounted proxy advantage and introduces the usual discount-induced bias relative to the undiscounted true advantage.
+
+On a finite tree trajectory, the recursion terminates at leaf nodes with the current TD residual, and non-leaf nodes propagate the averaged downstream term. Replacing $V^\pi$ with $\hat V$ gives TreeGAE.
+
+\paragraph{Theorem 2: TreeGAE recursion.}
+Assume that for any non-leaf node $x$, the first nodes of its continuations, $x'_1,\ldots,x'_{m(x)}$, are i.i.d. samples from the induced next-node distribution conditional on $x$. For a leaf node, TreeGAE terminates with $\hat A^{\mathrm{TreeGAE}}_x=\hat\delta_x$; for a non-leaf node, it uses
+\begin{equation}
+\label{eq:treegae}
+\hat A^{\mathrm{TreeGAE}}_x
+=
+\hat\delta_x
++
+\gamma\lambda\,\frac{1}{m(x)}
+\sum_{j=1}^{m(x)}
+\hat A^{\mathrm{TreeGAE}}_{x'_j}.
+\end{equation}
+When $\hat V=V^\pi$ and $\gamma=1$, TreeGAE is conditionally unbiased for the true advantage $A_x$. In practice, using $\hat V$ or $\gamma<1$ introduces bias from value estimation and the discounted proxy, respectively.
+
+\subsubsection{TTPO Objective}
+
+Let $\hat A_x=\hat A^{\mathrm{TreeGAE}}_x$, and define the PPO ratio as $r(\theta)=\frac{\pi_\theta(a_x\mid s_x)}{\pi_{\theta_{\mathrm{old}}}(a_x\mid s_x)}$. For each node $x\in\mathcal{T}_{\pi_\theta}$, define the unclipped and clipped actor terms as
+\[
+\ell_x^{\mathrm{pg}}
+=
+r(\theta)\hat A_x,
+\]
+\[
+\ell_x^{\mathrm{clip}}
+=
+\operatorname{clip}(r(\theta),1-\epsilon,1+\epsilon)\hat A_x.
+\]
+The TTPO actor objective applies the branch correction weight to their PPO minimum:
+\begin{equation}
+\label{eq:ttpo-actor}
+\mathcal{L}_{\pi}
+=
+\frac{
+\sum_{x\in\mathcal{T}_{\pi_\theta}}\frac{1}{W(x)}
+\min\!\left(\ell_x^{\mathrm{pg}},\ell_x^{\mathrm{clip}}\right)
+}{
+\sum_{x\in\mathcal{T}_{\pi_\theta}}\frac{1}{W(x)}
+}.
+\end{equation}
+Similarly, define the unclipped and clipped critic errors as
+\[
+\ell_x^{\mathrm{v}}
+=
+(\hat V(s_x)-\hat R_x)^2,
+\]
+\[
+\ell_x^{\mathrm{v,clip}}
+=
+(\hat V^{\mathrm{clip}}(s_x)-\hat R_x)^2.
+\]
+The critic objective uses the same weighting:
+\begin{equation}
+\label{eq:ttpo-critic}
+\mathcal{L}_{V}
+=
+\frac{
+\sum_{x\in\mathcal{T}_{\pi_\theta}}\frac{1}{W(x)}
+\max\!\left(\ell_x^{\mathrm{v}},\ell_x^{\mathrm{v,clip}}\right)
+}{
+\sum_{x\in\mathcal{T}_{\pi_\theta}}\frac{1}{W(x)}
+}.
+\end{equation}
+Advantage whitening is also performed under the same corrected measure; see Appendix~A for the formula.
+
+\subsection{On-policy Parallel Tree Search}
+
+TTPO specifies how to update the policy from tree samples, while OPTS specifies where the tree should continue to grow.
+
+\subsubsection{Greedy Reference Path}
+
+For each tree, we start from the root node. Whenever the current node has multiple continuations, we choose the continuation whose first node has the largest TreeGAE value, and proceed until a leaf node is reached. This yields a greedy reference path. Rebranching positions are selected only along this path.
+
+\subsubsection{Development Term of OTRC}
+
+Let the current greedy reference path be $\tau^\star=(s_0,a_0,r_0,\ldots,s_{n-1},a_{n-1},r_{n-1},s_n)$, where position $t$ corresponds to tree node $x_t$. If we continue searching after position $k$, we are interested in how much the expected return of a newly sampled suffix from $s_k$ can improve over the current greedy suffix. We define the suffix expected improvement as $\Delta_k^\pi:=V^\pi(s_k)-G_k$, where $G_k=\sum_{t=k}^{n-1}\gamma^{t-k}r_t$ is the realized return of the current greedy suffix, and $V^\pi(s_k)$ is the expected return of a suffix sampled from $s_k$ under the policy. Let $\delta^\pi_t=r_t+\gamma V^\pi(s_{t+1})-V^\pi(s_t)$. For a finite reference path with $V^\pi(s_n)=0$, a telescoping sum gives
+\[
+\begin{aligned}
+-\sum_{t=k}^{n-1}\gamma^{t-k}\delta^\pi_t
+&=
+-G_k+V^\pi(s_k)-\gamma^{n-k}V^\pi(s_n)\\
+&=
+\Delta_k^\pi.
+\end{aligned}
+\]
+Thus suffix improvement can be estimated through TD residuals along the fixed reference path. A plug-in residual $\hat\delta_t=r_t+\gamma\hat V(s_{t+1})-\hat V(s_t)$ has no downstream sampling variance, but directly inherits value bias. We instead use on-policy continuations after $s_{t+1}$: conditional on the one-step transition, if $\hat V=V^\pi$, then $\mathbb{E}[\hat A^{\mathrm{TreeGAE}}_t\mid s_t,a_t,r_t,s_{t+1}]=\delta^\pi_t$. This motivates the OTRC development term
+\begin{equation}
+\label{eq:otrc-development}
+E_k
+:=
+-\sum_{t=k}^{n-1}\gamma^{t-k}
+\hat A^{\mathrm{TreeGAE}}_t.
+\end{equation}
+Under the ideal value function, fixing each one-step transition and taking expectation only over subsequent on-policy continuations gives $\mathbb{E}_{\mathrm{cont}}[E_k]=-\sum_{t=k}^{n-1}\gamma^{t-k}\delta^\pi_t=\Delta_k^\pi$. In practice, with the learned critic $\hat V$, $E_k$ is a TreeGAE proxy for $\Delta_k^\pi$; its bias mainly comes from value estimation, while $\lambda$ controls how much downstream trajectory information is incorporated.
+
+\subsubsection{Exploration Term and Rebranching Score of OTRC}
+
+The development term $E_k$ measures the potential gain from continuing search at $x_k$. To avoid repeatedly expanding the same region, we define the on-policy trajectory rebranching criterion as
+\begin{equation}
+\label{eq:otrc-score}
+\mathrm{OTRC}_k
+=
+E_k-c\,U_k,
+\end{equation}
+where $c>0$ and the exploration term is
+$U_k=\bigl[m(x_k)-1\bigr]\max_t |E_t|$.
+The scale factor $\max_t |E_t|$ keeps the exploration term on a comparable scale to the development term, reducing the sensitivity of $c$ to the reward scale without requiring an additional statistics window. For each tree, we select the node with the largest OTRC score on the current greedy reference path:
+\[
+k^\star
+=
+\arg\max_k \mathrm{OTRC}_k.
+\]
+
+\subsection{OPTS-TTPO Training Procedure}
+
+Putting TTPO and OPTS together, one training step is summarized in Algorithm~\ref{alg:opts-ttpo}.
+
+\begin{algorithm}[t]
+\caption{OPTS-TTPO training step}
+\label{alg:opts-ttpo}
+\begin{algorithmic}[1]
+\Require $\pi_\theta$, $\hat V$, $B$, $R$, $S_{\max}$, $c$
+\State Initialize rebranching set $\mathcal{S}\leftarrow\emptyset$
+\For{$r=1,\ldots,R$}
+    \State Generate continuations from nodes in $\mathcal{S}$
+    \State Fill the round with new states until $B$ samples are obtained
+    \State Add new continuations to the tree and update branch counts
+    \State Update TreeGAE on the current tree by Eq.~\eqref{eq:treegae}
+    \If{$r<R$}
+        \State Filter out trees whose search count reaches $S_{\max}$
+        \State Build greedy reference paths and compute OTRC scores
+        \State Collect candidate rebranching nodes $x_{k^\star}$
+        \State Apply the cross-tree average-baseline filter on expected improvement
+        \State Set $\mathcal{S}$ to the retained candidate nodes
+    \EndIf
+\EndFor
+\State Compute $W(x)$ for all final tree nodes by Section~3.1.1
+\State Construct TTPO losses with correction weight $1/W(x)$ by Section~3.1.3
+\State Update the critic with $\mathcal{L}_V^{\mathrm{TTPO}}$ and the actor with $\mathcal{L}_\pi^{\mathrm{TTPO}}$
+\end{algorithmic}
+\end{algorithm}

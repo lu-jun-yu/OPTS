@@ -27,7 +27,7 @@ python3 -m verl.trainer.main_ppo \
  actor_rollout_ref.rollout.val_kwargs.n=32 \
  actor_rollout_ref.rollout.val_kwargs.do_sample=True \
  actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
- actor_rollout_ref.rollout.val_kwargs.top_p=1.0 \
+ actor_rollout_ref.rollout.val_kwargs.top_p=0.95 \
  critic.enable=True \
  critic.optim.lr=1e-5 \
  critic.model.path=models/Qwen3-${MODEL_SIZE} \

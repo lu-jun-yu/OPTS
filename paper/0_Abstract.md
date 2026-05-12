@@ -1,3 +1,5 @@
-搜索是经典博弈 AI 取得性能突破的核心来源，但主流策略梯度方法在训练时通常只做链式 rollout，不做显式搜索；相反，经典搜索方法又往往依赖后验策略投影，而不直接服务于策略梯度更新。本文提出 **OPTS-TTPO**，一个将同策略树搜索与策略梯度优化统一起来的通用训练/推理框架。该框架由两个技术组件构成。第一，**TTPO (Tree Trajectory Policy Optimization)** 将策略梯度定理从链式轨迹推广到树轨迹：我们证明只要把每个状态-动作对按其从根到当前位置的分支数乘积的倒数进行加权，就能得到与树采样分布匹配的无偏估计；在此之上我们给出 **TreeGAE** 递推，使 GAE 优势估计能够自然地在分支节点上按子分支求平均进行回传。第二，**OPTS (On-policy Parallel Tree Search)** 是一个面向策略梯度而非策略投影的深度式重分支选点机制；我们推导出**OTRC (On-policy Trajectory Rebranching Criterion)**，用于在同策略轨迹上选择最优重分支位置，将 UCT 从 per-node 动作选择推广为 per-trajectory 重分支点选择，其开发项直接来自 TD 残差的 telescoping 恒等式 $V^\pi(s_k)-G_k=-\sum_{t\ge k}\gamma^{t-k}\delta_t$。对 action-level budget 的 MuJoCo 与 Atari，我们只需在开发项上追加一项长度惩罚 $(n-k)^\tau$，其余推导与 episode-level budget 情形完全一致。
+## 摘要
 
-OPTS-TTPO 是一个通用算法。本文以 LLM 可验证数学推理作为主要实验载体：在 `Qwen3-1.7B` 上，OPTS-TTPO 在 `math12k` 与 `minervamath` 上分别取得 `73.92` 与 `30.77` 的 `mean@1`，优于 PPO、GPG、DAPO 与 REINFORCE++ 参考运行；同一套搜索接口在测试时对齐 `pass@k` 预算，直接作为测试时扩展框架输出 `avg@k / pass@k / cons@k`。我们进一步在 ALE-57 与五个 MuJoCo 连续控制任务上做跨域验证，并通过 MuJoCo 上的梯度方差估计实验直接测量策略梯度估计误差 $\mathbb{E}[\|\hat g_B-g^\star\|_2^2]$，验证 OPTS 相比同预算 PPO 具有更低的梯度估计方差。
+搜索和学习是能随着计算量扩展的两种通用方法。为此，本文尝试为策略梯度方法引入搜索，提出 **同策略并行树搜索 (OPTS)** 与 **树轨迹策略优化 (TTPO)**。TTPO 通过分支校正权重解决树轨迹中分支点的后缀梯度贡献放大的问题，并提出适用于多 continuation 结构的 TreeGAE；OPTS 则从后缀期望改进出发，推导用于树搜索的同策略轨迹重分支准则 (OTRC)。实验表明，OPTS-TTPO 在 LLM 数学推理任务上优于 DAPO 和 PPO，在测试时搜索时优于同预算多数投票，并在 Atari-57 与 MuJoCo 上取得比 PPO 更优的整体表现。进一步的方差缩减实验显示，OPTS-TTPO 比 PPO 更好地降低策略梯度估计方差。
+
+<!-- 这个摘要没什么吸引力，后面还需要重写 -->

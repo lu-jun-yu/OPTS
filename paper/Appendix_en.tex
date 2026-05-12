@@ -1,0 +1,109 @@
+\appendix
+
+\section{Branch-Corrected Advantage Normalization}
+\label{app:advantage-normalization}
+
+Tree nodes in TTPO should not be treated as uniformly counted samples. If node $x$ has branch amplification factor $W(x)$, its effective weight under the corresponding chain on-policy rollout measure is
+\begin{equation}
+w_x=\frac{1}{W(x)}.
+\end{equation}
+Accordingly, the actor objective, the critic objective, and the batch statistics used for advantage whitening are all computed under the same branch-corrected empirical measure. Given tree nodes $\mathcal{T}_{\pi_\theta}$ and TreeGAE advantages $\hat A_x$, let
+\begin{equation}
+Z_{\mathcal{T}_{\pi_\theta}}=\sum_{x\in\mathcal{T}_{\pi_\theta}} w_x .
+\end{equation}
+We compute the whitening moments as
+\begin{equation}
+\mu_A
+=
+\frac{1}{Z_{\mathcal{T}_{\pi_\theta}}}
+\sum_{x\in\mathcal{T}_{\pi_\theta}} w_x \hat A_x,
+\qquad
+\sigma_A^2
+=
+\frac{1}{Z_{\mathcal{T}_{\pi_\theta}}}
+\sum_{x\in\mathcal{T}_{\pi_\theta}} w_x(\hat A_x-\mu_A)^2 .
+\end{equation}
+The normalized advantage is then
+\begin{equation}
+\tilde A_x
+=
+\frac{\hat A_x-\mu_A}{\sqrt{\sigma_A^2+\varepsilon}},
+\end{equation}
+where $\varepsilon$ is a small numerical constant.
+
+In implementation, $\tilde A_x$ replaces $\hat A_x$ in the actor loss. The TreeGAE recursion, return targets, and value targets are not changed by whitening; the critic loss is simply aggregated with the same weights $w_x$. If the mean and variance were computed by uniform node counting, high-branching regions would again dominate the batch statistics because they contain more sampled nodes. The weighted normalization above keeps advantage whitening aligned with the corrected empirical measure used by the TTPO actor and critic objectives.
+
+\section{Budget Alignment and Length Penalty Across Domains}
+\label{app:budget-alignment}
+
+The rebranching score used by OPTS should be aligned with the budget unit of the domain. In LLM reasoning, the training or inference budget is usually counted by completed answers, episodes, or sampled continuations. Under this accounting, continuing from different prefixes is treated as one continuation, so we directly use the development term from the main text,
+\begin{equation}
+E_k
+=
+-\sum_{t=k}^{n-1}\gamma^{t-k}\hat A_{x_t}.
+\end{equation}
+
+For action-level budget domains such as Atari and MuJoCo, a rebranching position closer to the root usually consumes more environment interaction steps because the newly sampled continuation is longer. Directly comparing the unnormalized $E_k$ can therefore favor earlier positions because they have larger absolute suffix-improvement scores, even when their improvement per unit of interaction budget is not larger. To make scores more comparable across positions, we use the length-normalized development term
+\begin{equation}
+\label{eq:appendix-length-normalized-development}
+E_k^{(\tau)}
+=
+\frac{-\sum_{t=k}^{n-1}\gamma^{t-k}\hat A_{x_t}}{(n-k)^\tau},
+\qquad
+\tau\ge 0 .
+\end{equation}
+The corresponding OTRC score is
+\begin{equation}
+\label{eq:appendix-length-normalized-otrc}
+\mathrm{OTRC}_k^{(\tau)}
+=
+E_k^{(\tau)}-c\,U_k^{(\tau)},
+\qquad
+U_k^{(\tau)}
+=
+\bigl[m(x_k)-1\bigr]\max_{0\le t<n}\left|E_t^{(\tau)}\right|.
+\end{equation}
+
+Here $\tau=0$ recovers the episode-level criterion with no length penalty, while $\tau=1$ approximates improvement per remaining action when the continuation cost is proportional to $n-k$. In practice, we use $0<\tau<1$ as a softened correction, since realized continuation lengths, the long-term effect of early actions, and value-estimation error are not exactly linear in the remaining horizon. We use $\tau=0$ for the LLM experiments and $\tau=0.7$ for Atari and MuJoCo. This term is a budget-aware extension of the OTRC development term: it changes only the ranking of rebranching positions, while TreeGAE, branch-correction weights, and the TTPO actor/critic objectives remain unchanged.
+
+\section{Full Atari-57 Learning Curves}
+\label{app:atari-curves}
+
+The main text reports task-level win counts on Atari-57 to avoid placing 57 dense learning curves in the paper body. Figure~\ref{fig:atari-all-curves} provides the complete visualization for PPO and OPTS-TTPO. Each panel corresponds to one Atari game, the horizontal axis is the number of environment interaction steps, and the vertical axis is the raw mean return for that game. Different random seeds of the same algorithm are shown as thin curves with the same color, with smoothing used only for visualization.
+
+Because reward scales differ substantially across Atari games, Figure~\ref{fig:atari-all-curves} is intended for within-task comparison and for inspecting where gains or regressions occur. The aggregate cross-task conclusion is therefore based on the task-level win-count statistics in the main text rather than on visually aggregating these raw-return curves.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/all_tasks_atari.png}
+\caption{Full Atari-57 learning curves for PPO and OPTS-TTPO. Each panel shows one game; curves are smoothed raw mean returns for different random seeds.}
+\label{fig:atari-all-curves}
+\end{figure*}
+
+\section{Experimental Setup}
+\label{app:experiment-setup}
+
+Table~\ref{tab:experiment-setup} summarizes the main settings used in our experiments.
+
+\begin{table*}[t]
+\centering
+\small
+\begin{tabular}{p{0.22\textwidth}p{0.72\textwidth}}
+\hline
+Experiment & Setup \\
+\hline
+LLM training-time search &
+\texttt{Qwen3-1.7B}; training data from \texttt{math12k} and the competition subset of \texttt{NuminaMath-1.5-RL-Verifiable}; evaluation on \texttt{math12k} test, \texttt{minervamath}, \texttt{amc23}, and \texttt{aime25}; maximum prompt length 1024 and maximum response length 2048; validation every 20 steps with \texttt{avg@n}/\texttt{pass@n}/\texttt{cons@n}. \\
+LLM test-time search &
+Compared methods include i.i.d. sampling, self-consistency, reward-guided OPTS, and value-guided OPTS; inference budgets are $k\in\{8,16,32,64,128\}$. \\
+Atari-57 &
+CleanRL-style PPO CNN actor-critic; 10M environment steps per task; 8 parallel environments; 128-step rollouts; 3 random seeds; OPTS-TTPO uses action-level OTRC with $\tau=0.7$ and $s=4$. \\
+MuJoCo &
+Tasks are \texttt{Hopper-v4}, \texttt{Walker2d-v4}, \texttt{HalfCheetah-v4}, \texttt{Ant-v4}, and \texttt{Humanoid-v4}; PPO and OPTS-TTPO use matched rollout/update budgets. \\
+Variance reduction &
+Compare the bootstrapped policy-gradient variance proxy for high-/low-advantage samples and PPO/OPTS samples; the reference gradient $g^\star$ is approximated with a large sample pool; OPTS samples use the same $1/W$ branch correction as in training. \\
+\hline
+\end{tabular}
+\caption{Main experimental settings.}
+\label{tab:experiment-setup}
+\end{table*}
