@@ -49,7 +49,8 @@ import json
 import math
 import os
 import time
-from collections import Counter, defaultdict
+from collections import defaultdict
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -187,14 +188,45 @@ def strict_pass_at_k(correct_flags: list[bool], k: int) -> float:
     return 1.0 if any(_first_k(correct_flags, k)) else 0.0
 
 
+def _is_valid_answer(answer: str | None) -> bool:
+    return answer is not None and str(answer).strip() != ""
+
+
+def _answers_equivalent(lhs: str, rhs: str) -> bool:
+    try:
+        return bool(project_validate_answer(lhs, rhs))
+    except Exception:
+        return False
+
+
+def _majority_equivalence_answer(answers: list[str | None]) -> str | None:
+    answer_groups: list[dict[str, Any]] = []
+    for answer in answers:
+        if not _is_valid_answer(answer):
+            continue
+
+        for group in answer_groups:
+            if _answers_equivalent(answer, group["answer"]):
+                group["answers"].append(answer)
+                break
+        else:
+            answer_groups.append({"answer": answer, "answers": [answer]})
+
+    if not answer_groups:
+        return None
+
+    # Ties keep first-seen behavior, matching Counter.most_common.
+    majority_group = max(answer_groups, key=lambda group: len(group["answers"]))
+    return majority_group["answer"]
+
+
 def cons_at_k(responses: list[str], ground_truth: str, k: int) -> float:
     """Self-consistency (majority vote) over the first k responses."""
     subset = _first_k(responses, k)
     answers = [project_extract_answer(r) for r in subset]
-    answers = [a for a in answers if a is not None]
-    if not answers:
+    majority_ans = _majority_equivalence_answer(answers)
+    if majority_ans is None:
         return 0.0
-    majority_ans = Counter(answers).most_common(1)[0][0]
     try:
         return 1.0 if project_validate_answer(majority_ans, ground_truth) else 0.0
     except Exception:
