@@ -1463,7 +1463,9 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
 
         data_sources = np.concatenate(data_source_lst, axis=0)
 
-        data_src2var2metric2val = process_validation_metrics(data_sources, sample_uids, reward_extra_infos_dict)
+        data_src2var2metric2val = process_validation_metrics(
+            data_sources, sample_uids, reward_extra_infos_dict, compute_bootstrap=False
+        )
         metric_dict = {}
         target_n = int(self.config.actor_rollout_ref.rollout.val_kwargs.n)
         target_acc_metric_names = (f"avg@{target_n}", f"pass@{target_n}", f"cons@{target_n}")

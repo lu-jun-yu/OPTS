@@ -8,9 +8,15 @@ so the response should be: "...thinking...</think>\n...\\boxed{answer}..."
 """
 
 import re
+from functools import lru_cache
 from typing import Optional
 
 from math_verify import parse, verify
+
+
+@lru_cache(maxsize=65536)
+def _cached_parse(s: str):
+    return parse(s)
 
 
 def check_format(response_str: str) -> bool:
@@ -81,8 +87,8 @@ def validate_answer(answer: str, ground_truth: str) -> bool:
     - Text/multiple choice: A, B, C, D
     """
     try:
-        parsed_answer = parse(answer)
-        parsed_gt = parse(ground_truth)
+        parsed_answer = _cached_parse(answer)
+        parsed_gt = _cached_parse(ground_truth)
         return verify(parsed_gt, parsed_answer)
     except Exception:
         # Fallback: simple string comparison
