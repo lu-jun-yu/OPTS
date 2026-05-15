@@ -7,12 +7,12 @@ Two modes:
   - reward-guided (reward_mode="reward"): uses actual reward_fn for OTRC guidance
   - value-guided  (reward_mode="value"):  uses critic's last-position sigmoid(value) as reward
 
-Total inference budget = dataset_size * n_samples / batch_size steps,
-matching pass@k cost. Each step performs n_samples rounds of tree-structured
-sampling with OTRC-based search.
+Total inference budget = dataset_size * n_samples responses, matching pass@k
+cost. Each run performs n_samples rounds of tree-structured sampling with
+OTRC-based search over the full evaluation set.
 
-Results include sample_index per response for scaling analysis:
-  filter sample_index <= k to get n_samples=k results.
+Results include sample_indices and global_indices. opts@k should truncate by
+global_indices <= k * dataset_size to match a chronological generation budget.
 """
 
 import os
@@ -229,7 +229,7 @@ def main_task(config):
 
     model_path = _require_config_value(config, "actor_rollout_ref.model.path", "model.path")
     data_path = _require_config_value(config, "data.path", "data.val_files", "data.train_files")
-    batch_size = _require_config_value(config, "data.batch_size", "data.val_batch_size", "data.train_batch_size")
+    requested_batch_size = _require_config_value(config, "data.batch_size", "data.val_batch_size", "data.train_batch_size")
     n_samples = _require_config_value(config, "data.n_samples")
     output_path = _require_config_value(config, "data.output_path")
     reward_mode = _select_first(config, "data.reward_mode", default="value")
@@ -306,12 +306,21 @@ def main_task(config):
     wg.init_model()
     critic_wg.init_model()
 
+    if requested_batch_size < total_samples:
+        raise ValueError(
+            "OPTS evaluation expects one round to cover the full evaluation set. "
+            f"Got batch_size={requested_batch_size} but dataset_size={total_samples}. "
+            "Increase data.val_batch_size/data.batch_size or split the dataset explicitly."
+        )
+
+    effective_batch_size = min(requested_batch_size, total_samples)
+
     # Build prompt buffer
     prompt_buffer = InferencePromptBuffer(
         data_path=data_path,
         data_config=config.data,
         tokenizer=tokenizer,
-        batch_size=batch_size,
+        batch_size=effective_batch_size,
         prompt_length=prompt_length,
     )
     if prompt_buffer.total_samples != total_samples:
@@ -321,10 +330,7 @@ def main_task(config):
             f"prompt_buffer.total_samples={prompt_buffer.total_samples}, total_samples={total_samples}"
         )
 
-    # Total steps = dataset_size * n_samples / batch_size (matching pass@k cost)
-    total_steps = -(-total_samples * n_samples // batch_size)  # ceil division
-
-    # Result collection: dataset_idx -> list of (response_str, sample_index, global_index)
+    # Result collection: dataset_idx -> list of response records.
     idx_responses = defaultdict(list)
     # Sample counter per dataset row (per-prompt, 1-based).
     idx_sample_counter = defaultdict(int)
@@ -333,158 +339,197 @@ def main_task(config):
     # k * dataset_size responses and then grouped by prompt.
     global_sample_counter = 0
 
-    print(f"Starting inference-time search: total_steps={total_steps}, "
-          f"n_samples={n_samples}, batch_size={batch_size}, "
+    print(f"Starting inference-time search: "
+          f"n_samples={n_samples}, batch_size={effective_batch_size}, "
+          f"requested_batch_size={requested_batch_size}, "
           f"reward_mode={reward_mode}, c={c_otrc}, max_search_per_tree={max_search_per_tree}")
 
-    for step_idx in range(total_steps):
-        print(f"[step {step_idx + 1}/{total_steps}] Start.")
-        global_batch = None
-        next_states = {}
-        search_count = {}
-        # {uid -> max exploitation at selected node}, used by OTRC to filter
-        # candidates to those above the pool mean. Scoped per-step, matching
-        # opts_ttpo.ray_trainer.fit() line 2019.
-        max_exploitations = {}
+    global_batch = None
+    next_states = {}
+    search_count = {}
+    max_exploitations = {}
 
-        for round_idx in range(n_samples):
-            # === Construct this round's batch ===
-            if round_idx == 0:
-                batch = prompt_buffer.draw(batch_size)
-                batch.meta_info["temperature"] = rollout_config.temperature
-            else:
-                k = len(next_states)
-                parts = []
-                if k > 0:
-                    continued = prepare_next_round_input(
-                        global_batch=global_batch,
-                        next_states=next_states,
-                        pad_token_id=tokenizer.pad_token_id,
-                    )
-                    parts.append(continued)
-                remaining = batch_size - k
-                if remaining > 0:
-                    new_prompts = prompt_buffer.draw(remaining)
-                    # new_prompts have fresh uids assigned by the buffer
-                    parts.append(new_prompts)
-
-                if len(parts) == 2:
-                    batch = merge_batches(parts[0], parts[1])
-                elif len(parts) == 1:
-                    batch = parts[0]
-                else:
-                    break  # no data to process
-                batch.meta_info["temperature"] = rollout_config.temperature
-
-            batch.meta_info["round_idx"] = round_idx
-
-            # === Generate sequences ===
-            batch_padded, pad_size = pad_dataproto_to_divisor(batch, wg.world_size)
-            output_padded = wg.generate_sequences(batch_padded)
-            output = unpad_dataproto(output_padded, pad_size=pad_size)
-
-            if "response_mask" not in output.batch.keys():
-                output.batch["response_mask"] = compute_response_mask(output)
-
-            # === Compute values ===
-            values_output = critic_wg.compute_values(output)
-            values_output = _restore_sigmoid_value_mapping(values_output)
-            output = output.union(values_output)
-
-            # === Compute rewards ===
-            if reward_mode == "reward":
-                # Decode full response and compute reward via reward_fn
-                set_full_response_str(output, tokenizer, prompt_length, response_length)
-                reward_tensor, _ = compute_reward(output, reward_fn)
-                output.batch["token_level_rewards"] = reward_tensor
-            else:
-                # Value-guided: use last valid position's value as reward
-                response_mask = output.batch["response_mask"]
-                values = output.batch["values"]
-                last_pos = (response_mask.sum(dim=1) - 1).clamp(min=0).long()
-                token_level_rewards = torch.zeros_like(values)
-                batch_indices = torch.arange(values.size(0), device=values.device)
-                token_level_rewards[batch_indices, last_pos] = values[batch_indices, last_pos]
-                output.batch["token_level_rewards"] = token_level_rewards
-
-            # === Tree structure bookkeeping ===
-            new_sample_indices = set_opts_ttpo_info(output, global_batch, next_states, round_idx)
-            output.non_tensor_batch["episodic_returns"] = compute_episodic_returns(output, global_batch)
-            cur_batch_size, cur_response_len = output.batch["responses"].shape
-            output.batch["state_branches"] = torch.ones(cur_batch_size, cur_response_len)
-            output.batch["advantages"] = torch.zeros(cur_batch_size, cur_response_len)
-            output.batch["returns"] = torch.zeros(cur_batch_size, cur_response_len)
-
-            if global_batch is None:
-                global_batch = output
-            else:
-                global_batch = merge_batches(global_batch, output)
-
-            # === Compute TreeGAE advantages ===
-            advantages, returns = compute_treegae_advantage_return(
-                token_level_rewards=global_batch.batch["token_level_rewards"],
-                values=global_batch.batch["values"],
-                response_mask=global_batch.batch["response_mask"],
-                attention_mask=global_batch.batch["attention_mask"],
-                gamma=gamma,
-                lam=lam,
-                rid=list(global_batch.non_tensor_batch["rid"]),
-                pid=list(global_batch.non_tensor_batch["pid"]),
-                branch_pos=list(global_batch.non_tensor_batch["branch_pos"]),
-                cid=list(global_batch.non_tensor_batch["cid"]),
-                state_branches=global_batch.batch["state_branches"],
-                new_sample_indices=new_sample_indices,
-                raw_prompt_len=global_batch.non_tensor_batch["raw_prompt_len"],
-                max_prompt_len=global_batch.batch["attention_mask"].shape[1] - global_batch.batch["response_mask"].shape[1],
-                advantages=global_batch.batch["advantages"],
-            )
-            global_batch.batch["advantages"] = advantages
-            global_batch.batch["returns"] = returns
-
-            # === Collect decoded responses with sample_index + global_index ===
-            response_strs = decode_responses(output, tokenizer)
-            output_uids = output.non_tensor_batch["uid"]
-            for resp, uid in zip(response_strs, output_uids):
-                dataset_idx = prompt_buffer.uid_to_idx.get(uid)
-                if dataset_idx is not None:
-                    idx_sample_counter[dataset_idx] += 1
-                    global_sample_counter += 1
-                    idx_responses[dataset_idx].append(
-                        (resp, idx_sample_counter[dataset_idx], global_sample_counter)
-                    )
-
-            # === OTRC selection for next round ===
-            if round_idx < n_samples - 1:
-                selected_states = select_next_states(
-                    batch=global_batch,
-                    search_count=search_count,
-                    max_exploitations=max_exploitations,
-                    max_search_per_tree=max_search_per_tree,
-                    c=c_otrc,
-                    gamma=gamma,
-                    max_prompt_length=prompt_length,
-                    batch_size=batch_size,
-                    tokenizer=tokenizer,
+    for round_idx in range(n_samples):
+        print(f"[round {round_idx + 1}/{n_samples}] Start.")
+        # === Construct this round's batch ===
+        if round_idx == 0:
+            batch = prompt_buffer.draw(effective_batch_size)
+            batch.meta_info["temperature"] = rollout_config.temperature
+        else:
+            k = len(next_states)
+            parts = []
+            if k > 0:
+                continued = prepare_next_round_input(
+                    global_batch=global_batch,
+                    next_states=next_states,
+                    pad_token_id=tokenizer.pad_token_id,
                 )
-                next_states = selected_to_branch_points(selected_states, global_batch)
+                parts.append(continued)
+            remaining = effective_batch_size - k
+            if remaining > 0:
+                new_prompts = prompt_buffer.draw(remaining)
+                # new_prompts have fresh uids assigned by the buffer
+                parts.append(new_prompts)
 
-        print(f"[step {step_idx + 1}/{total_steps}] Done. "
+            if len(parts) == 2:
+                batch = merge_batches(parts[0], parts[1])
+            elif len(parts) == 1:
+                batch = parts[0]
+            else:
+                break  # no data to process
+            batch.meta_info["temperature"] = rollout_config.temperature
+
+        batch.meta_info["round_idx"] = round_idx
+
+        # === Generate sequences ===
+        batch_padded, pad_size = pad_dataproto_to_divisor(batch, wg.world_size)
+        output_padded = wg.generate_sequences(batch_padded)
+        output = unpad_dataproto(output_padded, pad_size=pad_size)
+
+        if "response_mask" not in output.batch.keys():
+            output.batch["response_mask"] = compute_response_mask(output)
+
+        # === Compute values ===
+        values_input_padded, values_pad_size = pad_dataproto_to_divisor(output, critic_wg.world_size)
+        values_output_padded = critic_wg.compute_values(values_input_padded)
+        values_output = unpad_dataproto(values_output_padded, pad_size=values_pad_size)
+        values_output = _restore_sigmoid_value_mapping(values_output)
+        output = output.union(values_output)
+
+        # === Compute rewards ===
+        if reward_mode == "reward":
+            # Decode full response and compute reward via reward_fn
+            set_full_response_str(output, tokenizer, prompt_length, response_length)
+            reward_tensor, _ = compute_reward(output, reward_fn)
+            output.batch["token_level_rewards"] = reward_tensor
+        else:
+            # Value-guided: use last valid position's value as reward
+            response_mask = output.batch["response_mask"]
+            values = output.batch["values"]
+            last_pos = (response_mask.sum(dim=1) - 1).clamp(min=0).long()
+            token_level_rewards = torch.zeros_like(values)
+            batch_indices = torch.arange(values.size(0), device=values.device)
+            token_level_rewards[batch_indices, last_pos] = values[batch_indices, last_pos]
+            output.batch["token_level_rewards"] = token_level_rewards
+
+        # === Tree structure bookkeeping ===
+        new_sample_indices = set_opts_ttpo_info(output, global_batch, next_states, round_idx)
+        output.non_tensor_batch["episodic_returns"] = compute_episodic_returns(output, global_batch)
+        cur_batch_size, cur_response_len = output.batch["responses"].shape
+        output.batch["state_branches"] = torch.ones(cur_batch_size, cur_response_len)
+        output.batch["advantages"] = torch.zeros(cur_batch_size, cur_response_len)
+        output.batch["returns"] = torch.zeros(cur_batch_size, cur_response_len)
+
+        if global_batch is None:
+            global_batch = output
+        else:
+            global_batch = merge_batches(global_batch, output)
+
+        # === Compute TreeGAE advantages ===
+        advantages, returns = compute_treegae_advantage_return(
+            token_level_rewards=global_batch.batch["token_level_rewards"],
+            values=global_batch.batch["values"],
+            response_mask=global_batch.batch["response_mask"],
+            attention_mask=global_batch.batch["attention_mask"],
+            gamma=gamma,
+            lam=lam,
+            rid=list(global_batch.non_tensor_batch["rid"]),
+            pid=list(global_batch.non_tensor_batch["pid"]),
+            branch_pos=list(global_batch.non_tensor_batch["branch_pos"]),
+            cid=list(global_batch.non_tensor_batch["cid"]),
+            state_branches=global_batch.batch["state_branches"],
+            new_sample_indices=new_sample_indices,
+            raw_prompt_len=global_batch.non_tensor_batch["raw_prompt_len"],
+            max_prompt_len=global_batch.batch["attention_mask"].shape[1] - global_batch.batch["response_mask"].shape[1],
+            advantages=global_batch.batch["advantages"],
+        )
+        global_batch.batch["advantages"] = advantages
+        global_batch.batch["returns"] = returns
+
+        # === Collect decoded responses with sample_index + global_index ===
+        response_strs = decode_responses(output, tokenizer)
+        output_uids = output.non_tensor_batch["uid"]
+        current_rids = global_batch.non_tensor_batch["rid"][new_sample_indices]
+        current_pids = global_batch.non_tensor_batch["pid"][new_sample_indices]
+        current_branch_pos = global_batch.non_tensor_batch["branch_pos"][new_sample_indices]
+
+        for local_idx, (resp, uid) in enumerate(zip(response_strs, output_uids)):
+            dataset_idx = prompt_buffer.uid_to_idx.get(uid)
+            if dataset_idx is not None:
+                idx_sample_counter[dataset_idx] += 1
+                global_sample_counter += 1
+                pid = current_pids[local_idx]
+                idx_responses[dataset_idx].append({
+                    "response": resp,
+                    "sample_index": idx_sample_counter[dataset_idx],
+                    "global_index": global_sample_counter,
+                    "rid": str(current_rids[local_idx]),
+                    "pid": None if pid is None else str(pid),
+                    "branch_pos": int(current_branch_pos[local_idx]),
+                })
+
+        # === OTRC selection for next round ===
+        if round_idx < n_samples - 1:
+            selected_states = select_next_states(
+                batch=global_batch,
+                search_count=search_count,
+                max_exploitations=max_exploitations,
+                max_search_per_tree=max_search_per_tree,
+                c=c_otrc,
+                gamma=gamma,
+                max_prompt_length=prompt_length,
+                batch_size=effective_batch_size,
+                tokenizer=tokenizer,
+            )
+            next_states = selected_to_branch_points(selected_states, global_batch)
+
+        print(f"[round {round_idx + 1}/{n_samples}] Done. "
               f"Collected {sum(len(v) for v in idx_responses.values())} total responses.")
 
+    expected_response_count = total_samples * n_samples
+    if global_sample_counter != expected_response_count:
+        raise RuntimeError(
+            f"Unexpected OPTS generation count: got {global_sample_counter}, "
+            f"expected {expected_response_count} (= dataset_size * n_samples)."
+        )
+
     # === Assemble output ===
+    final_advantages_by_rid = {}
+    final_advantages = global_batch.batch["advantages"].detach().cpu()
+    final_response_mask = global_batch.batch["response_mask"].detach().cpu().bool()
+    for rid, advantages, valid_mask in zip(
+        global_batch.non_tensor_batch["rid"],
+        final_advantages,
+        final_response_mask,
+    ):
+        final_advantages_by_rid[str(rid)] = [float(x) for x in advantages[valid_mask].tolist()]
+
     output_responses = [[] for _ in range(total_samples)]
     output_sample_indices = [[] for _ in range(total_samples)]
     output_global_indices = [[] for _ in range(total_samples)]
+    output_tree_rids = [[] for _ in range(total_samples)]
+    output_tree_pids = [[] for _ in range(total_samples)]
+    output_tree_branch_pos = [[] for _ in range(total_samples)]
+    output_tree_advantages = [[] for _ in range(total_samples)]
 
     for dataset_idx, resp_list in idx_responses.items():
-        for resp_str, sample_idx, global_idx in resp_list:
-            output_responses[dataset_idx].append(resp_str)
-            output_sample_indices[dataset_idx].append(sample_idx)
-            output_global_indices[dataset_idx].append(global_idx)
+        for record in resp_list:
+            output_responses[dataset_idx].append(record["response"])
+            output_sample_indices[dataset_idx].append(record["sample_index"])
+            output_global_indices[dataset_idx].append(record["global_index"])
+            output_tree_rids[dataset_idx].append(record["rid"])
+            output_tree_pids[dataset_idx].append(record["pid"])
+            output_tree_branch_pos[dataset_idx].append(record["branch_pos"])
+            output_tree_advantages[dataset_idx].append(final_advantages_by_rid.get(record["rid"], []))
 
     dataset["responses"] = output_responses
     dataset["sample_indices"] = output_sample_indices
     dataset["global_indices"] = output_global_indices
+    dataset["tree_rids"] = output_tree_rids
+    dataset["tree_pids"] = output_tree_pids
+    dataset["tree_branch_pos"] = output_tree_branch_pos
+    dataset["tree_advantages"] = output_tree_advantages
+    dataset["opts_reward_mode"] = reward_mode
 
     # Write output
     output_dir = os.path.dirname(output_path)

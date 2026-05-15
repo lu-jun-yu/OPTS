@@ -10,8 +10,9 @@ Two modes:
      by verl.trainer.main_generation / main_opts_generation and compute any of
      avg@k / pass@k / cons@k / opts@k. Correctness uses only answer match (no
      format reward); `pass@k` here is the strict "any correct in first k";
-     `opts@k` filters by sample_indices <= k and requires a main_opts_generation
-     parquet.
+     `opts@k` requires a main_opts_generation parquet. reward-mode opts@k keeps
+     the chronological any-correct prefix; value-mode opts@k rebuilds the
+     prefix tree and scores the greedy max-advantage path.
 
 Test sets (from dataset_survey.md):
   - math500      500  high-school baseline      (data/math12k/test.parquet)
@@ -246,6 +247,98 @@ def opts_at_k_row(correct_flags: list[bool], global_indices, k: int, dataset_siz
     return 1.0 if any(c for c, gi in zip(correct_flags, global_indices) if int(gi) <= threshold) else 0.0
 
 
+def _normalize_optional_str(value) -> str | None:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    value = str(value)
+    return value if value else None
+
+
+def _to_list(value) -> list:
+    if value is None:
+        return []
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    return list(value)
+
+
+def _detect_opts_reward_mode(df: pd.DataFrame, parquet_path: str) -> str:
+    if "opts_reward_mode" in df.columns:
+        for value in df["opts_reward_mode"]:
+            mode = _normalize_optional_str(value)
+            if mode:
+                return mode
+
+    name = os.path.basename(parquet_path).lower()
+    if "opts_value" in name or "value_opts" in name:
+        return "value"
+    return "reward"
+
+
+def value_opts_at_k_row(
+    correct_flags: list[bool],
+    global_indices: list,
+    rids: list,
+    pids: list,
+    branch_pos: list,
+    advantages: list,
+    k: int,
+    dataset_size: int,
+) -> float:
+    threshold = k * dataset_size
+    selected = [i for i, gi in enumerate(global_indices) if int(gi) <= threshold]
+    if not selected:
+        return 0.0
+
+    selected_rids = [str(rids[i]) for i in selected]
+    selected_rid_set = set(selected_rids)
+    selected_pids = []
+    for i in selected:
+        pid = _normalize_optional_str(pids[i])
+        selected_pids.append(pid if pid in selected_rid_set else None)
+
+    selected_branch_pos = [int(branch_pos[i]) for i in selected]
+    selected_advantages = [[float(x) for x in _to_list(advantages[i])] for i in selected]
+
+    rid_to_idx = {rid: i for i, rid in enumerate(selected_rids)}
+    children_by_parent_pos: dict[tuple[int, int], list[int]] = defaultdict(list)
+    roots: list[int] = []
+    for i, pid in enumerate(selected_pids):
+        parent_idx = rid_to_idx.get(pid) if pid is not None else None
+        if parent_idx is None:
+            roots.append(i)
+            continue
+        pos = selected_branch_pos[i]
+        if pos >= 0:
+            children_by_parent_pos[(parent_idx, pos)].append(i)
+        else:
+            roots.append(i)
+
+    root_candidates = [(selected_advantages[i][0], i, 0) for i in roots if selected_advantages[i]]
+    if not root_candidates:
+        return 0.0
+
+    _, cur_i, cur_t = max(root_candidates, key=lambda item: item[0])
+    while True:
+        candidates = []
+        if cur_t + 1 < len(selected_advantages[cur_i]):
+            candidates.append((selected_advantages[cur_i][cur_t + 1], cur_i, cur_t + 1))
+        for child_i in children_by_parent_pos.get((cur_i, cur_t), []):
+            if selected_advantages[child_i]:
+                candidates.append((selected_advantages[child_i][0], child_i, 0))
+        if not candidates:
+            break
+        _, cur_i, cur_t = max(candidates, key=lambda item: item[0])
+
+    original_idx = selected[cur_i]
+    return 1.0 if correct_flags[original_idx] else 0.0
+
+
 # ---------------------------------------------------------------------------
 # Parquet-mode evaluator
 # ---------------------------------------------------------------------------
@@ -261,15 +354,30 @@ def evaluate_pregenerated_parquet(
     """Score a generation parquet and aggregate per data_source + global."""
     df = pd.read_parquet(parquet_path)
     dataset_size = len(df)
+    opts_reward_mode = _detect_opts_reward_mode(df, parquet_path)
     has_global = global_indices_key in df.columns
     if "opts" in metrics and not has_global:
         raise ValueError(
             f"opts@k requires column '{global_indices_key}', not found in {parquet_path}. "
             "Regenerate with the updated main_opts_generation.py (writes global_indices)."
         )
+    value_tree_keys = [
+        "tree_rids",
+        "tree_pids",
+        "tree_branch_pos",
+        "tree_advantages",
+    ]
+    if "opts" in metrics and opts_reward_mode == "value":
+        missing = [key for key in value_tree_keys if key not in df.columns]
+        if missing:
+            raise ValueError(
+                "value-mode opts@k requires tree metadata columns "
+                f"{missing}, not found in {parquet_path}. Regenerate the value OPTS parquet."
+            )
 
     print(
-        f"Eval parquet: {parquet_path}  rows={dataset_size}  metrics={metrics}  k={k_values}"
+        f"Eval parquet: {parquet_path}  rows={dataset_size}  metrics={metrics}  "
+        f"k={k_values}  opts_reward_mode={opts_reward_mode}"
     )
 
     per_source: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
@@ -288,9 +396,23 @@ def evaluate_pregenerated_parquet(
             if "cons" in metrics:
                 per_source[ds][f"cons@{k}"].append(cons_at_k(responses, gt, k))
             if "opts" in metrics:
-                per_source[ds][f"opts@{k}"].append(
-                    opts_at_k_row(correct_flags, global_indices, k, dataset_size)
-                )
+                if opts_reward_mode == "value":
+                    per_source[ds][f"opts@{k}"].append(
+                        value_opts_at_k_row(
+                            correct_flags=correct_flags,
+                            global_indices=global_indices,
+                            rids=list(row["tree_rids"]),
+                            pids=list(row["tree_pids"]),
+                            branch_pos=list(row["tree_branch_pos"]),
+                            advantages=list(row["tree_advantages"]),
+                            k=k,
+                            dataset_size=dataset_size,
+                        )
+                    )
+                else:
+                    per_source[ds][f"opts@{k}"].append(
+                        opts_at_k_row(correct_flags, global_indices, k, dataset_size)
+                    )
 
     summary: dict = {}
     print("=" * 64)

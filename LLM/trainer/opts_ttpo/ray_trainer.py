@@ -623,20 +623,18 @@ def select_next_states(
         think_end_pos = torch.where(has_think, first_think_pos, think_end_pos)
 
     root_mask = np.array([parent_rid is None for parent_rid in pid], dtype=bool)
-    unique_uids = np.unique(uid)
+    uid_to_root_indices: Dict[Any, list] = defaultdict(list)
+    for i in range(global_batch_size):
+        if root_mask[i]:
+            uid_to_root_indices[uid[i]].append(i)
     active_uids = []
     best_roots = []
 
-    for u in unique_uids:
+    for u, root_indices in uid_to_root_indices.items():
         if search_count.get(u, 0) >= max_search_per_tree:
             continue
-
-        uid_indices = np.where(uid == u)[0]
-        root_indices = uid_indices[root_mask[uid_indices]]
-        if len(root_indices) == 0:
-            continue
-
-        best_root = int(root_indices[int(np.argmax(adv0_np[root_indices]))])
+        root_indices_arr = np.asarray(root_indices, dtype=np.int64)
+        best_root = int(root_indices_arr[int(np.argmax(adv0_np[root_indices_arr]))])
         active_uids.append(u)
         best_roots.append(best_root)
 
@@ -706,24 +704,21 @@ def select_next_states(
         selected_traj_idx = path_idx[row_idx, max_pos]
         selected_token_pos = path_t[row_idx, max_pos]
 
-        for i, u in enumerate(active_uids):
-            if max_otrc_val[i].item() == float("-inf"):
-                continue
+        otrc_valid = torch.isfinite(max_otrc_val)
+        valid_idx = otrc_valid.nonzero(as_tuple=True)[0]
+        valid_scores = max_exploitation_val[valid_idx].tolist()
+        for k, i in enumerate(valid_idx.tolist()):
+            max_exploitations.setdefault(active_uids[i], valid_scores[k])
 
-            score = max_exploitation_val[i].item()
-            # Record the first qualified exploitation baseline for this tree.
-            # Later rounds compare against this baseline pool instead of updating it.
-            if u not in max_exploitations:
-                max_exploitations[u] = score
-
-            max_exploitation_values = [v for v in max_exploitations.values() if v > 0]
-            if len(max_exploitation_values) <= 1:
-                continue
-            mean_max_exploitations = float(np.mean(max_exploitation_values))
-            if score <= mean_max_exploitations:
-                continue
-
-            candidates.append((score, u, selected_traj_idx[i].item(), selected_token_pos[i].item()))
+        exp_pos_vals = [v for v in max_exploitations.values() if v > 0]
+        if len(exp_pos_vals) > 1:
+            mean_thr = sum(exp_pos_vals) / len(exp_pos_vals)
+            keep = (otrc_valid & (max_exploitation_val > mean_thr)).nonzero(as_tuple=True)[0]
+            scores = max_exploitation_val[keep].tolist()
+            trajs = selected_traj_idx[keep].tolist()
+            poses = selected_token_pos[keep].tolist()
+            for k, i in enumerate(keep.tolist()):
+                candidates.append((scores[k], active_uids[i], trajs[k], poses[k]))
 
     # --- Global sort and select top batch_size ---
     candidates.sort(key=lambda x: x[0], reverse=True)
