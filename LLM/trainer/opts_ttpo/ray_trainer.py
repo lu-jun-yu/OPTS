@@ -736,21 +736,11 @@ def select_next_states(
             mean_threshold = np.mean(list(max_exploitations.values()))
             keep = (max_exploitation_val > mean_threshold).nonzero(as_tuple=True)[0]
 
-            # (e) Apply prompt/think masks as CLAMPS: move the selected node back to the largest
-            #     path index u' <= argmax where the masks hold. path_mask is redundant here (all
-            #     u' <= max_pos are already within the monotone valid path). think_valid is
-            #     non-monotonic across branch switches, so take the max valid index rather than a
-            #     first-False cutoff.
-            R = path_mask.shape[1]
-            ar = torch.arange(R, device=device)
-            clamp_mask = prompt_valid & think_valid
-            clamp_avail = clamp_mask & (ar.unsqueeze(0) <= max_pos.unsqueeze(1))   # col 0 is always valid
-            idx_or_neg = torch.where(
-                clamp_avail,
-                ar.unsqueeze(0).expand(num_trees, R),
-                torch.full((num_trees, R), -1, device=device, dtype=torch.long),
-            )
-            clamped_u = idx_or_neg.argmax(dim=1)               # largest valid u' (>=0; col 0 always valid)
+            # (e) Clamp the selected node back to the largest valid path index <= argmax.
+            #     prompt_valid & think_valid is a monotone True-prefix, so last valid = count-1;
+            #     col 0 (root) is always valid, hence last_valid >= 0.
+            last_valid = (prompt_valid & think_valid).sum(dim=1) - 1
+            clamped_u = torch.minimum(max_pos, last_valid)
             clamped_traj = path_idx[row_idx, clamped_u]
             clamped_pos = path_t[row_idx, clamped_u]
             clamped_exp = exploitation[row_idx, clamped_u]
