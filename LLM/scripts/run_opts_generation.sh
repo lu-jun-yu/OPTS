@@ -41,7 +41,7 @@ TEMPERATURE="${TEMPERATURE:-1.0}"
 TOP_P="${TOP_P:-0.95}"
 TP_SIZE="${TP_SIZE:-1}"
 PP_SIZE="${PP_SIZE:-1}"
-ROLLOUT_MODE="${ROLLOUT_MODE:-sync}"
+ROLLOUT_MODE="${ROLLOUT_MODE:-async}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.85}"
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-262144}"
 CRITIC_FWD_BSZ_PER_GPU="${CRITIC_FWD_BSZ_PER_GPU:-8}"
@@ -138,12 +138,14 @@ build_train_cmd() {
         critic.model.path="${dst_critic}"
         critic.forward_micro_batch_size_per_gpu=${CRITIC_FWD_BSZ_PER_GPU}
         actor_rollout_ref.rollout.name=vllm
+        actor_rollout_ref.rollout.search=opts
         actor_rollout_ref.rollout.load_format=auto
         actor_rollout_ref.rollout.enforce_eager=True
         actor_rollout_ref.rollout.c=${TUCT_C}
         actor_rollout_ref.rollout.max_search_per_tree=${MAX_SEARCH_PER_TREE}
         actor_rollout_ref.rollout.temperature=${TEMPERATURE}
         actor_rollout_ref.rollout.top_p=${TOP_P}
+        actor_rollout_ref.rollout.val_kwargs.top_p=0.95
         actor_rollout_ref.rollout.prompt_length=${PROMPT_LENGTH}
         actor_rollout_ref.rollout.response_length=${RESPONSE_LENGTH}
         actor_rollout_ref.rollout.tensor_model_parallel_size=${TP_SIZE}
@@ -151,6 +153,7 @@ build_train_cmd() {
         actor_rollout_ref.rollout.mode=${ROLLOUT_MODE}
         actor_rollout_ref.rollout.gpu_memory_utilization=${GPU_MEM_UTIL}
         actor_rollout_ref.rollout.max_num_batched_tokens=${MAX_NUM_BATCHED_TOKENS}
+        reward_model.use_reward_loop=False
         algorithm.lam=${LAM}
     )
     if [[ -n "${RAY_NUM_CPUS}" ]]; then

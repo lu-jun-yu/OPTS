@@ -39,7 +39,7 @@ from verl.single_controller.ray.base import create_colocated_worker_cls
 from verl.utils import hf_tokenizer
 from verl.utils.fs import copy_to_local
 from verl.utils.hdfs_io import makedirs
-from verl.workers.fsdp_workers import ActorRolloutRefWorker, CriticWorker
+from verl.workers.fsdp_workers import ActorRolloutRefWorker, AsyncActorRolloutRefWorker, CriticWorker
 
 from .opts_ttpo.core_algos import (
     compute_treegae_advantage_return,
@@ -283,9 +283,12 @@ def main_task(config):
         max_colocate_count=2,
     )
 
-    # Create actor rollout and critic workers
+    # Create actor rollout and critic workers. In async mode the OPTS continuation
+    # path runs inside the agent loop, driven by AgentLoopManager.
+    async_mode = rollout_config.get("mode", "sync") == "async"
+    actor_worker_impl = AsyncActorRolloutRefWorker if async_mode else ActorRolloutRefWorker
     actor_rollout_cls = RayClassWithInitArgs(
-        cls=ray.remote(ActorRolloutRefWorker),
+        cls=ray.remote(actor_worker_impl),
         config=actor_worker_config,
         role="rollout",
     )
@@ -305,6 +308,12 @@ def main_task(config):
 
     wg.init_model()
     critic_wg.init_model()
+
+    async_rollout_manager = None
+    if async_mode:
+        from verl.experimental.agent_loop import AgentLoopManager
+
+        async_rollout_manager = AgentLoopManager(config=config, worker_group=wg, rm_resource_pool=None)
 
     if requested_batch_size < total_samples:
         raise ValueError(
@@ -379,12 +388,22 @@ def main_task(config):
                 break  # no data to process
             batch.meta_info["temperature"] = rollout_config.temperature
 
-        batch.meta_info["round_idx"] = round_idx
-
         # === Generate sequences ===
-        batch_padded, pad_size = pad_dataproto_to_divisor(batch, wg.world_size)
-        output_padded = wg.generate_sequences(batch_padded)
-        output = unpad_dataproto(output_padded, pad_size=pad_size)
+        if async_mode:
+            size_divisor = rollout_config.agent.num_workers
+            batch_padded, pad_size = pad_dataproto_to_divisor(batch, size_divisor)
+            output = unpad_dataproto(
+                async_rollout_manager.generate_sequences(batch_padded), pad_size=pad_size
+            )
+            # AgentLoopManager rebuilds non_tensor_batch; restore the metadata that
+            # downstream tree bookkeeping / reward / decoding need (order preserved).
+            for key in ("uid", "raw_prompt_len", "data_source", "reward_model", "extra_info"):
+                if key in batch.non_tensor_batch and key not in output.non_tensor_batch:
+                    output.non_tensor_batch[key] = batch.non_tensor_batch[key]
+        else:
+            batch_padded, pad_size = pad_dataproto_to_divisor(batch, wg.world_size)
+            output_padded = wg.generate_sequences(batch_padded)
+            output = unpad_dataproto(output_padded, pad_size=pad_size)
 
         if "response_mask" not in output.batch.keys():
             output.batch["response_mask"] = compute_response_mask(output)
