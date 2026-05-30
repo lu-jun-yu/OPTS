@@ -527,7 +527,7 @@ def compute_episodic_returns(
     return episodic_returns
 
 
-def select_next_states(
+def select_next_states_v1(
     batch: DataProto,
     search_count: dict,
     max_exploitations: dict,
@@ -540,6 +540,8 @@ def select_next_states(
 ) -> Dict[str, Tuple[int, int]]:
     """Select next states for expansion using OTRC (aligned with reference).
 
+    Frozen pre-relaxation version; retained for A/B comparison.
+
     Returns the OTRC-selected nodes (not the branch points). The caller must
     convert to parent nodes via selected_to_branch_points() before using as
     branch points for prepare_next_round_input / set_opts_ttpo_info.
@@ -547,22 +549,14 @@ def select_next_states(
     Algorithm:
     1. For each uid (tree), skip if search_count >= max_search_per_tree.
     2. Trace optimal path through tree (greedy by first-token advantage at branches).
-       The path runs over response_len + 1 positions so the last real token AND one
-       position past it (EOS_pos+1 / response_len) are reachable; the advantage at
-       that +1 position is 0 (post-EOS positions are 0 in TreeGAE; the response_len
-       column is an explicit 0-pad).
     3. Compute OTRC along path: exploitation (backward cumulative advantage)
        + c * exploration ((sibling_count - 1) * max_abs_exploitation).
-    4. Select argmax(OTRC) per tree gated ONLY by the relaxed path_mask (the
-       response-length bound). The </think> and prompt-length constraints are NOT
-       applied before the argmax.
-    5. Overwrite each active tree's exploitation[argmax] as its baseline (per round),
-       then keep candidates whose exploitation[argmax] exceeds the plain mean of all
-       baselines.
-    6. Apply the </think> and prompt-length constraints as CLAMPS: move the selected
-       node back to the largest path index u' <= argmax where both constraints hold.
-       The candidate is scored by the exploitation at that clamped position.
-    7. Globally sort candidates by clamped exploitation, take top batch_size.
+    4. Apply dual mask: response_mask and prompt_length constraint.
+    5. Select argmax(OTRC) per tree.
+    6. Register each tree's first qualified exploitation score as its baseline,
+       and only keep candidates whose exploitation[max_idx] is above the pooled
+       mean of these baselines.
+    7. Globally sort candidates by exploitation[max_idx], take top batch_size.
 
     Args:
         batch: DataProto containing all required tensors and non-tensor data.
@@ -653,53 +647,39 @@ def select_next_states(
         current_sibling = torch.ones(num_trees, device=device, dtype=dtype)
         active_mask = torch.ones(num_trees, device=device, dtype=torch.bool)
 
-        # Extend the path by one position (path_len = response_len + 1) so the last real
-        # token (EOS_pos / response_len-1) AND one position past it (EOS_pos+1 / response_len)
-        # are reachable. The padded column carries "past-the-end" semantics: advantage 0,
-        # no child, no extra branch.
-        path_len = response_len + 1
-        adv_pad = torch.cat([advantages, torch.zeros((global_batch_size, 1), device=device, dtype=dtype)], dim=1)
-        bca_pad = torch.cat([best_child_adv0, torch.full((global_batch_size, 1), float("-inf"), device=device, dtype=dtype)], dim=1)
-        bci_pad = torch.cat([best_child_idx, torch.full((global_batch_size, 1), -1, device=device, dtype=torch.long)], dim=1)
-        sb_pad = torch.cat([state_branches, torch.ones((global_batch_size, 1), device=device, dtype=dtype)], dim=1)
+        path_idx = torch.zeros((num_trees, response_len), device=device, dtype=torch.long)
+        path_t = torch.zeros((num_trees, response_len), device=device, dtype=torch.long)
+        path_sibling = torch.ones((num_trees, response_len), device=device, dtype=dtype)
+        path_mask = torch.zeros((num_trees, response_len), device=device, dtype=torch.bool)
 
-        path_idx = torch.zeros((num_trees, path_len), device=device, dtype=torch.long)
-        path_t = torch.zeros((num_trees, path_len), device=device, dtype=torch.long)
-        path_sibling = torch.ones((num_trees, path_len), device=device, dtype=dtype)
-        path_mask = torch.zeros((num_trees, path_len), device=device, dtype=torch.bool)
-
-        for u in range(path_len):
+        for u in range(response_len):
             idx = current_idx
             local_t = u - history_len[idx]
             next_local_t = local_t + 1
 
-            # EOS and max-length termination are both captured by
-            # response_lengths[idx] = min(EOS_pos+1, response_len). Allow selecting up to and
-            # INCLUDING local_t == response_lengths[idx]: the last real token plus one position
-            # past it. The advantage at that +1 position is 0 (post-EOS positions are 0 in
-            # TreeGAE; the response_len column is the explicit 0-pad above).
-            valid_u = active_mask & (local_t <= response_lengths[idx])
+            # LLM inference budget is measured in episodes, not environment steps.
+            # Keep a suffix margin so one extra episode does not only replace a short tail.
+            valid_u = active_mask & (local_t + 1 < response_lengths[idx] - 10)
 
             path_idx[:, u] = idx
             path_t[:, u] = local_t
             path_sibling[:, u] = current_sibling
             path_mask[:, u] = valid_u
 
-            safe_next = next_local_t.clamp(max=response_len)   # index into padded width (0..response_len)
-            cont_adv = adv_pad[idx, safe_next]                 # = 0 past the trajectory end
-            child_adv = bca_pad[idx, local_t]
+            cont_adv = advantages[idx, next_local_t] if u < response_len - 1 else 0
+            child_adv = best_child_adv0[idx, local_t]
             take_child = valid_u & (child_adv > cont_adv)
 
-            current_sibling = torch.where(valid_u, sb_pad[idx, local_t], current_sibling)
-            current_idx = torch.where(take_child, bci_pad[idx, local_t], current_idx)
+            current_sibling = torch.where(valid_u, state_branches[idx, local_t], current_sibling)
+            current_idx = torch.where(take_child, best_child_idx[idx, local_t], current_idx)
             active_mask = valid_u
 
-        exploitation = torch.zeros((num_trees, path_len), device=device, dtype=dtype)
+        exploitation = torch.zeros((num_trees, response_len), device=device, dtype=dtype)
         lastexp = torch.zeros(num_trees, device=device, dtype=dtype)
-        for u in reversed(range(path_len)):
+        for u in reversed(range(response_len)):
             idx = path_idx[:, u]
             local_t = path_t[:, u]
-            path_adv = adv_pad[idx, local_t]                   # response_len column is the 0-pad
+            path_adv = advantages[idx, local_t]
             lastexp_ = -path_adv + gamma * lastexp
             mask_u = path_mask[:, u].to(dtype)
             lastexp = lastexp_ * mask_u + (1 - mask_u) * lastexp
@@ -714,50 +694,31 @@ def select_next_states(
         exploration = (path_sibling - 1) * max_abs_exploitation.unsqueeze(1)
         otrc_score = exploitation - c * exploration
 
-        # Constraints kept for the post-selection clamp (NOT applied before the argmax).
         prompt_valid = prompt_lengths[path_idx] + path_t < max_prompt_length
         think_valid = path_t <= think_end_pos[path_idx]
+        valid_mask = path_mask & prompt_valid & think_valid
+        otrc_score = torch.where(valid_mask, otrc_score, neg_inf)
 
-        # (a) Select first: argmax gated ONLY by the relaxed path_mask. Some trees' argmax may
-        #     land past </think>/prompt-limit or on the +1 post-termination position.
-        otrc_for_argmax = torch.where(path_mask, otrc_score, neg_inf)
         row_idx = torch.arange(num_trees, device=device)
-        max_pos = otrc_for_argmax.argmax(dim=1)
+        max_pos = otrc_score.argmax(dim=1)
+        max_otrc_val = otrc_score[row_idx, max_pos]
         max_exploitation_val = exploitation[row_idx, max_pos]
+        selected_traj_idx = path_idx[row_idx, max_pos]
+        selected_token_pos = path_t[row_idx, max_pos]
 
-        # (b) Register ALL active trees' exploitation (overwrite, not setdefault).
-        all_scores = max_exploitation_val.tolist()
-        for i in range(num_trees):
-            # max_exploitations.setdefault(active_uids[i], all_scores[i])   # v1: first-qualified baseline
-            max_exploitations[active_uids[i]] = all_scores[i]               # overwrite each round
+        otrc_valid = torch.isfinite(max_otrc_val)
+        valid_idx = otrc_valid.nonzero(as_tuple=True)[0]
+        valid_scores = max_exploitation_val[valid_idx].tolist()
+        for k, i in enumerate(valid_idx.tolist()):
+            max_exploitations.setdefault(active_uids[i], valid_scores[k])
 
-        # (c)(d) Threshold filter on argmax exploitation (mean over ALL values, no >0 filter).
-        if len(max_exploitations) > 1:
-            mean_threshold = np.mean(list(max_exploitations.values()))
-            keep = (max_exploitation_val > mean_threshold).nonzero(as_tuple=True)[0]
-
-            # (e) Apply prompt/think masks as CLAMPS: move the selected node back to the largest
-            #     path index u' <= argmax where the masks hold. path_mask is redundant here (all
-            #     u' <= max_pos are already within the monotone valid path). think_valid is
-            #     non-monotonic across branch switches, so take the max valid index rather than a
-            #     first-False cutoff.
-            R = path_mask.shape[1]
-            ar = torch.arange(R, device=device)
-            clamp_mask = prompt_valid & think_valid
-            clamp_avail = clamp_mask & (ar.unsqueeze(0) <= max_pos.unsqueeze(1))   # col 0 is always valid
-            idx_or_neg = torch.where(
-                clamp_avail,
-                ar.unsqueeze(0).expand(num_trees, R),
-                torch.full((num_trees, R), -1, device=device, dtype=torch.long),
-            )
-            clamped_u = idx_or_neg.argmax(dim=1)               # largest valid u' (>=0; col 0 always valid)
-            clamped_traj = path_idx[row_idx, clamped_u]
-            clamped_pos = path_t[row_idx, clamped_u]
-            clamped_exp = exploitation[row_idx, clamped_u]
-
-            scores = clamped_exp[keep].tolist()                # score = exploitation AFTER clamp
-            trajs = clamped_traj[keep].tolist()
-            poses = clamped_pos[keep].tolist()
+        exp_pos_vals = [v for v in max_exploitations.values() if v > 0]
+        if len(exp_pos_vals) > 1:
+            mean_thr = sum(exp_pos_vals) / len(exp_pos_vals)
+            keep = (otrc_valid & (max_exploitation_val > mean_thr)).nonzero(as_tuple=True)[0]
+            scores = max_exploitation_val[keep].tolist()
+            trajs = selected_traj_idx[keep].tolist()
+            poses = selected_token_pos[keep].tolist()
             for k, i in enumerate(keep.tolist()):
                 candidates.append((scores[k], active_uids[i], trajs[k], poses[k]))
 
