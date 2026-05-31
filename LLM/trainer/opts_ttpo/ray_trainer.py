@@ -723,8 +723,8 @@ def select_next_states(
         # (b) Register ALL active trees' exploitation (overwrite, not setdefault).
         all_scores = max_exploitation_val.tolist()
         for i in range(num_trees):
-            # max_exploitations.setdefault(active_uids[i], all_scores[i])   # v1: first-qualified baseline
-            max_exploitations[active_uids[i]] = all_scores[i]               # overwrite each round
+            max_exploitations.setdefault(active_uids[i], all_scores[i])   # v1: first-qualified baseline
+            # max_exploitations[active_uids[i]] = all_scores[i]               # overwrite each round
 
         # (c)(d) Threshold filter on argmax exploitation (mean over ALL values, no >0 filter).
         if len(max_exploitations) > 1:
