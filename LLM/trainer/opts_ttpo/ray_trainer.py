@@ -604,7 +604,6 @@ def select_next_states(
     neg_inf = torch.tensor(float("-inf"), device=device, dtype=dtype)
 
     best_child_idx = torch.full((global_batch_size, response_len), -1, device=device, dtype=torch.long)
-    best_child_adv0 = torch.full((global_batch_size, response_len), float("-inf"), device=device, dtype=dtype)
     for parent_idx, children_by_pos in enumerate(cid):
         for pos, child_rids in children_by_pos.items():
             child_indices = [rid2idx[c_rid] for c_rid in child_rids if c_rid in rid2idx]
@@ -613,7 +612,6 @@ def select_next_states(
             child_adv0 = adv0_np[child_indices]
             best_child = int(child_indices[int(np.argmax(child_adv0))])
             best_child_idx[parent_idx, pos] = best_child
-            best_child_adv0[parent_idx, pos] = adv0[best_child]
 
     think_end_pos = torch.full((global_batch_size,), response_len, device=device, dtype=torch.long)
     if tokenizer is not None:
@@ -655,13 +653,9 @@ def select_next_states(
 
         # Extend the path by one position (path_len = response_len + 1) so the last real
         # token (EOS_pos / response_len-1) AND one position past it (EOS_pos+1 / response_len)
-        # are reachable. The padded column carries "past-the-end" semantics: advantage 0,
-        # no child, no extra branch.
+        # are reachable. At local_t == response_len the lookups below use "past-the-end"
+        # constants inline (advantage 0, no child, sibling 1) instead of padded copies.
         path_len = response_len + 1
-        adv_pad = torch.cat([advantages, torch.zeros((global_batch_size, 1), device=device, dtype=dtype)], dim=1)
-        bca_pad = torch.cat([best_child_adv0, torch.full((global_batch_size, 1), float("-inf"), device=device, dtype=dtype)], dim=1)
-        bci_pad = torch.cat([best_child_idx, torch.full((global_batch_size, 1), -1, device=device, dtype=torch.long)], dim=1)
-        sb_pad = torch.cat([state_branches, torch.ones((global_batch_size, 1), device=device, dtype=dtype)], dim=1)
 
         path_idx = torch.zeros((num_trees, path_len), device=device, dtype=torch.long)
         path_t = torch.zeros((num_trees, path_len), device=device, dtype=torch.long)
@@ -677,7 +671,7 @@ def select_next_states(
             # response_lengths[idx] = min(EOS_pos+1, response_len). Allow selecting up to and
             # INCLUDING local_t == response_lengths[idx]: the last real token plus one position
             # past it. The advantage at that +1 position is 0 (post-EOS positions are 0 in
-            # TreeGAE; the response_len column is the explicit 0-pad above).
+            # TreeGAE; local_t == response_len yields 0 in the lookups below).
             valid_u = active_mask & (local_t <= response_lengths[idx])
 
             path_idx[:, u] = idx
@@ -685,13 +679,14 @@ def select_next_states(
             path_sibling[:, u] = current_sibling
             path_mask[:, u] = valid_u
 
-            safe_next = next_local_t.clamp(max=response_len)   # index into padded width (0..response_len)
-            cont_adv = adv_pad[idx, safe_next]                 # = 0 past the trajectory end
-            child_adv = bca_pad[idx, local_t]
+            cont_adv = torch.where(next_local_t < response_len, advantages[idx, next_local_t.clamp(max=response_len - 1)], 0.0)
+            bci = torch.where(local_t < response_len, best_child_idx[idx, local_t.clamp(max=response_len - 1)], -1)
+            child_adv = torch.where(bci >= 0, adv0[bci], neg_inf)
             take_child = valid_u & (child_adv > cont_adv)
 
-            current_sibling = torch.where(valid_u, sb_pad[idx, local_t], current_sibling)
-            current_idx = torch.where(take_child, bci_pad[idx, local_t], current_idx)
+            sib_val = torch.where(local_t < response_len, state_branches[idx, local_t.clamp(max=response_len - 1)], 1.0)
+            current_sibling = torch.where(valid_u, sib_val, current_sibling)
+            current_idx = torch.where(take_child, bci, current_idx)
             active_mask = valid_u
 
         exploitation = torch.zeros((num_trees, path_len), device=device, dtype=dtype)
@@ -699,7 +694,7 @@ def select_next_states(
         for u in reversed(range(path_len)):
             idx = path_idx[:, u]
             local_t = path_t[:, u]
-            path_adv = adv_pad[idx, local_t]                   # response_len column is the 0-pad
+            path_adv = torch.where(local_t < response_len, advantages[idx, local_t.clamp(max=response_len - 1)], 0.0)
             lastexp_ = -path_adv + gamma * lastexp
             mask_u = path_mask[:, u].to(dtype)
             lastexp = lastexp_ * mask_u + (1 - mask_u) * lastexp
