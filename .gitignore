@@ -15,3 +15,4 @@ token.json
 *.time
 LLM/verl/
 Atari_MuJoCo/cleanrl/
+paper/
