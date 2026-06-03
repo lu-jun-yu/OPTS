@@ -990,7 +990,7 @@ def weighted_masked_whiten(
     inv_weight_sum = inv_weight.sum()
 
     adv_mean = (advantages * inv_weight).sum() / inv_weight_sum
-    adv_var = ((advantages - adv_mean) ** 2 * inv_weight).sum() / inv_weight_sum
+    adv_var = ((advantages - adv_mean) ** 2 * inv_weight).sum() / (inv_weight_sum - 1)
     normalized = (advantages - adv_mean) * torch.rsqrt(adv_var + eps)
     if not shift_mean:
         normalized = normalized + adv_mean
