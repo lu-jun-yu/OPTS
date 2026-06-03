@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pprint import pprint
 from typing import Any, Optional, Tuple, Dict
 
+from Atari_MuJoCo.cleanrl.cleanrl.opts_ttpo_continuous_action import unbiased_var_factor
 import numpy as np
 import ray
 import torch
@@ -988,9 +989,11 @@ def weighted_masked_whiten(
     valid = response_mask.to(dtype=advantages.dtype)
     inv_weight = valid / torch.clamp(branch_weight.to(dtype=advantages.dtype), min=eps)
     inv_weight_sum = inv_weight.sum()
+    inv_weight_sq_sum = (inv_weight ** 2).sum()
+    unbiased_var_factor = inv_weight_sum / (inv_weight_sum ** 2 - inv_weight_sq_sum)
 
     adv_mean = (advantages * inv_weight).sum() / inv_weight_sum
-    adv_var = ((advantages - adv_mean) ** 2 * inv_weight).sum() / (inv_weight_sum - 1)
+    adv_var = ((advantages - adv_mean) ** 2 * inv_weight).sum() * unbiased_var_factor
     normalized = (advantages - adv_mean) * torch.rsqrt(adv_var + eps)
     if not shift_mean:
         normalized = normalized + adv_mean
