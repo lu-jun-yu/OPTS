@@ -180,40 +180,37 @@ def collect_opts_steps(env, agent, num_steps, device, max_search, c, tau,
                 gae_lambda=gae_lambda,
             )
 
-            skip_search = step >= num_steps - 1
+            if step < num_steps - 1:
+                selected = select_next_states(
+                    terminated_envs=[env_idx],
+                    current_step=step,
+                    advantages=advantages,
+                    parent_indices=parent_indices,
+                    tree_indices=tree_indices,
+                    search_count=search_count,
+                    max_search=max_search,
+                    max_exploitations=max_exploitations,
+                    skip_init_search=skip_init_search,
+                    c=c,
+                    gamma=gamma,
+                    tau=tau,
+                )
 
-            selected = select_next_states(
-                terminated_envs=[env_idx],
-                current_step=step,
-                num_steps=num_steps,
-                advantages=advantages,
-                parent_indices=parent_indices,
-                tree_indices=tree_indices,
-                skip_search=skip_search,
-                search_count=search_count,
-                max_search=max_search,
-                max_exploitations=max_exploitations,
-                skip_init_search=skip_init_search,
-                c=c,
-                gamma=gamma,
-                tau=tau,
-            )
-
-            sel = selected[0]
-            if sel < 0:
-                obs_np, _ = env.reset()
-                next_obs = torch.Tensor(obs_np).to(device)
-                root_states.insert(0, env.clone_state())
-                current_parent = -len(root_states)
-            else:
-                parent = parent_indices[sel, env_idx].item()
-                if parent < 0:
-                    env.restore_state(root_states[parent])
+                sel = selected[0]
+                if sel < 0:
+                    obs_np, _ = env.reset()
+                    next_obs = torch.Tensor(obs_np).to(device)
+                    root_states.insert(0, env.clone_state())
+                    current_parent = -len(root_states)
                 else:
-                    env.restore_state(env_states[parent])
-                    state_branches[parent, env_idx] += 1
-                next_obs = obs[sel]
-                current_parent = parent
+                    parent = parent_indices[sel, env_idx].item()
+                    if parent < 0:
+                        env.restore_state(root_states[parent])
+                    else:
+                        env.restore_state(env_states[parent])
+                        state_branches[parent, env_idx] += 1
+                    next_obs = obs[sel]
+                    current_parent = parent
 
     # Bootstrap 非终止叶节点
     with torch.no_grad():
