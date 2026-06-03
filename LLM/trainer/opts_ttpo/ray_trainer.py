@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from pprint import pprint
 from typing import Any, Optional, Tuple, Dict
 
-from Atari_MuJoCo.cleanrl.cleanrl.opts_ttpo_continuous_action import unbiased_var_factor
 import numpy as np
 import ray
 import torch
