@@ -988,11 +988,9 @@ def weighted_masked_whiten(
     valid = response_mask.to(dtype=advantages.dtype)
     inv_weight = valid / torch.clamp(branch_weight.to(dtype=advantages.dtype), min=eps)
     inv_weight_sum = inv_weight.sum()
-    inv_weight_sq_sum = (inv_weight ** 2).sum()
-    unbiased_var_factor = inv_weight_sum / (inv_weight_sum ** 2 - inv_weight_sq_sum)
 
     adv_mean = (advantages * inv_weight).sum() / inv_weight_sum
-    adv_var = ((advantages - adv_mean) ** 2 * inv_weight).sum() * unbiased_var_factor
+    adv_var = ((advantages - adv_mean) ** 2 * inv_weight).sum() / (inv_weight_sum - 1)
     normalized = (advantages - adv_mean) * torch.rsqrt(adv_var + eps)
     if not shift_mean:
         normalized = normalized + adv_mean
