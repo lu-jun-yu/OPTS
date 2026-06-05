@@ -3,9 +3,12 @@ export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=1.7B
-Experiment_Name=opts_ttpo_0419_${MODEL_SIZE}
+Experiment_Name=opts_ttpo_0604_${MODEL_SIZE}
+RAY_TEMP_DIR="ray_tmp/${Experiment_Name}"
 
-python3 -m trainer.main_opts_ttpo \
+mkdir -p logs "${RAY_TEMP_DIR}"
+
+CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m trainer.main_opts_ttpo \
  algorithm.adv_estimator=treegae \
  data.train_files=data/train.parquet \
  data.val_files=data/test.parquet \
@@ -18,12 +21,12 @@ python3 -m trainer.main_opts_ttpo \
  actor_rollout_ref.actor.optim.weight_decay=0.1 \
  actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
  actor_rollout_ref.actor.ppo_mini_batch_size=512 \
- actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16 \
+ actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=32 \
  actor_rollout_ref.actor.use_kl_loss=False \
  actor_rollout_ref.rollout.name=vllm \
  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=128 \
  actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
- actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
+ actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
  actor_rollout_ref.rollout.search=opts \
  actor_rollout_ref.rollout.n=4 \
  actor_rollout_ref.rollout.val_kwargs.n=32 \
@@ -34,19 +37,20 @@ python3 -m trainer.main_opts_ttpo \
  critic.enable=True \
  critic.optim.lr=1e-5 \
  critic.model.path=models/Qwen3-${MODEL_SIZE} \
- critic.ppo_micro_batch_size_per_gpu=32 \
+ critic.ppo_micro_batch_size_per_gpu=64 \
  critic.value_head_activation=sigmoid \
  custom_reward_function.path=utils/reward_fn.py \
  custom_reward_function.name=compute_score \
  algorithm.use_kl_in_reward=False \
  algorithm.kl_ctrl.kl_coef=0.0 \
- algorithm.lam=1.0 \
+ algorithm.lam=0.999 \
  trainer.logger='["console","wandb"]' \
  trainer.val_before_train=False \
- trainer.n_gpus_per_node=1 \
+ trainer.n_gpus_per_node=4 \
  trainer.nnodes=1 \
  trainer.project_name=opts_ttpo_${MODEL_SIZE} \
  trainer.experiment_name=${Experiment_Name} \
- trainer.save_freq=20 \
- trainer.test_freq=20 \
- trainer.total_epochs=15 2>&1 | tee logs/${Experiment_Name}.log
+ trainer.save_freq=1 \
+ trainer.test_freq=1 \
+ trainer.total_epochs=2 \
+ +ray_kwargs.ray_init._temp_dir="${RAY_TEMP_DIR}" 2>&1 | tee logs/${Experiment_Name}.log
