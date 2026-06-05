@@ -702,11 +702,10 @@ def select_next_states(
         max_pos = otrc_for_argmax.argmax(dim=1)
         max_otrc_score = otrc_score[row_idx, max_pos]
 
-        # (b) Register ALL active trees' otrc_score (overwrite, not setdefault).
+        # (b) Register each tree's first-qualified otrc_score as its stable baseline.
         all_scores = max_otrc_score.tolist()
         for i in range(num_trees):
-            max_otrc_scores.setdefault(active_uids[i], all_scores[i])   # v1: first-qualified baseline
-            # max_otrc_scores[active_uids[i]] = all_scores[i]               # overwrite each round
+            max_otrc_scores.setdefault(active_uids[i], all_scores[i])
 
         # (c)(d) Threshold filter on argmax otrc_score (mean over ALL values, no >0 filter).
         if len(max_otrc_scores) > 1:
