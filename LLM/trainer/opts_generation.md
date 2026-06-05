@@ -29,7 +29,6 @@
 | `data.n_samples` | 5 | 评测采样轮数，同时决定总推理预算 |
 | `data.reward_mode` | `"value"` | 奖励模式：`"reward"`（奖励引导）或 `"value"`（价值引导） |
 | `data.batch_size` | 128 | 每轮生成的批次大小 |
-| `rollout.c` | 1.0 | OTRC 探索系数，控制搜索的探索-利用平衡 |
 | `rollout.max_search_per_tree` | 1 | 每步每棵树的最大搜索次数 |
 | `algorithm.gamma` | 1.0 | 折扣因子 |
 | `algorithm.lam` | 1.0 | GAE lambda |
@@ -102,12 +101,12 @@ for round in range(n_samples):                           # n_samples 轮采样
 
 自定义的数据缓冲区，按顺序循环遍历数据集中的所有 prompt。每次 `draw(n)` 取出 n 条 prompt 并为每条分配一个全新的 UUID（同一 prompt 在不同 draw 中获得不同的 uid）。通过 `uid_to_idx` 字典记录每个 uid 对应的原始数据集行号，用于最终的结果汇聚。
 
-当前推理实现每次评测运行只初始化一次 `global_batch`、`next_states`、`search_count` 和 `max_exploitations`，搜索门控只依赖 OTRC 自身的 exploitation/exploration 与 `max_exploitations` 均值筛选。
+当前推理实现每次评测运行只初始化一次 `global_batch`、`next_states`、`search_count` 和 `max_otrc_scores`，搜索门控只依赖 OTRC 自身的 otrc_score 与 `max_otrc_scores` 均值筛选。
 
 ### 4.4 搜索门控
 
-1. 每次评测运行内维护 `max_exploitations`
-2. `select_next_states` 只保留 exploitation 高于当前正值均值的候选树
+1. 每次评测运行内维护 `max_otrc_scores`
+2. `select_next_states` 只保留 otrc_score 高于当前正值均值的候选树
 3. 所有搜索状态都在评测运行开始时重置
 
 ### 4.5 奖励计算
@@ -180,7 +179,6 @@ python3 -m verl.trainer.main_opts_generation \
     data.output_path=output/test_opts.parquet \
     model.path=models/Qwen3-1.7B \
     critic.model.path=models/Qwen3-1.7B \
-    rollout.c=1.0 \
     rollout.max_search_per_tree=1 \
     rollout.temperature=1.0 \
     rollout.prompt_length=1024 \

@@ -252,7 +252,6 @@ def main_task(config):
 
     prompt_length = rollout_config.prompt_length
     response_length = rollout_config.response_length
-    c_otrc = rollout_config.get("c", 1.0)
     max_search_per_tree = rollout_config.get("max_search_per_tree", 1)
     gamma = config.algorithm.gamma
     lam = config.algorithm.lam
@@ -351,12 +350,12 @@ def main_task(config):
     print(f"Starting inference-time search: "
           f"n_samples={n_samples}, batch_size={effective_batch_size}, "
           f"requested_batch_size={requested_batch_size}, "
-          f"reward_mode={reward_mode}, c={c_otrc}, max_search_per_tree={max_search_per_tree}")
+          f"reward_mode={reward_mode}, max_search_per_tree={max_search_per_tree}")
 
     global_batch = None
     next_states = {}
     search_count = {}
-    max_exploitations = {}
+    max_otrc_scores = {}
 
     for round_idx in range(n_samples):
         print(f"[round {round_idx + 1}/{n_samples}] Start.")
@@ -492,9 +491,8 @@ def main_task(config):
             selected_states = select_next_states(
                 batch=global_batch,
                 search_count=search_count,
-                max_exploitations=max_exploitations,
+                max_otrc_scores=max_otrc_scores,
                 max_search_per_tree=max_search_per_tree,
-                c=c_otrc,
                 gamma=gamma,
                 max_prompt_length=prompt_length,
                 batch_size=effective_batch_size,

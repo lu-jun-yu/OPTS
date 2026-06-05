@@ -42,13 +42,11 @@ actor_rollout_ref:
   rollout:
     n: 4                    # 循环采样的轮数
     max_search_per_tree: 4  # 每棵树每个训练迭代最大搜索次数
-    c: 1.0                  # OTRC 探索项系数
 ```
 
 **参数说明：**
 - `n`（n_rounds）：总共进行的采样轮数，决定树的深度和广度
 - `max_search_per_tree`：每棵树（uid）在一个训练 step 内允许的最大搜索次数，达到上限后该树不再被 OTRC 选中
-- `c`：OTRC 公式中 exploration 项的系数，控制利用与探索的平衡
 
 
 ## 3 数据结构详解
@@ -268,9 +266,9 @@ for epoch in ...:
             if 非最后一轮:
                 select_next_states：用 OTRC 选择下一轮扩展状态
                   - 跳过搜索次数已达上限的树
-                  - 沿最优路径计算 OTRC，选择 argmax
-                  - 记录各树的 max_exploitations[uid] = exploitation[k]
-                  - 用 max_exploitations 的均值做门控（仅保留 exploitation[k] 更大的候选）
+                  - 沿最优路径计算 otrc_score，选择 argmax
+                  - 记录各树的 max_otrc_scores[uid] = otrc_score[k]
+                  - 用 max_otrc_scores 的均值做门控（仅保留 otrc_score[k] 更大的候选）
                   - 应用 prompt 长度约束和 </think> 位置掩码
                   - 全局排序，取 top batch_size 个候选
 
@@ -334,15 +332,15 @@ $$
 - 若有子分支，比较子分支首 token 的 advantage 与当前轨迹下一个 token 的 advantage
 - 选择 advantage 更大的方向继续
 
-#### 5.2.2 exploitation（期望改善量）
+#### 5.2.2 otrc_score（期望改善量）
 
 沿最优路径从后向前累积：
 
 $$
-\text{exploitation}[k] = -\hat{A}_k + \gamma \cdot \text{exploitation}[k+1]
+\text{otrc\_score}[k] = -\hat{A}_k + \gamma \cdot \text{otrc\_score}[k+1]
 $$
 
-即 $\text{exploitation}[k] = -\sum_{t=k}^{T} \gamma^{t-k} \hat{A}_t$。正值表示从节点 k 分支有改善空间。
+即 $\text{otrc\_score}[k] = -\sum_{t=k}^{T} \gamma^{t-k} \hat{A}_t$。正值表示从节点 k 分支有改善空间。
 
 **数学推导**：
 
@@ -358,31 +356,17 @@ $$
 V^{\pi}(s_k) - G_k \approx -\sum_{t=k}^{T} \gamma^{t-k} \hat{A}_t^{GAE}
 $$
 
-exploitation 为正值表示原轨迹的实际回报低于策略期望，有改善空间。
+otrc_score 为正值表示原轨迹的实际回报低于策略期望，有改善空间。
 
 **注意**：与 Atari/MuJoCo 版本不同，LLM 版本不除以路径长度 $(n-k)$。
 
-#### 5.2.3 exploration（搜索惩罚）
+#### 5.2.3 选择
 
-$$
-\text{exploration}[k] = (\text{sibling\_count}[k] - 1) \cdot \max_{j}|\text{exploitation}[j]|
-$$
-
-其中：
-- $\text{sibling\_count}[k]$ = `state_branches[path[k-1]]`，即路径上前一个节点的分支数（第一个节点的 sibling_count 为 1）
-- $\max|\text{exploitation}|$ 是整条路径上 exploitation 绝对值的最大值（若为 0 则设为 1.0），用于将 exploration 项标准化到与 exploitation 同一量级
-
-#### 5.2.4 OTRC 与选择
-
-$$
-\text{OTRC}[k] = \text{exploitation}[k] - c \cdot \text{exploration}[k]
-$$
-
-选择流程：
+otrc_score 即为节点的选择评分。选择流程：
 1. 跳过 `search_count >= max_search_per_tree` 的树
-2. 对每棵树沿最优路径计算 OTRC，取 argmax
-3. 记录 `max_exploitations[uid] = exploitation[argmax]`（LLM 中使用原始 exploitation，不做长度归一化）
-4. 用 `max_exploitations` 的正值均值做门控，仅保留 `exploitation[argmax]` 超过均值的候选
+2. 对每棵树沿最优路径计算 otrc_score，取 argmax
+3. 记录 `max_otrc_scores[uid] = otrc_score[argmax]`（LLM 中使用原始 otrc_score，不做长度归一化）
+4. 用 `max_otrc_scores` 的正值均值做门控，仅保留 `otrc_score[argmax]` 超过均值的候选
 5. 应用掩码：prompt 长度约束 + `</think>` 位置约束（确保分支在思考阶段内）
 6. 跨所有树全局排序，取 top batch_size 个候选
 7. 通过 `selected_to_branch_points` 将选中节点转换为其父节点作为分支点
@@ -467,7 +451,7 @@ LLM/trainer/opts_ttpo/
 |--------|----------|------|
 | `set_opts_ttpo_info` | ray_trainer.py | 设置树结构信息：rid, pid, branch_pos, cid；在父轨迹 cid 中注册子节点 |
 | `compute_episodic_returns` | ray_trainer.py | 沿祖先链累加奖励，计算完整 episodic return |
-| `select_next_states` | ray_trainer.py | OTRC 状态选择：最优路径追踪、exploitation/exploration 计算、全局排序 |
+| `select_next_states` | ray_trainer.py | OTRC 状态选择：最优路径追踪、otrc_score 计算、全局排序 |
 | `selected_to_branch_points` | ray_trainer.py | 将 OTRC 选中节点转换为父节点作为分支点，更新 state_branches |
 | `prepare_next_round_input` | ray_trainer.py | 构建下一轮采样的输入：提取 prompt + 部分响应，重新 left-pad |
 | `merge_batches` | ray_trainer.py | 合并两个 DataProto batch |
@@ -490,7 +474,6 @@ actor_rollout_ref:
   rollout:
     n: 4                    # 循环采样的轮数
     max_search_per_tree: 4  # 每棵树每迭代最大搜索次数
-    c: 1.0                  # OTRC 探索系数
 
 algorithm:
   adv_estimator: treegae    # 使用 TreeGAE 优势估计

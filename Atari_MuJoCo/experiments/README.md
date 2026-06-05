@@ -89,6 +89,5 @@ visual/
 | `--alpha` | 0.3 | 正/负样本的 step 比例（验证1）；批量脚本传入 `0.42` |
 | `--max-search-per-tree` | 4 | OPTS 每棵树的最大搜索次数 |
 | `--tau` | 0.7 | OPTS OTRC 节点选择的路径长度缩放系数 |
-| `--c` | 1.0 | OPTS OTRC 探索系数 |
 | `--gamma` | 0.99 | 折扣因子 |
 | `--gae-lambda` | 0.95 | GAE lambda |

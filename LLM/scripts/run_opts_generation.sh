@@ -45,7 +45,6 @@ ROLLOUT_MODE="${ROLLOUT_MODE:-async}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.85}"
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-262144}"
 CRITIC_FWD_BSZ_PER_GPU="${CRITIC_FWD_BSZ_PER_GPU:-8}"
-TUCT_C="${TUCT_C:-1.0}"
 MAX_SEARCH_PER_TREE="${MAX_SEARCH_PER_TREE:-4}"
 LAM="${LAM:-0.999}"
 REWARD_MODE="${REWARD_MODE:-reward}"
@@ -141,7 +140,6 @@ build_train_cmd() {
         actor_rollout_ref.rollout.search=opts
         actor_rollout_ref.rollout.load_format=auto
         actor_rollout_ref.rollout.enforce_eager=True
-        actor_rollout_ref.rollout.c=${TUCT_C}
         actor_rollout_ref.rollout.max_search_per_tree=${MAX_SEARCH_PER_TREE}
         actor_rollout_ref.rollout.temperature=${TEMPERATURE}
         actor_rollout_ref.rollout.top_p=${TOP_P}

@@ -530,9 +530,8 @@ def compute_episodic_returns(
 def select_next_states(
     batch: DataProto,
     search_count: dict,
-    max_exploitations: dict,
+    max_otrc_scores: dict,
     max_search_per_tree: int,
-    c: float,
     gamma: float,
     max_prompt_length: int,
     batch_size: int,
@@ -551,25 +550,23 @@ def select_next_states(
        position past it (EOS_pos+1 / response_len) are reachable; the advantage at
        that +1 position is 0 (post-EOS positions are 0 in TreeGAE; the response_len
        column is an explicit 0-pad).
-    3. Compute OTRC along path: exploitation (backward cumulative advantage)
-       + c * exploration ((sibling_count - 1) * max_abs_exploitation).
-    4. Select argmax(OTRC) per tree gated ONLY by the relaxed path_mask (the
+    3. Compute otrc_score along path (backward cumulative advantage).
+    4. Select argmax(otrc_score) per tree gated ONLY by the relaxed path_mask (the
        response-length bound). The </think> and prompt-length constraints are NOT
        applied before the argmax.
-    5. Overwrite each active tree's exploitation[argmax] as its baseline (per round),
-       then keep candidates whose exploitation[argmax] exceeds the plain mean of all
+    5. Overwrite each active tree's otrc_score[argmax] as its baseline (per round),
+       then keep candidates whose otrc_score[argmax] exceeds the plain mean of all
        baselines.
     6. Apply the </think> and prompt-length constraints as CLAMPS: move the selected
        node back to the largest path index u' <= argmax where both constraints hold.
-       The candidate is scored by the exploitation at that clamped position.
-    7. Globally sort candidates by clamped exploitation, take top batch_size.
+       The candidate is scored by the otrc_score at that clamped position.
+    7. Globally sort candidates by clamped otrc_score, take top batch_size.
 
     Args:
         batch: DataProto containing all required tensors and non-tensor data.
         search_count: {uid: count}, cumulative within training iteration.
-        max_exploitations: {uid: max exploitation at selected node}.
+        max_otrc_scores: {uid: max otrc_score at selected node}.
         max_search_per_tree: Max searches per tree per iteration.
-        c: OTRC exploration coefficient.
         max_prompt_length: Maximum allowed prompt length.
         batch_size: Maximum number of candidates to select.
 
@@ -579,7 +576,6 @@ def select_next_states(
             selected_to_branch_points() before use as branch points.
     """
     advantages = batch.batch["advantages"]
-    state_branches = batch.batch["state_branches"]
     response_mask = batch.batch["response_mask"]
     responses = batch.batch["responses"]
 
@@ -648,18 +644,16 @@ def select_next_states(
     if active_uids:
         num_trees = len(active_uids)
         current_idx = torch.as_tensor(best_roots, device=device, dtype=torch.long)
-        current_sibling = torch.ones(num_trees, device=device, dtype=dtype)
         active_mask = torch.ones(num_trees, device=device, dtype=torch.bool)
 
         # Extend the path by one position (path_len = response_len + 1) so the last real
         # token (EOS_pos / response_len-1) AND one position past it (EOS_pos+1 / response_len)
         # are reachable. At local_t == response_len the lookups below use "past-the-end"
-        # constants inline (advantage 0, no child, sibling 1) instead of padded copies.
+        # constants inline (advantage 0, no child) instead of padded copies.
         path_len = response_len + 1
 
         path_idx = torch.zeros((num_trees, path_len), device=device, dtype=torch.long)
         path_t = torch.zeros((num_trees, path_len), device=device, dtype=torch.long)
-        path_sibling = torch.ones((num_trees, path_len), device=device, dtype=dtype)
         path_mask = torch.zeros((num_trees, path_len), device=device, dtype=torch.bool)
 
         for u in range(path_len):
@@ -676,7 +670,6 @@ def select_next_states(
 
             path_idx[:, u] = idx
             path_t[:, u] = local_t
-            path_sibling[:, u] = current_sibling
             path_mask[:, u] = valid_u
 
             cont_adv = torch.where(next_local_t < response_len, advantages[idx, next_local_t.clamp(max=response_len - 1)], 0.0)
@@ -684,30 +677,19 @@ def select_next_states(
             child_adv = torch.where(bci >= 0, adv0[bci], neg_inf)
             take_child = valid_u & (child_adv > cont_adv)
 
-            sib_val = torch.where(local_t < response_len, state_branches[idx, local_t.clamp(max=response_len - 1)], 1.0)
-            current_sibling = torch.where(valid_u, sib_val, current_sibling)
             current_idx = torch.where(take_child, bci, current_idx)
             active_mask = valid_u
 
-        exploitation = torch.zeros((num_trees, path_len), device=device, dtype=dtype)
-        lastexp = torch.zeros(num_trees, device=device, dtype=dtype)
+        otrc_score = torch.zeros((num_trees, path_len), device=device, dtype=dtype)
+        last_otrc = torch.zeros(num_trees, device=device, dtype=dtype)
         for u in reversed(range(path_len)):
             idx = path_idx[:, u]
             local_t = path_t[:, u]
             path_adv = torch.where(local_t < response_len, advantages[idx, local_t.clamp(max=response_len - 1)], 0.0)
-            lastexp_ = -path_adv + gamma * lastexp
+            last_otrc_ = -path_adv + gamma * last_otrc
             mask_u = path_mask[:, u].to(dtype)
-            lastexp = lastexp_ * mask_u + (1 - mask_u) * lastexp
-            exploitation[:, u] = lastexp
-
-        max_abs_exploitation = exploitation.abs().amax(dim=1)
-        max_abs_exploitation = torch.where(
-            max_abs_exploitation > 0,
-            max_abs_exploitation,
-            torch.ones_like(max_abs_exploitation),
-        )
-        exploration = (path_sibling - 1) * max_abs_exploitation.unsqueeze(1)
-        otrc_score = exploitation - c * exploration
+            last_otrc = last_otrc_ * mask_u + (1 - mask_u) * last_otrc
+            otrc_score[:, u] = last_otrc
 
         # Constraints kept for the post-selection clamp (NOT applied before the argmax).
         prompt_valid = prompt_lengths[path_idx] + path_t < max_prompt_length
@@ -718,18 +700,18 @@ def select_next_states(
         otrc_for_argmax = torch.where(path_mask, otrc_score, neg_inf)
         row_idx = torch.arange(num_trees, device=device)
         max_pos = otrc_for_argmax.argmax(dim=1)
-        max_exploitation_val = exploitation[row_idx, max_pos]
+        max_otrc_score = otrc_score[row_idx, max_pos]
 
-        # (b) Register ALL active trees' exploitation (overwrite, not setdefault).
-        all_scores = max_exploitation_val.tolist()
+        # (b) Register ALL active trees' otrc_score (overwrite, not setdefault).
+        all_scores = max_otrc_score.tolist()
         for i in range(num_trees):
-            max_exploitations.setdefault(active_uids[i], all_scores[i])   # v1: first-qualified baseline
-            # max_exploitations[active_uids[i]] = all_scores[i]               # overwrite each round
+            max_otrc_scores.setdefault(active_uids[i], all_scores[i])   # v1: first-qualified baseline
+            # max_otrc_scores[active_uids[i]] = all_scores[i]               # overwrite each round
 
-        # (c)(d) Threshold filter on argmax exploitation (mean over ALL values, no >0 filter).
-        if len(max_exploitations) > 1:
-            mean_threshold = np.mean(list(max_exploitations.values()))
-            keep = (max_exploitation_val > mean_threshold).nonzero(as_tuple=True)[0]
+        # (c)(d) Threshold filter on argmax otrc_score (mean over ALL values, no >0 filter).
+        if len(max_otrc_scores) > 1:
+            mean_threshold = np.mean(list(max_otrc_scores.values()))
+            keep = (max_otrc_score > mean_threshold).nonzero(as_tuple=True)[0]
 
             # (e) Clamp the selected node back to the largest valid path index <= argmax.
             #     prompt_valid & think_valid is a monotone True-prefix, so last valid = count-1;
@@ -738,9 +720,9 @@ def select_next_states(
             clamped_u = torch.minimum(max_pos, last_valid)
             clamped_traj = path_idx[row_idx, clamped_u]
             clamped_pos = path_t[row_idx, clamped_u]
-            clamped_exp = exploitation[row_idx, clamped_u]
+            clamped_otrc_score = otrc_score[row_idx, clamped_u]
 
-            scores = clamped_exp[keep].tolist()                # score = exploitation AFTER clamp
+            scores = clamped_otrc_score[keep].tolist()         # score = otrc_score AFTER clamp
             trajs = clamped_traj[keep].tolist()
             poses = clamped_pos[keep].tolist()
             for k, i in enumerate(keep.tolist()):
@@ -761,7 +743,7 @@ def select_next_states(
     if candidates:
         logger_batch.info(
             f"[select_next_states] candidates={len(candidates)}, selected={len(selected)}, "
-            f"exploitation_range=[{candidates[0][0]:.4f}, {candidates[-1][0]:.4f}]"
+            f"otrc_score_range=[{candidates[0][0]:.4f}, {candidates[-1][0]:.4f}]"
         )
     else:
         logger_batch.info("[select_next_states] no candidates")
@@ -775,7 +757,7 @@ def selected_to_branch_points(
 ) -> Dict[str, Tuple[int, int]]:
     """Convert OTRC-selected nodes to their parent nodes as branch points.
 
-    In the OTRC framework, exploitation[k] evaluates from token k onwards
+    In the OTRC framework, otrc_score[k] evaluates from token k onwards
     (including k itself). When OTRC selects node (ti, tp) as the worst node,
     we should branch from its PARENT to replace token tp and everything after,
     matching the reference implementation: parent = parent_indices[selected[i]].
@@ -2096,12 +2078,11 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                 # === OPTS_TTPO training loop ===
                 n_rounds = self.config.actor_rollout_ref.rollout.n
                 max_search_per_tree = self.config.actor_rollout_ref.rollout.max_search_per_tree
-                c_otrc = self.config.actor_rollout_ref.rollout.c
 
                 global_batch = None
                 next_states = {}
                 search_count = {}  # {uid: count} per training iteration
-                max_exploitations = {}  # {uid: first qualified exploitation baseline} per training iteration
+                max_otrc_scores = {}  # {uid: first qualified otrc_score baseline} per training iteration
                 sorted_states = None
                 reward_extra_infos_dict = {}
 
@@ -2350,9 +2331,8 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 selected_states = select_next_states(
                                     batch=global_batch,
                                     search_count=search_count,
-                                    max_exploitations=max_exploitations,
+                                    max_otrc_scores=max_otrc_scores,
                                     max_search_per_tree=max_search_per_tree,
-                                    c=c_otrc,
                                     gamma=self.config.algorithm.gamma,
                                     max_prompt_length=self.config.data.max_prompt_length,
                                     batch_size=batch_size,
