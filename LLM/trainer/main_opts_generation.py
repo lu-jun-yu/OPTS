@@ -150,16 +150,18 @@ def set_full_response_str(batch: DataProto, tokenizer, prompt_length: int, respo
         batch.non_tensor_batch["extra_info"][i]["full_response_str"] = full_response_str
 
 
-def decode_responses(batch: DataProto, tokenizer) -> list[str]:
-    """Decode responses from batch, returning list of response strings."""
+def decode_responses(batch: DataProto, tokenizer, prompt_length: int, response_length: int) -> list[str]:
+    """Decode full response strings, including any continued response prefix."""
     batch_size = batch.batch["input_ids"].shape[0]
     responses = []
     for i in range(batch_size):
-        data_item = batch[i]
-        prompt_length = int(data_item.non_tensor_batch["raw_prompt_len"])
-        valid_response_length = int(data_item.batch["attention_mask"][prompt_length:].sum().item())
-        valid_response_ids = data_item.batch["input_ids"][prompt_length: prompt_length + valid_response_length]
-        response_str = tokenizer.decode(valid_response_ids, skip_special_tokens=True)
+        raw_prompt_len = int(batch.non_tensor_batch["raw_prompt_len"][i])
+        valid_prompt_len = int(batch.batch["attention_mask"][i, :prompt_length].sum().item())
+        pad_len = prompt_length - valid_prompt_len
+        start_pos = pad_len + raw_prompt_len
+        end_pos = start_pos + response_length
+        response_ids = batch.batch["input_ids"][i, start_pos:end_pos]
+        response_str = tokenizer.decode(response_ids, skip_special_tokens=True)
         responses.append(response_str)
     return responses
 
@@ -197,7 +199,7 @@ def _restore_sigmoid_value_mapping(values_output: DataProto) -> DataProto:
     """
     if "values" not in values_output.batch:
         raise KeyError("Critic output does not contain 'values'.")
-    values_output.batch["values"] = torch.sigmoid(values_output.batch["values"])
+    values_output.batch["values"] = torch.sigmoid(0.1 * values_output.batch["values"])
     return values_output
 
 
@@ -465,7 +467,7 @@ def main_task(config):
         global_batch.batch["returns"] = returns
 
         # === Collect decoded responses with sample_index + global_index ===
-        response_strs = decode_responses(output, tokenizer)
+        response_strs = decode_responses(output, tokenizer, prompt_length, response_length)
         output_uids = output.non_tensor_batch["uid"]
         current_rids = global_batch.non_tensor_batch["rid"][new_sample_indices]
         current_pids = global_batch.non_tensor_batch["pid"][new_sample_indices]
