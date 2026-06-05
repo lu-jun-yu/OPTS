@@ -4,7 +4,7 @@ export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=1.7B
 Experiment_Name=opts_ttpo_0604_${MODEL_SIZE}
-RAY_TEMP_DIR="ray_tmp/${Experiment_Name}"
+RAY_TEMP_DIR="/data/ray/tmp/${Experiment_Name}"
 
 mkdir -p logs "${RAY_TEMP_DIR}"
 
