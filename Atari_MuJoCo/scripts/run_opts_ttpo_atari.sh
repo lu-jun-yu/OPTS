@@ -73,6 +73,8 @@ for seed in "${SEEDS[@]}"; do
             --total-timesteps 10000000 \
             --num-steps 128 \
             --num-envs 8 \
+            --tau 0.7 \
+            --max-search-per-tree 4 \
             --no-cuda \
             --seed $seed &
     done
