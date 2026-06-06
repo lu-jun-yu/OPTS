@@ -13,6 +13,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'cleanrl', 'cle
 from opts_ttpo_continuous_action import (
     Agent,
     MuJoCoStateSnapshotWrapper,
+)
+from opts_ttpo_core import (
     compute_tree_gae,
     compute_branch_weight,
     select_next_states,
