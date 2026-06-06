@@ -5,7 +5,7 @@ Inference-time scaling/search experiment for OPTS.
 
 Two modes:
   - reward-guided (reward_mode="reward"): uses actual reward_fn for OTRC guidance
-  - value-guided  (reward_mode="value"):  uses critic's last-position sigmoid(value) as reward
+  - value-guided  (reward_mode="value"):  uses critic's last-position value as reward (bounded if critic.value_head_activation=sigmoid)
 
 Total inference budget = dataset_size * n_samples responses, matching pass@k
 cost. Each run performs n_samples rounds of tree-structured sampling with
@@ -16,8 +16,14 @@ global_indices <= k * dataset_size to match a chronological generation budget.
 """
 
 import os
+import sys
 import uuid
 from collections import defaultdict
+
+# Add LLM directory to Python path for correct imports
+LLM_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if LLM_DIR not in sys.path:
+    sys.path.insert(0, LLM_DIR)
 
 import hydra
 import numpy as np
@@ -41,13 +47,14 @@ from verl.utils.fs import copy_to_local
 from verl.utils.hdfs_io import makedirs
 from verl.workers.fsdp_workers import ActorRolloutRefWorker, AsyncActorRolloutRefWorker, CriticWorker
 
-from .opts_ttpo.core_algos import (
+from trainer.opts_ttpo.core_algos import (
     compute_treegae_advantage_return,
 )
-from .opts_ttpo.ray_trainer import (
+from trainer.opts_ttpo.ray_trainer import (
     PromptBuffer,
     compute_episodic_returns,
     compute_response_mask,
+    decode_response_strs,
     merge_batches,
     prepare_next_round_input,
     set_opts_ttpo_info,
@@ -132,40 +139,6 @@ class InferencePromptBuffer:
         return self._just_cycled
 
 
-def set_full_response_str(batch: DataProto, tokenizer, prompt_length: int, response_length: int):
-    """Decode full response string and store in extra_info for reward computation."""
-    batch_size = batch.batch["input_ids"].shape[0]
-
-    if "extra_info" not in batch.non_tensor_batch:
-        batch.non_tensor_batch["extra_info"] = np.array([{} for _ in range(batch_size)], dtype=object)
-
-    for i in range(batch_size):
-        raw_prompt_len = int(batch.non_tensor_batch["raw_prompt_len"][i])
-        valid_prompt_len = int(batch.batch["attention_mask"][i, :prompt_length].sum().item())
-        pad_len = prompt_length - valid_prompt_len
-        start_pos = pad_len + raw_prompt_len
-        end_pos = start_pos + response_length
-        full_response_ids = batch.batch["input_ids"][i, start_pos:end_pos]
-        full_response_str = tokenizer.decode(full_response_ids, skip_special_tokens=True)
-        batch.non_tensor_batch["extra_info"][i]["full_response_str"] = full_response_str
-
-
-def decode_responses(batch: DataProto, tokenizer, prompt_length: int, response_length: int) -> list[str]:
-    """Decode full response strings, including any continued response prefix."""
-    batch_size = batch.batch["input_ids"].shape[0]
-    responses = []
-    for i in range(batch_size):
-        raw_prompt_len = int(batch.non_tensor_batch["raw_prompt_len"][i])
-        valid_prompt_len = int(batch.batch["attention_mask"][i, :prompt_length].sum().item())
-        pad_len = prompt_length - valid_prompt_len
-        start_pos = pad_len + raw_prompt_len
-        end_pos = start_pos + response_length
-        response_ids = batch.batch["input_ids"][i, start_pos:end_pos]
-        response_str = tokenizer.decode(response_ids, skip_special_tokens=True)
-        responses.append(response_str)
-    return responses
-
-
 def _select_first(config, *paths, default=None):
     for path in paths:
         value = OmegaConf.select(config, path)
@@ -188,19 +161,6 @@ def _get_actor_worker_config(config):
 
 def _get_rollout_config(config):
     return _require_config_value(config, "actor_rollout_ref.rollout", "rollout")
-
-
-def _restore_sigmoid_value_mapping(values_output: DataProto) -> DataProto:
-    """Map critic outputs back to the trained value semantics.
-
-    The underlying verl value head sigmoid was removed, but the current critic
-    checkpoint was trained with that mapping in place. Apply sigmoid here before
-    the values are used by either reward-guided or value-guided search logic.
-    """
-    if "values" not in values_output.batch:
-        raise KeyError("Critic output does not contain 'values'.")
-    values_output.batch["values"] = torch.sigmoid(0.1 * values_output.batch["values"])
-    return values_output
 
 
 @hydra.main(config_path="pkg://verl.trainer.config", config_name="ppo_trainer", version_base=None)
@@ -413,13 +373,17 @@ def main_task(config):
         values_input_padded, values_pad_size = pad_dataproto_to_divisor(output, critic_wg.world_size)
         values_output_padded = critic_wg.compute_values(values_input_padded)
         values_output = unpad_dataproto(values_output_padded, pad_size=values_pad_size)
-        values_output = _restore_sigmoid_value_mapping(values_output)
         output = output.union(values_output)
 
         # === Compute rewards ===
         if reward_mode == "reward":
-            # Decode full response and compute reward via reward_fn
-            set_full_response_str(output, tokenizer, prompt_length, response_length)
+            # Decode full response into extra_info, then compute reward via reward_fn
+            full_response_strs = decode_response_strs(output, tokenizer, prompt_length, response_length)
+            if "extra_info" not in output.non_tensor_batch:
+                output.non_tensor_batch["extra_info"] = np.array(
+                    [{} for _ in range(len(full_response_strs))], dtype=object)
+            for i, s in enumerate(full_response_strs):
+                output.non_tensor_batch["extra_info"][i]["full_response_str"] = s
             reward_tensor, _ = compute_reward(output, reward_fn)
             output.batch["token_level_rewards"] = reward_tensor
         else:
@@ -467,7 +431,7 @@ def main_task(config):
         global_batch.batch["returns"] = returns
 
         # === Collect decoded responses with sample_index + global_index ===
-        response_strs = decode_responses(output, tokenizer, prompt_length, response_length)
+        response_strs = decode_response_strs(output, tokenizer, prompt_length, response_length)
         output_uids = output.non_tensor_batch["uid"]
         current_rids = global_batch.non_tensor_batch["rid"][new_sample_indices]
         current_pids = global_batch.non_tensor_batch["pid"][new_sample_indices]

@@ -307,6 +307,7 @@ def compute_treegae_advantage_return(
         nextvalues = torch.zeros(current_idx.shape[0], device=device, dtype=dtype)
         lastgaelam = torch.zeros(current_idx.shape[0], device=device, dtype=dtype)
         assert torch.all(history_len < gen_len), "TreeGAE requires history_len < gen_len."
+        assert torch.all(history_len[parent_indices < 0] == 0), "TreeGAE assumes root trajectories have history_len == 0."
 
         for u in reversed(range(gen_len)):
             idx = current_idx
@@ -2059,8 +2060,8 @@ def compute_branch_weight(
     def _compute_init_weight(i: int) -> torch.Tensor:
         weight = torch.tensor(1.0, dtype=state_branches.dtype, device=state_branches.device)
         current_idx, current_bp = i, branch_pos[i]
-        # Iteratively trace parent -> grandparent -> ... -> root
-        while pid[current_idx] is not None and pid[current_idx] in rid2idx:
+        # Iteratively trace parent -> grandparent -> ... -> root (errors loudly if a parent rid is missing)
+        while pid[current_idx] is not None:
             parent_idx = rid2idx[pid[current_idx]]
             weight *= state_branches[parent_idx, :current_bp + 1].prod()
             current_idx, current_bp = parent_idx, branch_pos[parent_idx]

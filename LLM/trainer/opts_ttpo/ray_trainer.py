@@ -204,6 +204,20 @@ def compute_response_mask(data: DataProto):
     return attention_mask[:, -response_length:]
 
 
+def decode_response_strs(batch, tokenizer, max_prompt_length, response_length, skip_special_tokens=True):
+    """Decode each sample's full response (raw_prompt_len -> +response_length) into strings."""
+    input_ids = batch.batch["input_ids"]
+    attention_mask = batch.batch["attention_mask"]
+    raw_prompt_lens = batch.non_tensor_batch["raw_prompt_len"]
+    responses = []
+    for i in range(input_ids.shape[0]):
+        valid_prompt_len = int(attention_mask[i, :max_prompt_length].sum().item())
+        start_pos = (max_prompt_length - valid_prompt_len) + int(raw_prompt_lens[i])
+        response_ids = input_ids[i, start_pos:start_pos + response_length]
+        responses.append(tokenizer.decode(response_ids, skip_special_tokens=skip_special_tokens))
+    return responses
+
+
 def compute_advantage(
     data: DataProto,
     adv_estimator: AdvantageEstimator,
@@ -971,7 +985,8 @@ def weighted_masked_whiten(
     inv_weight_sum = inv_weight.sum()
 
     adv_mean = (advantages * inv_weight).sum() / inv_weight_sum
-    adv_var = ((advantages - adv_mean) ** 2 * inv_weight).sum() / (inv_weight_sum - 1)
+    denom = inv_weight_sum - 1 if inv_weight_sum - 1 > 0 else inv_weight_sum
+    adv_var = ((advantages - adv_mean) ** 2 * inv_weight).sum() / denom
     normalized = (advantages - adv_mean) * torch.rsqrt(adv_var + eps)
     if not shift_mean:
         normalized = normalized + adv_mean
@@ -1302,32 +1317,22 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
             return reward_tensor, reward_extra_infos_dict
 
     def _set_full_response_str(self, batch: DataProto) -> None:
-        """Decode full response and store in extra_info for OPTS_TTPO mode.
-
-        This method computes the full response string for each sample by extracting
-        tokens from raw_prompt_len onwards and decoding them.
-
-        Args:
-            batch: DataProto containing input_ids, attention_mask, and raw_prompt_len.
-        """
-        batch_size = batch.batch["input_ids"].shape[0]
-
+        """Decode full response and store in extra_info for OPTS_TTPO mode."""
+        strs = decode_response_strs(
+            batch,
+            self.tokenizer,
+            self.config.data.max_prompt_length,
+            self.config.data.max_response_length,
+        )
+        batch_size = len(strs)
         if "extra_info" not in batch.non_tensor_batch:
             batch.non_tensor_batch["extra_info"] = np.array([{} for _ in range(batch_size)], dtype=object)
         else:
             batch.non_tensor_batch["extra_info"] = np.array(
                 [copy.copy(v) for v in batch.non_tensor_batch["extra_info"]], dtype=object
             )
-
         for i in range(batch_size):
-            raw_prompt_len = int(batch.non_tensor_batch["raw_prompt_len"][i])
-            valid_prompt_len = int(batch.batch["attention_mask"][i, :self.config.data.max_prompt_length].sum().item())
-            pad_len = self.config.data.max_prompt_length - valid_prompt_len
-            start_pos = pad_len + raw_prompt_len
-            end_pos = start_pos + self.config.data.max_response_length
-            full_response_ids = batch.batch["input_ids"][i, start_pos:end_pos]
-            full_response_str = self.tokenizer.decode(full_response_ids, skip_special_tokens=True)
-            batch.non_tensor_batch["extra_info"][i]["full_response_str"] = full_response_str
+            batch.non_tensor_batch["extra_info"][i]["full_response_str"] = strs[i]
 
     def _get_gen_batch(self, batch: DataProto) -> DataProto:
         reward_model_keys = set({"data_source", "reward_model", "extra_info", "uid", "raw_prompt_len"}) & batch.non_tensor_batch.keys()
