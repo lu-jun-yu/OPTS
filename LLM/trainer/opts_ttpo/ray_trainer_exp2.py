@@ -626,14 +626,16 @@ def select_next_states(
             uid_to_root_indices[uid[i]].append(i)
     active_uids = []
     best_roots = []
+    active_counts = []
 
     for u, root_indices in uid_to_root_indices.items():
-        if search_count.get(u, 0) >= max_search_per_tree:
-            continue
         root_indices_arr = np.asarray(root_indices, dtype=np.int64)
         best_root = int(root_indices_arr[int(np.argmax(adv0_np[root_indices_arr]))])
         active_uids.append(u)
         best_roots.append(best_root)
+        active_counts.append(search_count.get(u, 0))
+
+    search_counts = torch.as_tensor(active_counts, device=device, dtype=torch.long)
 
     candidates = []
     if active_uids:
@@ -692,15 +694,15 @@ def select_next_states(
         max_pos = otrc_for_argmax.argmax(dim=1)
         max_otrc_score = otrc_score[row_idx, max_pos]
 
-        # (b) Register each tree's first-qualified otrc_score as its baseline.
+        # (b) Register each tree's argmax otrc_score as its baseline.
         all_scores = max_otrc_score.tolist()
         for i in range(num_trees):
-            max_otrc_scores.setdefault(active_uids[i], all_scores[i])
+            max_otrc_scores[active_uids[i]] = all_scores[i]
 
-        # (c)(d) Threshold filter on argmax otrc_score.
+        # (c)(d) Threshold filter on argmax otrc_score, and drop over-searched trees here.
         if len(max_otrc_scores) > 1:
             mean_threshold = np.mean(list(max_otrc_scores.values()))
-            keep = (max_otrc_score > mean_threshold).nonzero(as_tuple=True)[0]
+            keep = ((max_otrc_score > mean_threshold) & (search_counts < max_search_per_tree)).nonzero(as_tuple=True)[0]
 
             # (e) Clamp the selected node back to the largest valid path index <= argmax.
             last_valid = (prompt_valid & think_valid).sum(dim=1) - 1

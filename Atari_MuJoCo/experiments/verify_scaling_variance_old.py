@@ -317,8 +317,8 @@ def collect_opts(env, agent, num_steps, device, max_search, tau, gamma, gae_lamb
     return data['obs'], data['actions'], data['advantages'], data['weights']
 
 
-def compute_pg_gradient(agent, obs, actions, advantages, device, weights=None, weight_mean=None):
-    """计算策略梯度（仅 actor 参数）。weights 非 None 时按 OPTS IPW 加权，分母用全局权重均值×B（与训练最终版一致，跨样本恒定）"""
+def compute_pg_gradient(agent, obs, actions, advantages, device, weights=None):
+    """计算策略梯度（仅 actor 参数）。weights 非 None 时使用 OPTS IPW 加权方式"""
     agent.zero_grad()
     obs, actions, advantages = obs.to(device), actions.to(device), advantages.to(device)
     action_mean = agent.actor_mean(obs)
@@ -328,7 +328,7 @@ def compute_pg_gradient(agent, obs, actions, advantages, device, weights=None, w
     pg_loss_per_sample = -(log_probs * advantages.detach())
     if weights is not None:
         weights = weights.to(device)
-        pg_loss = (pg_loss_per_sample / weights).sum() / (weight_mean * len(obs))
+        pg_loss = (pg_loss_per_sample / weights).sum() / (1.0 / weights).sum()
     else:
         pg_loss = pg_loss_per_sample.mean()
     pg_loss.backward()
@@ -352,7 +352,6 @@ def estimate_scaling_variance(agent, obs, actions, advantages, batch_sizes,
         dict: {B: {"mean": float, "std": float}} for each valid batch_size
     """
     N = len(obs)
-    weight_mean = (1.0 / weights).mean().item() if weights is not None else None
     results = {}
     for B in batch_sizes:
         if B > N:
@@ -362,7 +361,7 @@ def estimate_scaling_variance(agent, obs, actions, advantages, batch_sizes,
         for _ in range(num_bootstrap):
             idx = np.random.choice(N, size=B, replace=True)
             w = weights[idx] if weights is not None else None
-            g_B = compute_pg_gradient(agent, obs[idx], actions[idx], advantages[idx], device, w, weight_mean)
+            g_B = compute_pg_gradient(agent, obs[idx], actions[idx], advantages[idx], device, w)
             sq_diffs.append(((g_B - g_star) ** 2).sum().item())
         mean_var = float(np.mean(sq_diffs))
         std_var = float(np.std(sq_diffs))

@@ -697,10 +697,10 @@ def select_next_states(
         for i in range(num_trees):
             max_otrc_scores.setdefault(active_uids[i], all_scores[i])
 
-        # (c)(d) Threshold filter on argmax otrc_score.
+        # (c)(d) Keep candidates with positive argmax otrc_score.
         if len(max_otrc_scores) > 1:
             mean_threshold = np.mean(list(max_otrc_scores.values()))
-            keep = (max_otrc_score > mean_threshold).nonzero(as_tuple=True)[0]
+            keep = (max_otrc_score > 0).nonzero(as_tuple=True)[0]
 
             # (e) Clamp the selected node back to the largest valid path index <= argmax.
             last_valid = (prompt_valid & think_valid).sum(dim=1) - 1
