@@ -345,8 +345,6 @@ def main_task(config):
                 batch = merge_batches(parts[0], parts[1])
             elif len(parts) == 1:
                 batch = parts[0]
-            else:
-                break  # no data to process
             batch.meta_info["temperature"] = rollout_config.temperature
 
         # === Generate sequences ===

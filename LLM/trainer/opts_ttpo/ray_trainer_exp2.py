@@ -700,22 +700,21 @@ def select_next_states(
             max_otrc_scores[active_uids[i]] = all_scores[i]
 
         # (c)(d) Threshold filter on argmax otrc_score, and drop over-searched trees here.
-        if len(max_otrc_scores) > 1:
-            mean_threshold = np.mean(list(max_otrc_scores.values()))
-            keep = ((max_otrc_score > mean_threshold) & (search_counts < max_search_per_tree)).nonzero(as_tuple=True)[0]
+        mean_threshold = np.mean(list(max_otrc_scores.values()))
+        keep = ((max_otrc_score > mean_threshold) & (search_counts < max_search_per_tree)).nonzero(as_tuple=True)[0]
 
-            # (e) Clamp the selected node back to the largest valid path index <= argmax.
-            last_valid = (prompt_valid & think_valid).sum(dim=1) - 1
-            clamped_u = torch.minimum(max_pos, last_valid)
-            clamped_traj = path_idx[row_idx, clamped_u]
-            clamped_pos = path_t[row_idx, clamped_u]
-            clamped_otrc_score = otrc_score[row_idx, clamped_u]
+        # (e) Clamp the selected node back to the largest valid path index <= argmax.
+        last_valid = (prompt_valid & think_valid).sum(dim=1) - 1
+        clamped_u = torch.minimum(max_pos, last_valid)
+        clamped_traj = path_idx[row_idx, clamped_u]
+        clamped_pos = path_t[row_idx, clamped_u]
+        clamped_otrc_score = otrc_score[row_idx, clamped_u]
 
-            scores = clamped_otrc_score[keep].tolist()
-            trajs = clamped_traj[keep].tolist()
-            poses = clamped_pos[keep].tolist()
-            for k, i in enumerate(keep.tolist()):
-                candidates.append((scores[k], active_uids[i], trajs[k], poses[k]))
+        scores = clamped_otrc_score[keep].tolist()
+        trajs = clamped_traj[keep].tolist()
+        poses = clamped_pos[keep].tolist()
+        for k, i in enumerate(keep.tolist()):
+            candidates.append((scores[k], active_uids[i], trajs[k], poses[k]))
 
     # --- Global sort and select top batch_size ---
     candidates.sort(key=lambda x: x[0], reverse=True)
