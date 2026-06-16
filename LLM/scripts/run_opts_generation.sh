@@ -49,6 +49,7 @@ MAX_SEARCH_PER_TREE="${MAX_SEARCH_PER_TREE:-4}"
 LAM="${LAM:-0.999}"
 REWARD_MODE="${REWARD_MODE:-reward}"
 OPTS_GEN_TAG="${OPTS_GEN_TAG:-${REWARD_MODE}}"
+CRITIC_VALUE_HEAD_ACTIVATION="${CRITIC_VALUE_HEAD_ACTIVATION:-sigmoid}"
 
 # ---- Ray cluster knobs (same shape as run_opts_ttpo.sh) ----
 MODE="${MODE:-local}"
@@ -135,6 +136,7 @@ build_train_cmd() {
         +data.output_path="${output_path}"
         actor_rollout_ref.model.path="${dst_actor}"
         critic.model.path="${dst_critic}"
+        critic.value_head_activation="${CRITIC_VALUE_HEAD_ACTIVATION}"
         critic.forward_micro_batch_size_per_gpu=${CRITIC_FWD_BSZ_PER_GPU}
         actor_rollout_ref.rollout.name=vllm
         actor_rollout_ref.rollout.search=opts
@@ -186,6 +188,7 @@ run_opts_pipeline() {
     build_train_cmd
     RUN_LOG="${LOG_ROOT}/opts_ttpo_opts_${OPTS_GEN_TAG}.log"
     echo "[gen opts:${REWARD_MODE}] opts_ttpo  ->  ${output_path}"
+    echo "[critic] value_head_activation=${CRITIC_VALUE_HEAD_ACTIVATION}"
     local s
     s=$(date +%s.%N)
     run_training
