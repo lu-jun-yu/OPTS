@@ -100,42 +100,36 @@ def compute_score(
     data_source: str,
     solution_str: str,
     ground_truth: str,
-    format_reward: float = 0.1,
-    correct_reward: float = 0.9,
+    correct_reward: float = 1.0,
     extra_info: Optional[dict] = None,
     **kwargs,
 ) -> dict:
     """Compute the score for a response.
 
-    Total reward = format_reward + correct_reward (if both conditions met)
+    The response must have valid format before answer correctness can receive reward.
 
     Args:
         solution_str: The response string (without <think> prefix, which is in prompt).
         ground_truth: The expected answer.
-        format_reward: Reward for correct format (0.1).
-        correct_reward: Reward for correct answer (0.9).
+        correct_reward: Reward for a correct answer with valid format.
         extra_info: Optional extra info dict, may contain 'full_response_str' for tree search.
 
     Returns:
-        A dictionary containing the training reward (`score`), pure answer
-        correctness (`acc`), format correctness, and the extracted answer
-        (`pred`) used by validation-time avg/pass/cons metrics.
+        A dictionary containing the training reward (`score`), correctness
+        (`acc`), and the extracted answer (`pred`) used by validation metrics.
     """
     # OPTS_TTPO: Use full response string if available (for tree search)
     if extra_info and "full_response_str" in extra_info:
         solution_str = extra_info["full_response_str"]
 
-    total_score = 0.0
-
     # Check format: must have </think> followed by \boxed{...}
     format_ok = check_format(solution_str)
-    if format_ok:
-        total_score += format_reward
 
     # Check answer correctness (using math-verify for robust matching)
     answer_content = extract_answer(solution_str)
     acc = 0.0
-    if answer_content is not None:
+    total_score = 0.0
+    if format_ok and answer_content is not None:
         if validate_answer(answer_content, ground_truth):
             acc = 1.0
             total_score += correct_reward
@@ -143,6 +137,5 @@ def compute_score(
     return {
         "score": total_score,
         "acc": acc,
-        "format": 1.0 if format_ok else 0.0,
         "pred": answer_content if answer_content is not None else "",
     }
