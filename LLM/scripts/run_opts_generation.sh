@@ -49,6 +49,16 @@ MAX_SEARCH_PER_TREE="${MAX_SEARCH_PER_TREE:-4}"
 LAM="${LAM:-0.999}"
 REWARD_MODE="${REWARD_MODE:-reward}"
 OPTS_GEN_TAG="${OPTS_GEN_TAG:-${REWARD_MODE}}"
+OPTS_KS="${OPTS_KS:-8 16 32 64 128}"
+read -r -a OPTS_KS_ARR <<< "${OPTS_KS}"
+OPTS_KS_LIST="["
+for k in "${OPTS_KS_ARR[@]}"; do
+    if [[ "${OPTS_KS_LIST}" != "[" ]]; then
+        OPTS_KS_LIST+=","
+    fi
+    OPTS_KS_LIST+="${k}"
+done
+OPTS_KS_LIST+="]"
 CRITIC_VALUE_HEAD_ACTIVATION="${CRITIC_VALUE_HEAD_ACTIVATION:-sigmoid}"
 
 # ---- Ray cluster knobs (same shape as run_opts_ttpo.sh) ----
@@ -133,6 +143,7 @@ build_train_cmd() {
         data.val_batch_size=${BATCH_SIZE}
         +data.n_samples=${N_SAMPLES}
         +data.reward_mode=${REWARD_MODE}
+        +data.opts_snapshot_ks="${OPTS_KS_LIST}"
         +data.output_path="${output_path}"
         actor_rollout_ref.model.path="${dst_actor}"
         critic.model.path="${dst_critic}"

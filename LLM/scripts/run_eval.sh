@@ -13,8 +13,8 @@
 #        - Task 2: opts@k (from reward-guided OPTS parquet) and pass@k (from
 #          OPTS-TTPO's i.i.d. parquet) for each k in OPTS_KS
 #          (default 8 16 32 64 128).
-#        - Task 3: opts@k (from value-guided OPTS parquet) and cons@k (from
-#          OPTS-TTPO's i.i.d. parquet) for each k in OPTS_KS.
+#        - Task 3: value-guided opts@k from online greedy-path snapshots and
+#          cons@k (from OPTS-TTPO's i.i.d. parquet) for each k in OPTS_KS.
 #   4) Summarize generation wall-clock times so pass@k-style i.i.d. sampling
 #      and OPTS tree-search can be compared directly.
 #
@@ -51,7 +51,7 @@ mkdir -p "${EVAL_ROOT}"
 # Propagate common vars (generation + Ray) into the two sub-scripts. The Ray
 # knobs below are no-ops when MODE=local (default) but let the orchestrator
 # drive a two-machine Ray cluster without re-setting them on each call.
-export MODEL_SIZE STEP N_SAMPLES OUT_ROOT GEN_ROOT LOG_ROOT
+export MODEL_SIZE STEP N_SAMPLES OPTS_KS OUT_ROOT GEN_ROOT LOG_ROOT
 export MODE="${MODE:-local}"
 export NNODES="${NNODES:-1}"
 export GPUS_PER_NODE="${GPUS_PER_NODE:-1}"

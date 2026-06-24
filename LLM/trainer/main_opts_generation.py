@@ -11,13 +11,13 @@ Total inference budget = dataset_size * n_samples responses, matching pass@k
 cost. Each run performs n_samples rounds of tree-structured sampling with
 OTRC-based search over the full evaluation set.
 
-Results include sample_indices and global_indices. opts@k should truncate by
-global_indices <= k * dataset_size to match a chronological generation budget.
+Results include sample_indices and global_indices. reward-mode opts@k should
+truncate by global_indices <= k * dataset_size. value-mode opts@k uses saved
+online greedy-path response snapshots such as value_opts_responses_k32.
 """
 
 import os
 import sys
-import uuid
 from collections import defaultdict
 
 # Add LLM directory to Python path for correct imports
@@ -38,7 +38,6 @@ import torch
 import pandas as pd
 from omegaconf import OmegaConf
 
-from verl import DataProto
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
 from verl.single_controller.ray import RayClassWithInitArgs, RayResourcePool, RayWorkerGroup
 from verl.single_controller.ray.base import create_colocated_worker_cls
@@ -57,86 +56,12 @@ from trainer.opts_ttpo.ray_trainer import (
     decode_response_strs,
     merge_batches,
     prepare_next_round_input,
+    refresh_tree_search_states,
     set_opts_ttpo_info,
     select_next_states,
     selected_to_branch_points,
 )
 from verl.trainer.ppo.reward import compute_reward
-
-
-class InferencePromptBuffer:
-    """Thin wrapper around the trainer's fixed-width PromptBuffer.
-
-    Reuses the same RL dataset + collate + PromptBuffer path as training so prompt
-    preprocessing/padding stays consistent. The only inference-specific state kept
-    here is uid -> dataset_idx tracking for result aggregation.
-    """
-
-    def __init__(self, data_path, data_config, tokenizer, batch_size, prompt_length):
-        from torchdata.stateful_dataloader import StatefulDataLoader
-
-        from verl.trainer.main_ppo import create_rl_dataset
-        from verl.utils.dataset.rl_dataset import collate_fn as rl_collate_fn
-
-        dataset_config = OmegaConf.create(OmegaConf.to_container(data_config, resolve=False))
-        dataset_config.val_files = data_path
-        dataset_config.max_prompt_length = prompt_length
-        dataset_config.shuffle = False
-        dataset_config.validation_shuffle = False
-
-        dataset = create_rl_dataset(
-            data_path,
-            dataset_config,
-            tokenizer,
-            processor=None,
-            max_samples=dataset_config.get("val_max_samples", -1),
-        )
-        dataloader = StatefulDataLoader(
-            dataset=dataset,
-            batch_size=batch_size,
-            num_workers=dataset_config.get("dataloader_num_workers", 0),
-            shuffle=False,
-            drop_last=False,
-            collate_fn=rl_collate_fn,
-        )
-        self.prompt_buffer = PromptBuffer(dataloader)
-        self.total_samples = len(dataset)
-
-        # Cursor and cycling
-        self.cursor = 0
-        self.has_cycled = False
-        self._just_cycled = False  # set True on the draw that causes cycling
-
-        # Map uid -> original dataset index (populated on each draw)
-        self.uid_to_idx = {}
-
-    def draw(self, n: int) -> DataProto:
-        """Draw n prompts with fresh uids. Cycles through the dataset."""
-        self._just_cycled = False
-        batch = self.prompt_buffer.draw(n)
-        indices = []
-        for _ in range(n):
-            indices.append(self.cursor)
-            self.cursor += 1
-            if self.cursor >= self.total_samples:
-                self.cursor = 0
-                if not self.has_cycled:
-                    self.has_cycled = True
-                    self._just_cycled = True
-
-        # Assign fresh uids and record mapping
-        uids = [str(uuid.uuid4()) for _ in indices]
-        for uid, idx in zip(uids, indices):
-            self.uid_to_idx[uid] = idx
-
-        raw_prompt_lens = batch.batch["attention_mask"].sum(dim=1).cpu().numpy()
-        batch.non_tensor_batch["raw_prompt_len"] = raw_prompt_lens
-        batch.non_tensor_batch["uid"] = np.array(uids, dtype=object)
-        return batch
-
-    @property
-    def just_cycled(self):
-        return self._just_cycled
 
 
 def _select_first(config, *paths, default=None):
@@ -195,6 +120,12 @@ def main_task(config):
     n_samples = _require_config_value(config, "data.n_samples")
     output_path = _require_config_value(config, "data.output_path")
     reward_mode = _select_first(config, "data.reward_mode", default="value")
+    raw_opts_snapshot_ks = _select_first(config, "data.opts_snapshot_ks", default=[8, 16, 32, 64, 128])
+    if isinstance(raw_opts_snapshot_ks, str):
+        raw_opts_snapshot_ks = raw_opts_snapshot_ks.strip("[]").replace(",", " ").split()
+    elif isinstance(raw_opts_snapshot_ks, int):
+        raw_opts_snapshot_ks = [raw_opts_snapshot_ks]
+    opts_snapshot_ks = sorted({int(k) for k in raw_opts_snapshot_ks if int(k) >= 1})
     trust_remote_code = _select_first(
         config,
         "actor_rollout_ref.model.trust_remote_code",
@@ -285,19 +216,37 @@ def main_task(config):
 
     effective_batch_size = min(requested_batch_size, total_samples)
 
-    # Build prompt buffer
-    prompt_buffer = InferencePromptBuffer(
-        data_path=data_path,
-        data_config=config.data,
-        tokenizer=tokenizer,
-        batch_size=effective_batch_size,
-        prompt_length=prompt_length,
+    from torchdata.stateful_dataloader import StatefulDataLoader
+    from verl.trainer.main_ppo import create_rl_dataset
+    from verl.utils.dataset.rl_dataset import collate_fn as rl_collate_fn
+
+    dataset_config = OmegaConf.create(OmegaConf.to_container(config.data, resolve=False))
+    dataset_config.val_files = data_path
+    dataset_config.max_prompt_length = prompt_length
+    dataset_config.shuffle = False
+    dataset_config.validation_shuffle = False
+
+    rl_dataset = create_rl_dataset(
+        data_path,
+        dataset_config,
+        tokenizer,
+        processor=None,
+        max_samples=dataset_config.get("val_max_samples", -1),
     )
-    if prompt_buffer.total_samples != total_samples:
+    dataloader = StatefulDataLoader(
+        dataset=rl_dataset,
+        batch_size=effective_batch_size,
+        num_workers=dataset_config.get("dataloader_num_workers", 0),
+        shuffle=False,
+        drop_last=False,
+        collate_fn=rl_collate_fn,
+    )
+    prompt_buffer = PromptBuffer(dataloader)
+    if len(rl_dataset) != total_samples:
         raise ValueError(
             "PromptBuffer dataset size does not match the raw parquet size. "
             "This usually means the reused training data pipeline filtered or reordered samples. "
-            f"prompt_buffer.total_samples={prompt_buffer.total_samples}, total_samples={total_samples}"
+            f"prompt_buffer.total_samples={len(rl_dataset)}, total_samples={total_samples}"
         )
 
     # Result collection: dataset_idx -> list of response records.
@@ -312,18 +261,28 @@ def main_task(config):
     print(f"Starting inference-time search: "
           f"n_samples={n_samples}, batch_size={effective_batch_size}, "
           f"requested_batch_size={requested_batch_size}, "
-          f"reward_mode={reward_mode}, max_search_per_tree={max_search_per_tree}")
+          f"reward_mode={reward_mode}, max_search_per_tree={max_search_per_tree}, "
+          f"opts_snapshot_ks={opts_snapshot_ks}")
 
     global_batch = None
     next_states = {}
     search_count = {}
     max_otrc_scores = {}
+    tree_search_state_by_uid = {}
+    uid_to_dataset_idx = {}
+    prompt_cursor = 0
+    response_by_rid = {}
+    global_index_by_rid = {}
+    value_opts_snapshots = {k: [[] for _ in range(total_samples)] for k in opts_snapshot_ks}
 
     for round_idx in range(n_samples):
         print(f"[round {round_idx + 1}/{n_samples}] Start.")
         # === Construct this round's batch ===
         if round_idx == 0:
             batch = prompt_buffer.draw(effective_batch_size)
+            for uid in batch.non_tensor_batch["uid"]:
+                uid_to_dataset_idx[uid] = prompt_cursor
+                prompt_cursor = (prompt_cursor + 1) % total_samples
             batch.meta_info["temperature"] = rollout_config.temperature
         else:
             k = len(next_states)
@@ -338,7 +297,9 @@ def main_task(config):
             remaining = effective_batch_size - k
             if remaining > 0:
                 new_prompts = prompt_buffer.draw(remaining)
-                # new_prompts have fresh uids assigned by the buffer
+                for uid in new_prompts.non_tensor_batch["uid"]:
+                    uid_to_dataset_idx[uid] = prompt_cursor
+                    prompt_cursor = (prompt_cursor + 1) % total_samples
                 parts.append(new_prompts)
 
             if len(parts) == 2:
@@ -436,19 +397,44 @@ def main_task(config):
         current_branch_pos = global_batch.non_tensor_batch["branch_pos"][new_sample_indices]
 
         for local_idx, (resp, uid) in enumerate(zip(response_strs, output_uids)):
-            dataset_idx = prompt_buffer.uid_to_idx.get(uid)
+            dataset_idx = uid_to_dataset_idx.get(uid)
             if dataset_idx is not None:
                 idx_sample_counter[dataset_idx] += 1
                 global_sample_counter += 1
                 pid = current_pids[local_idx]
+                rid_str = str(current_rids[local_idx])
+                response_by_rid[rid_str] = resp
+                global_index_by_rid[rid_str] = global_sample_counter
                 idx_responses[dataset_idx].append({
                     "response": resp,
                     "sample_index": idx_sample_counter[dataset_idx],
                     "global_index": global_sample_counter,
-                    "rid": str(current_rids[local_idx]),
+                    "rid": rid_str,
                     "pid": None if pid is None else str(pid),
                     "branch_pos": int(current_branch_pos[local_idx]),
                 })
+
+        refresh_tree_search_states(
+            batch=global_batch,
+            affected_uids=set(output_uids),
+            tree_search_state_by_uid=tree_search_state_by_uid,
+            gamma=gamma,
+            max_prompt_length=prompt_length,
+            tokenizer=tokenizer,
+            round_idx=round_idx,
+        )
+
+        snapshot_k = round_idx + 1
+        if reward_mode == "value" and snapshot_k in value_opts_snapshots:
+            snapshot_entries = defaultdict(list)
+            for uid, state in tree_search_state_by_uid.items():
+                dataset_idx = uid_to_dataset_idx.get(uid)
+                response = response_by_rid.get(state.terminal_rid)
+                global_index = global_index_by_rid.get(state.terminal_rid)
+                snapshot_entries[dataset_idx].append((global_index, response, state.terminal_rid))
+            for dataset_idx, entries in snapshot_entries.items():
+                entries.sort(key=lambda item: item[0])
+                value_opts_snapshots[snapshot_k][dataset_idx] = [response for _, response, _ in entries]
 
         # === OTRC selection for next round ===
         if round_idx < n_samples - 1:
@@ -457,6 +443,7 @@ def main_task(config):
                 search_count=search_count,
                 max_otrc_scores=max_otrc_scores,
                 max_search_per_tree=max_search_per_tree,
+                tree_search_state_by_uid=tree_search_state_by_uid,
                 gamma=gamma,
                 max_prompt_length=prompt_length,
                 batch_size=effective_batch_size,
@@ -510,6 +497,8 @@ def main_task(config):
     dataset["tree_pids"] = output_tree_pids
     dataset["tree_branch_pos"] = output_tree_branch_pos
     dataset["tree_advantages"] = output_tree_advantages
+    for k in opts_snapshot_ks:
+        dataset[f"value_opts_responses_k{k}"] = value_opts_snapshots[k]
     dataset["opts_reward_mode"] = reward_mode
 
     # Write output

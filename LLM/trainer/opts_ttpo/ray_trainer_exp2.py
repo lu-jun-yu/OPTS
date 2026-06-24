@@ -835,7 +835,7 @@ class PromptBuffer:
         self.buffer = self._deserialize_dataproto(state_dict.get("buffer"))
 
     def draw(self, n: int) -> DataProto:
-        """Draw n samples. Automatically refills from dataloader when exhausted."""
+        """Draw n prompt samples with fresh tree metadata."""
         while self.buffer is None or len(self.buffer) < n:
             try:
                 batch_dict = next(self.iter)
@@ -854,6 +854,8 @@ class PromptBuffer:
             self.buffer = self.buffer[list(range(n, len(self.buffer)))]
         else:
             self.buffer = None
+        drawn.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(drawn))], dtype=object)
+        drawn.non_tensor_batch["raw_prompt_len"] = drawn.batch["attention_mask"].sum(dim=1).cpu().numpy()
         return drawn
 
 
@@ -2077,13 +2079,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                         if round_idx == 0:
                             batch = self.prompt_buffer.draw(batch_size)
                             batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
-                            # Assign fresh uids
-                            batch.non_tensor_batch["uid"] = np.array(
-                                [str(uuid.uuid4()) for _ in range(len(batch))], dtype=object
-                            )
-                            # Initialize raw_prompt_len
-                            raw_prompt_lens = batch.batch["attention_mask"].sum(dim=1).cpu().numpy()
-                            batch.non_tensor_batch["raw_prompt_len"] = raw_prompt_lens
                         else:
                             k = len(next_states)
                             parts = []
@@ -2096,11 +2091,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 parts.append(continued)
                             if k < batch_size:
                                 new_prompts = self.prompt_buffer.draw(batch_size - k)
-                                new_prompts.non_tensor_batch["uid"] = np.array(
-                                    [str(uuid.uuid4()) for _ in range(batch_size - k)], dtype=object
-                                )
-                                raw_prompt_lens = new_prompts.batch["attention_mask"].sum(dim=1).cpu().numpy()
-                                new_prompts.non_tensor_batch["raw_prompt_len"] = raw_prompt_lens
                                 parts.append(new_prompts)
 
                             if len(parts) == 2:

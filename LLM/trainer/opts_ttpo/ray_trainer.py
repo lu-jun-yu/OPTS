@@ -70,6 +70,19 @@ from .core_algos import (
 from utils.logger_batch import *
 
 
+@dataclass
+class TreeSearchState:
+    terminal_rid: str
+    terminal_pos: int
+    raw_candidate_rid: str
+    raw_candidate_pos: int
+    raw_otrc_score: float
+    candidate_rid: str
+    candidate_pos: int
+    candidate_otrc_score: float
+    updated_round: int
+
+
 def need_critic_for_opts(config) -> bool:
     """TTPO-specific critic requirement.
 
@@ -541,35 +554,20 @@ def compute_episodic_returns(
     return episodic_returns
 
 
-def select_next_states(
+def refresh_tree_search_states(
     batch: DataProto,
-    search_count: dict,
-    max_otrc_scores: dict,
-    max_search_per_tree: int,
+    affected_uids,
+    tree_search_state_by_uid: Dict[Any, TreeSearchState],
     gamma: float,
     max_prompt_length: int,
-    batch_size: int,
     tokenizer=None,
-) -> Dict[str, Tuple[int, int]]:
-    """Select next states for expansion using OTRC.
+    round_idx: int = -1,
+) -> Dict[Any, TreeSearchState]:
+    """Refresh cached greedy terminals and OTRC candidates for selected trees."""
+    affected_uid_set = set(affected_uids)
+    if not affected_uid_set:
+        return tree_search_state_by_uid
 
-    Returns the OTRC-selected nodes (not the branch points). The caller must
-    convert to parent nodes via selected_to_branch_points() before using as
-    branch points for prepare_next_round_input / set_opts_ttpo_info.
-
-    Args:
-        batch: DataProto containing all required tensors and non-tensor data.
-        search_count: {uid: count}, cumulative within training iteration.
-        max_otrc_scores: {uid: max otrc_score at selected node}.
-        max_search_per_tree: Max searches per tree per iteration.
-        max_prompt_length: Maximum allowed prompt length.
-        batch_size: Maximum number of candidates to select.
-
-    Returns:
-        next_states: Dict mapping uid to (traj_idx_in_global, token_pos) of the
-            OTRC-selected node. Must be converted to parent via
-            selected_to_branch_points() before use as branch points.
-    """
     advantages = batch.batch["advantages"]
     response_mask = batch.batch["response_mask"]
     responses = batch.batch["responses"]
@@ -622,97 +620,148 @@ def select_next_states(
     root_mask = np.array([parent_rid is None for parent_rid in pid], dtype=bool)
     uid_to_root_indices: Dict[Any, list] = defaultdict(list)
     for i in range(global_batch_size):
-        if root_mask[i]:
+        if root_mask[i] and uid[i] in affected_uid_set:
             uid_to_root_indices[uid[i]].append(i)
+
     active_uids = []
     best_roots = []
-
     for u, root_indices in uid_to_root_indices.items():
-        if search_count.get(u, 0) >= max_search_per_tree:
-            continue
         root_indices_arr = np.asarray(root_indices, dtype=np.int64)
         best_root = int(root_indices_arr[int(np.argmax(adv0_np[root_indices_arr]))])
         active_uids.append(u)
         best_roots.append(best_root)
 
+    num_trees = len(active_uids)
+    current_idx = torch.as_tensor(best_roots, device=device, dtype=torch.long)
+    active_mask = torch.ones(num_trees, device=device, dtype=torch.bool)
+
+    path_len = response_len + 1
+    path_idx = torch.zeros((num_trees, path_len), device=device, dtype=torch.long)
+    path_t = torch.zeros((num_trees, path_len), device=device, dtype=torch.long)
+    path_mask = torch.zeros((num_trees, path_len), device=device, dtype=torch.bool)
+
+    for u in range(path_len):
+        idx = current_idx
+        local_t = u - history_len[idx]
+        next_local_t = local_t + 1
+        valid_u = active_mask & (local_t <= response_lengths[idx])
+
+        path_idx[:, u] = idx
+        path_t[:, u] = local_t
+        path_mask[:, u] = valid_u
+
+        cont_adv = torch.where(next_local_t < response_len, advantages[idx, next_local_t.clamp(max=response_len - 1)], 0.0)
+        bci = torch.where(local_t < response_len, best_child_idx[idx, local_t.clamp(max=response_len - 1)], -1)
+        child_adv = torch.where(bci >= 0, adv0[bci], neg_inf)
+        take_child = valid_u & (child_adv > cont_adv)
+
+        current_idx = torch.where(take_child, bci, current_idx)
+        active_mask = valid_u
+
+    otrc_score = torch.zeros((num_trees, path_len), device=device, dtype=dtype)
+    last_otrc = torch.zeros(num_trees, device=device, dtype=dtype)
+    for u in reversed(range(path_len)):
+        idx = path_idx[:, u]
+        local_t = path_t[:, u]
+        path_adv = torch.where(local_t < response_len, advantages[idx, local_t.clamp(max=response_len - 1)], 0.0)
+        last_otrc_ = -path_adv + gamma * last_otrc
+        mask_u = path_mask[:, u].to(dtype)
+        last_otrc = last_otrc_ * mask_u + (1 - mask_u) * last_otrc
+        otrc_score[:, u] = last_otrc
+
+    prompt_valid = prompt_lengths[path_idx] + path_t < max_prompt_length
+    think_valid = path_t <= think_end_pos[path_idx]
+
+    otrc_for_argmax = torch.where(path_mask, otrc_score, neg_inf)
+    row_idx = torch.arange(num_trees, device=device)
+    max_pos = otrc_for_argmax.argmax(dim=1)
+    max_otrc_score = otrc_score[row_idx, max_pos]
+
+    last_valid = (prompt_valid & think_valid).sum(dim=1) - 1
+    clamped_u = torch.minimum(max_pos, last_valid)
+
+    terminal_u = path_mask.to(torch.long).sum(dim=1) - 1
+
+    raw_traj = path_idx[row_idx, max_pos]
+    raw_pos = path_t[row_idx, max_pos]
+    clamped_traj = path_idx[row_idx, clamped_u]
+    clamped_pos = path_t[row_idx, clamped_u]
+    clamped_otrc_score = otrc_score[row_idx, clamped_u]
+    terminal_traj = path_idx[row_idx, terminal_u]
+    terminal_pos = path_t[row_idx, terminal_u]
+
+    for i, u in enumerate(active_uids):
+        tree_search_state_by_uid[u] = TreeSearchState(
+            terminal_rid=str(rid[int(terminal_traj[i].item())]),
+            terminal_pos=int(terminal_pos[i].item()),
+            raw_candidate_rid=str(rid[int(raw_traj[i].item())]),
+            raw_candidate_pos=int(raw_pos[i].item()),
+            raw_otrc_score=float(max_otrc_score[i].item()),
+            candidate_rid=str(rid[int(clamped_traj[i].item())]),
+            candidate_pos=int(clamped_pos[i].item()),
+            candidate_otrc_score=float(clamped_otrc_score[i].item()),
+            updated_round=round_idx,
+        )
+
+    return tree_search_state_by_uid
+
+
+def select_next_states(
+    batch: DataProto,
+    search_count: dict,
+    max_otrc_scores: dict,
+    max_search_per_tree: int,
+    tree_search_state_by_uid: Dict[Any, TreeSearchState],
+    gamma: float,
+    max_prompt_length: int,
+    batch_size: int,
+    tokenizer=None,
+) -> Dict[str, Tuple[int, int]]:
+    """Select next states for expansion using OTRC.
+
+    Returns the OTRC-selected nodes (not the branch points). The caller must
+    convert to parent nodes via selected_to_branch_points() before using as
+    branch points for prepare_next_round_input / set_opts_ttpo_info.
+
+    Args:
+        batch: DataProto containing all required tensors and non-tensor data.
+        search_count: {uid: count}, cumulative within training iteration.
+        max_otrc_scores: {uid: max otrc_score at selected node}.
+        max_search_per_tree: Max searches per tree per iteration.
+        max_prompt_length: Maximum allowed prompt length.
+        tree_search_state_by_uid: Cached greedy terminal / OTRC state keyed by uid.
+        batch_size: Maximum number of candidates to select.
+
+    Returns:
+        next_states: Dict mapping uid to (traj_idx_in_global, token_pos) of the
+            OTRC-selected node. Must be converted to parent via
+            selected_to_branch_points() before use as branch points.
+    """
+    uid = batch.non_tensor_batch["uid"]
+    rid = batch.non_tensor_batch["rid"]
+    pid = batch.non_tensor_batch["pid"]
+    rid2idx = {r: i for i, r in enumerate(rid)}
+
+    root_mask = np.array([parent_rid is None for parent_rid in pid], dtype=bool)
+    root_uids = set()
+    for i in range(len(uid)):
+        if root_mask[i]:
+            root_uids.add(uid[i])
+
     candidates = []
-    if active_uids:
-        num_trees = len(active_uids)
-        current_idx = torch.as_tensor(best_roots, device=device, dtype=torch.long)
-        active_mask = torch.ones(num_trees, device=device, dtype=torch.bool)
+    active_uids = [u for u in root_uids if search_count.get(u, 0) < max_search_per_tree]
+    for u in active_uids:
+        state = tree_search_state_by_uid.get(u)
+        max_otrc_scores.setdefault(u, state.raw_otrc_score)
 
-        # Extend path by one position so the last real token (response_len-1) and the
-        # post-termination position (response_len) are reachable.
-        path_len = response_len + 1
-
-        path_idx = torch.zeros((num_trees, path_len), device=device, dtype=torch.long)
-        path_t = torch.zeros((num_trees, path_len), device=device, dtype=torch.long)
-        path_mask = torch.zeros((num_trees, path_len), device=device, dtype=torch.bool)
-
-        for u in range(path_len):
-            idx = current_idx
-            local_t = u - history_len[idx]
-            next_local_t = local_t + 1
-
-            # Allow selecting up to and including local_t == response_lengths[idx]
-            # (last real token plus one post-termination position, advantage 0 there).
-            valid_u = active_mask & (local_t <= response_lengths[idx])
-
-            path_idx[:, u] = idx
-            path_t[:, u] = local_t
-            path_mask[:, u] = valid_u
-
-            cont_adv = torch.where(next_local_t < response_len, advantages[idx, next_local_t.clamp(max=response_len - 1)], 0.0)
-            bci = torch.where(local_t < response_len, best_child_idx[idx, local_t.clamp(max=response_len - 1)], -1)
-            child_adv = torch.where(bci >= 0, adv0[bci], neg_inf)
-            take_child = valid_u & (child_adv > cont_adv)
-
-            current_idx = torch.where(take_child, bci, current_idx)
-            active_mask = valid_u
-
-        otrc_score = torch.zeros((num_trees, path_len), device=device, dtype=dtype)
-        last_otrc = torch.zeros(num_trees, device=device, dtype=dtype)
-        for u in reversed(range(path_len)):
-            idx = path_idx[:, u]
-            local_t = path_t[:, u]
-            path_adv = torch.where(local_t < response_len, advantages[idx, local_t.clamp(max=response_len - 1)], 0.0)
-            last_otrc_ = -path_adv + gamma * last_otrc
-            mask_u = path_mask[:, u].to(dtype)
-            last_otrc = last_otrc_ * mask_u + (1 - mask_u) * last_otrc
-            otrc_score[:, u] = last_otrc
-
-        # Constraints kept for the post-selection clamp (NOT applied before the argmax).
-        prompt_valid = prompt_lengths[path_idx] + path_t < max_prompt_length
-        think_valid = path_t <= think_end_pos[path_idx]
-
-        # (a) Select first: argmax gated ONLY by the relaxed path_mask. Some trees' argmax may
-        #     land past </think>/prompt-limit or on the +1 post-termination position.
-        otrc_for_argmax = torch.where(path_mask, otrc_score, neg_inf)
-        row_idx = torch.arange(num_trees, device=device)
-        max_pos = otrc_for_argmax.argmax(dim=1)
-        max_otrc_score = otrc_score[row_idx, max_pos]
-
-        # (b) Register each tree's first-qualified otrc_score as its baseline.
-        all_scores = max_otrc_score.tolist()
-        for i in range(num_trees):
-            max_otrc_scores.setdefault(active_uids[i], all_scores[i])
-
-        # (c)(d) Threshold filter on argmax otrc_score.
+    if max_otrc_scores:
         mean_threshold = np.mean(list(max_otrc_scores.values()))
-        keep = (max_otrc_score > mean_threshold).nonzero(as_tuple=True)[0]
-
-        # (e) Clamp the selected node back to the largest valid path index <= argmax.
-        last_valid = (prompt_valid & think_valid).sum(dim=1) - 1
-        clamped_u = torch.minimum(max_pos, last_valid)
-        clamped_traj = path_idx[row_idx, clamped_u]
-        clamped_pos = path_t[row_idx, clamped_u]
-        clamped_otrc_score = otrc_score[row_idx, clamped_u]
-
-        scores = clamped_otrc_score[keep].tolist()
-        trajs = clamped_traj[keep].tolist()
-        poses = clamped_pos[keep].tolist()
-        for k, i in enumerate(keep.tolist()):
-            candidates.append((scores[k], active_uids[i], trajs[k], poses[k]))
+        for u in active_uids:
+            state = tree_search_state_by_uid.get(u)
+            if state.raw_otrc_score <= mean_threshold:
+                continue
+            traj_idx = rid2idx.get(state.candidate_rid)
+            candidates.append((state.candidate_otrc_score, u, traj_idx, state.candidate_pos))
 
     # --- Global sort and select top batch_size ---
     candidates.sort(key=lambda x: x[0], reverse=True)
@@ -833,7 +882,7 @@ class PromptBuffer:
         self.buffer = self._deserialize_dataproto(state_dict.get("buffer"))
 
     def draw(self, n: int) -> DataProto:
-        """Draw n samples. Automatically refills from dataloader when exhausted."""
+        """Draw n prompt samples with fresh tree metadata."""
         while self.buffer is None or len(self.buffer) < n:
             try:
                 batch_dict = next(self.iter)
@@ -852,6 +901,8 @@ class PromptBuffer:
             self.buffer = self.buffer[list(range(n, len(self.buffer)))]
         else:
             self.buffer = None
+        drawn.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(drawn))], dtype=object)
+        drawn.non_tensor_batch["raw_prompt_len"] = drawn.batch["attention_mask"].sum(dim=1).cpu().numpy()
         return drawn
 
 
@@ -2060,6 +2111,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                 next_states = {}
                 search_count = {}  # {uid: count} per training iteration
                 max_otrc_scores = {}  # {uid: first qualified otrc_score baseline} per training iteration
+                tree_search_state_by_uid = {}
                 sorted_states = None
                 reward_extra_infos_dict = {}
 
@@ -2075,13 +2127,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                         if round_idx == 0:
                             batch = self.prompt_buffer.draw(batch_size)
                             batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
-                            # Assign fresh uids
-                            batch.non_tensor_batch["uid"] = np.array(
-                                [str(uuid.uuid4()) for _ in range(len(batch))], dtype=object
-                            )
-                            # Initialize raw_prompt_len
-                            raw_prompt_lens = batch.batch["attention_mask"].sum(dim=1).cpu().numpy()
-                            batch.non_tensor_batch["raw_prompt_len"] = raw_prompt_lens
                         else:
                             k = len(next_states)
                             parts = []
@@ -2094,11 +2139,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 parts.append(continued)
                             if k < batch_size:
                                 new_prompts = self.prompt_buffer.draw(batch_size - k)
-                                new_prompts.non_tensor_batch["uid"] = np.array(
-                                    [str(uuid.uuid4()) for _ in range(batch_size - k)], dtype=object
-                                )
-                                raw_prompt_lens = new_prompts.batch["attention_mask"].sum(dim=1).cpu().numpy()
-                                new_prompts.non_tensor_batch["raw_prompt_len"] = raw_prompt_lens
                                 parts.append(new_prompts)
 
                             if len(parts) == 2:
@@ -2301,6 +2341,16 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                     new_sample_indices=new_sample_indices,
                                 )
                             log_batch_state(global_batch, stage="after_advantage", step=self.global_steps, round_idx=round_idx)
+                            with timed_block("refresh_tree_search_states", step=self.global_steps, round_idx=round_idx):
+                                refresh_tree_search_states(
+                                    batch=global_batch,
+                                    affected_uids=set(batch.non_tensor_batch["uid"]),
+                                    tree_search_state_by_uid=tree_search_state_by_uid,
+                                    gamma=self.config.algorithm.gamma,
+                                    max_prompt_length=self.config.data.max_prompt_length,
+                                    tokenizer=self.tokenizer,
+                                    round_idx=round_idx,
+                                )
 
                         # OTRC selection (not last round)
                         if round_idx < n_rounds - 1:
@@ -2310,6 +2360,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                     search_count=search_count,
                                     max_otrc_scores=max_otrc_scores,
                                     max_search_per_tree=max_search_per_tree,
+                                    tree_search_state_by_uid=tree_search_state_by_uid,
                                     gamma=self.config.algorithm.gamma,
                                     max_prompt_length=self.config.data.max_prompt_length,
                                     batch_size=batch_size,
