@@ -135,6 +135,7 @@ def collect_opts_steps(env, agent, num_steps, device, max_search, tau,
     root_branch_counts = [{}]
     search_count = [{}]
     max_otrc_scores = [{}]
+    tree_search_state = [{}]
     skip_init_search = [False]
 
     obs_np, _ = env.reset()
@@ -183,6 +184,7 @@ def collect_opts_steps(env, agent, num_steps, device, max_search, tau,
             )
 
             if step < num_steps - 1:
+                affected_tree_ids = [int(tree_indices[step, env_idx].item())]
                 selected = select_next_states(
                     terminated_envs=[env_idx],
                     current_step=step,
@@ -193,6 +195,8 @@ def collect_opts_steps(env, agent, num_steps, device, max_search, tau,
                     max_search=max_search,
                     max_otrc_scores=max_otrc_scores,
                     skip_init_search=skip_init_search,
+                    tree_search_state=tree_search_state,
+                    affected_tree_ids=affected_tree_ids,
                     gamma=gamma,
                     tau=tau,
                 )
