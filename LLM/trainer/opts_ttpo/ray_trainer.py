@@ -751,16 +751,16 @@ def select_next_states(
     candidates = []
     active_uids = [u for u in root_uids if search_count.get(u, 0) < max_search_per_tree]
     for u in active_uids:
-        state = tree_search_state_by_uid.get(u)
+        state = tree_search_state_by_uid[u]
         max_otrc_scores.setdefault(u, state.raw_otrc_score)
 
     if max_otrc_scores:
         mean_threshold = np.mean(list(max_otrc_scores.values()))
         for u in active_uids:
-            state = tree_search_state_by_uid.get(u)
+            state = tree_search_state_by_uid[u]
             if state.raw_otrc_score <= mean_threshold:
                 continue
-            traj_idx = rid2idx.get(state.candidate_rid)
+            traj_idx = rid2idx[state.candidate_rid]
             candidates.append((state.candidate_otrc_score, u, traj_idx, state.candidate_pos))
 
     # --- Global sort and select top batch_size ---
