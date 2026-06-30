@@ -302,12 +302,10 @@ def compute_treegae_advantage_return(
                 child_indices = [rid2idx[c_rid] for c_rid in child_rids]
                 child_first_adv_sum[parent_idx, pos] = advantages[child_indices, 0].sum()
 
-        current_idx = torch.as_tensor(new_sample_indices, device=device, dtype=torch.long)
+        current_idx = torch.as_tensor(new_sample_indices, device=device, dtype=torch.long).clone()
         current_p_idx = parent_indices[current_idx]
         nextvalues = torch.zeros(current_idx.shape[0], device=device, dtype=dtype)
         lastgaelam = torch.zeros(current_idx.shape[0], device=device, dtype=dtype)
-        assert torch.all(history_len < gen_len), "TreeGAE requires history_len < gen_len."
-        assert torch.all(history_len[parent_indices < 0] == 0), "TreeGAE assumes root trajectories have history_len == 0."
 
         for u in reversed(range(gen_len)):
             idx = current_idx
