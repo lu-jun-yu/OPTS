@@ -49,7 +49,7 @@ from verl.workers.fsdp_workers import ActorRolloutRefWorker, AsyncActorRolloutRe
 from trainer.opts_ttpo.core_algos import (
     compute_treegae_advantage_return,
 )
-from trainer.opts_ttpo.ray_trainer import (
+from trainer.opts_ttpo.ray_trainer_exp1 import (
     PromptBuffer,
     compute_episodic_returns,
     compute_response_mask,
