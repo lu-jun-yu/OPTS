@@ -392,9 +392,28 @@ def main_task(config):
         # === Collect decoded responses with sample_index + global_index ===
         response_strs = decode_response_strs(output, tokenizer, prompt_length, response_length)
         output_uids = output.non_tensor_batch["uid"]
-        current_rids = global_batch.non_tensor_batch["rid"][new_sample_indices]
-        current_pids = global_batch.non_tensor_batch["pid"][new_sample_indices]
-        current_branch_pos = global_batch.non_tensor_batch["branch_pos"][new_sample_indices]
+        current_rids = output.non_tensor_batch["rid"]
+        current_pids = output.non_tensor_batch["pid"]
+        current_branch_pos = output.non_tensor_batch["branch_pos"]
+        indexed_rids = global_batch.non_tensor_batch["rid"][new_sample_indices]
+        if not (len(response_strs) == len(output_uids) == len(current_rids)):
+            raise RuntimeError(
+                f"Round {round_idx}: inconsistent output lengths: "
+                f"responses={len(response_strs)}, uids={len(output_uids)}, rids={len(current_rids)}"
+            )
+        indexed_rid_strs = [str(rid) for rid in indexed_rids]
+        current_rid_strs = [str(rid) for rid in current_rids]
+        if indexed_rid_strs != current_rid_strs:
+            mismatches = [
+                (i, indexed_rid_strs[i], current_rid_strs[i])
+                for i in range(min(len(indexed_rid_strs), len(current_rid_strs)))
+                if indexed_rid_strs[i] != current_rid_strs[i]
+            ]
+            raise RuntimeError(
+                f"Round {round_idx}: global_batch[new_sample_indices] rids do not match output rids. "
+                f"indexed_len={len(indexed_rid_strs)}, output_len={len(current_rid_strs)}, "
+                f"first_mismatches={mismatches[:5]}"
+            )
 
         for local_idx, (resp, uid) in enumerate(zip(response_strs, output_uids)):
             dataset_idx = uid_to_dataset_idx[uid]
