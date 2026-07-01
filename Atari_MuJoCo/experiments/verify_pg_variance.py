@@ -307,14 +307,14 @@ if __name__ == "__main__":
 
     pos_obs, pos_act, pos_adv = obs[pos_idx], actions[pos_idx], advantages[pos_idx]
     neg_obs, neg_act, neg_adv = obs[neg_idx], actions[neg_idx], advantages[neg_idx]
+    max_batch_size = max(BATCH_SIZES)
+    if max_batch_size > len(pos_idx) or max_batch_size > len(neg_idx):
+        raise ValueError(
+            f"max batch_size={max_batch_size} exceeds available selected steps "
+            f"(pos={len(pos_idx)}, neg={len(neg_idx)})"
+        )
 
     for bs in BATCH_SIZES:
-        if bs > len(pos_idx) or bs > len(neg_idx):
-            print(f"  batch_size={bs} exceeds available steps (pos={len(pos_idx)}, neg={len(neg_idx)}), skipping")
-            pos_variances.append(None)
-            neg_variances.append(None)
-            continue
-
         print(f"  batch_size={bs}: bootstrapping {args.num_bootstrap} times...")
         pos_mean, pos_std = estimate_variance_bootstrap(
             agent, pos_obs, pos_act, pos_adv,

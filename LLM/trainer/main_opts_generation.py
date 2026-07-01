@@ -487,7 +487,7 @@ def main_task(config):
             output_tree_rids[dataset_idx].append(record["rid"])
             output_tree_pids[dataset_idx].append(record["pid"])
             output_tree_branch_pos[dataset_idx].append(record["branch_pos"])
-            output_tree_advantages[dataset_idx].append(final_advantages_by_rid.get(record["rid"], []))
+            output_tree_advantages[dataset_idx].append(final_advantages_by_rid[record["rid"]])
 
     dataset["responses"] = output_responses
     dataset["sample_indices"] = output_sample_indices

@@ -358,10 +358,10 @@ def estimate_scaling_variance(agent, obs, actions, advantages, batch_sizes,
     N = len(obs)
     weight_mean = (1.0 / weights).mean().item() if weights is not None else None
     results = {}
+    max_batch_size = max(batch_sizes)
+    if max_batch_size > N:
+        raise ValueError(f"max batch_size={max_batch_size} exceeds available steps ({N})")
     for B in batch_sizes:
-        if B > N:
-            print(f"    batch_size={B} exceeds available steps ({N}), skipping")
-            continue
         sq_diffs = []
         for _ in range(num_bootstrap):
             idx = np.random.choice(N, size=B, replace=True)

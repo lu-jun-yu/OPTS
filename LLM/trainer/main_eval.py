@@ -89,11 +89,8 @@ def _score_math_verify(model_output: str, ground_truth: str) -> float:
         pred_extraction_target=(ExprExtractionConfig(), LatexExtractionConfig()),
     )
     ground_truth_boxed = "\\boxed{" + ground_truth + "}"
-    try:
-        score, _ = verify_func([ground_truth_boxed], [model_output])
-        return float(score)
-    except Exception:
-        return 0.0
+    score, _ = verify_func([ground_truth_boxed], [model_output])
+    return float(score)
 
 
 def strip_thinking(text: str) -> str:
@@ -126,10 +123,7 @@ def is_answer_correct(response: str, ground_truth: str) -> bool:
     answer = project_extract_answer(response)
     if answer is None:
         return False
-    try:
-        return bool(project_validate_answer(answer, ground_truth))
-    except Exception:
-        return False
+    return bool(project_validate_answer(answer, ground_truth))
 
 
 def _first_k(seq, k: int):
@@ -154,10 +148,7 @@ def _is_valid_answer(answer: str | None) -> bool:
 
 
 def _answers_equivalent(lhs: str, rhs: str) -> bool:
-    try:
-        return bool(project_validate_answer(lhs, rhs))
-    except Exception:
-        return False
+    return bool(project_validate_answer(lhs, rhs))
 
 
 def _majority_equivalence_answer(answers: list[str | None]) -> str | None:
@@ -188,10 +179,7 @@ def cons_at_k(responses: list[str], ground_truth: str, k: int) -> float:
     majority_ans = _majority_equivalence_answer(answers)
     if majority_ans is None:
         return 0.0
-    try:
-        return 1.0 if project_validate_answer(majority_ans, ground_truth) else 0.0
-    except Exception:
-        return 0.0
+    return 1.0 if project_validate_answer(majority_ans, ground_truth) else 0.0
 
 
 def opts_at_k_row(correct_flags: list[bool], global_indices, k: int, dataset_size: int) -> float:
@@ -210,11 +198,8 @@ def opts_at_k_row(correct_flags: list[bool], global_indices, k: int, dataset_siz
 def _normalize_optional_str(value) -> str | None:
     if value is None:
         return None
-    try:
-        if pd.isna(value):
-            return None
-    except (TypeError, ValueError):
-        pass
+    if pd.isna(value):
+        return None
     value = str(value)
     return value if value else None
 

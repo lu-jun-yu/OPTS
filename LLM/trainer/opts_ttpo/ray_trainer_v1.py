@@ -601,9 +601,7 @@ def select_next_states_v1(
     best_child_adv0 = torch.full((global_batch_size, response_len), float("-inf"), device=device, dtype=dtype)
     for parent_idx, children_by_pos in enumerate(cid):
         for pos, child_rids in children_by_pos.items():
-            child_indices = [rid2idx[c_rid] for c_rid in child_rids if c_rid in rid2idx]
-            if not child_indices:
-                continue
+            child_indices = [rid2idx[c_rid] for c_rid in child_rids]
             child_adv0 = adv0_np[child_indices]
             best_child = int(child_indices[int(np.argmax(child_adv0))])
             best_child_idx[parent_idx, pos] = best_child
@@ -827,7 +825,7 @@ class PromptBuffer:
 
         batch = DataProto.from_single_dict(state["batch"])
         batch.non_tensor_batch = state["non_tensor_batch"]
-        batch.meta_info = state.get("meta_info", {})
+        batch.meta_info = state["meta_info"]
         return batch
 
     def state_dict(self) -> dict[str, Any]:
@@ -838,7 +836,7 @@ class PromptBuffer:
         if state_dict is None:
             self.buffer = None
             return
-        self.buffer = self._deserialize_dataproto(state_dict.get("buffer"))
+        self.buffer = self._deserialize_dataproto(state_dict["buffer"])
 
     def draw(self, n: int) -> DataProto:
         """Draw n samples. Automatically refills from dataloader when exhausted."""
@@ -921,8 +919,6 @@ def compute_pass_return(batch: DataProto) -> float:
         uid_groups[uid[i]].append(i)
 
     prompt_max_returns = [float(np.max(episodic_returns[indices])) for indices in uid_groups.values()]
-    if not prompt_max_returns:
-        return 0.0
     return float(np.mean(prompt_max_returns))
 
 
@@ -1188,7 +1184,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
             inputs = self.tokenizer.batch_decode(batch.batch["prompts"], skip_special_tokens=True)
             outputs = self.tokenizer.batch_decode(batch.batch["responses"], skip_special_tokens=True)
             scores = batch.batch["token_level_scores"].sum(-1).cpu().tolist()
-            sample_gts = [item.non_tensor_batch.get("reward_model", {}).get("ground_truth", None) for item in batch]
+            sample_gts = [item.non_tensor_batch["reward_model"]["ground_truth"] for item in batch]
 
             reward_extra_infos_to_dump = reward_extra_infos_dict.copy()
             if "request_id" in batch.non_tensor_batch:
@@ -1288,7 +1284,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
             reward_tensor = result["reward_tensor"]
             if sum_reward:
                 reward_tensor = reward_tensor.sum(dim=-1)
-            reward_extra_info = result.get("reward_extra_info", {})
+            reward_extra_info = result["reward_extra_info"]
             return {"reward_tensor": reward_tensor, "reward_extra_info": reward_extra_info}
         else:
             reward_tensor, reward_extra_infos_dict = compute_reward(batch, reward_fn)
@@ -1377,9 +1373,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
             sample_inputs.extend(input_texts)
             sample_uids.extend(test_batch.non_tensor_batch["uid"])
 
-            ground_truths = [
-                item.non_tensor_batch.get("reward_model", {}).get("ground_truth", None) for item in test_batch
-            ]
+            ground_truths = [item.non_tensor_batch["reward_model"]["ground_truth"] for item in test_batch]
             sample_gts.extend(ground_truths)
 
             test_gen_batch = self._get_gen_batch(test_batch)
@@ -1425,7 +1419,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
             sample_scores.extend(scores)
 
             reward_extra_infos_dict["reward"].extend(scores)
-            reward_extra_info = result.get("reward_extra_info", {})
+            reward_extra_info = result["reward_extra_info"]
             for key, values in reward_extra_info.items():
                 if key not in reward_extra_infos_dict:
                     reward_extra_infos_dict[key] = []
