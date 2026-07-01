@@ -87,7 +87,7 @@ def log_batch_state(batch: DataProto, stage: str, step: int = -1, round_idx: int
     prefix = f"[{step_info}][{round_info}][{stage}]"
 
     # Basic batch info
-    batch_size = batch.batch.batch_size[0] if hasattr(batch.batch, 'batch_size') else len(batch.batch.get('input_ids', []))
+    batch_size = batch.batch.batch_size[0] if hasattr(batch.batch, 'batch_size') else len(batch.batch['input_ids'])
 
     logger_batch.info(f"{prefix} === Batch State ===")
     logger_batch.info(f"{prefix} batch_size: {batch_size}")
@@ -98,10 +98,12 @@ def log_batch_state(batch: DataProto, stage: str, step: int = -1, round_idx: int
         seq_lens = mask.sum(dim=-1)
         logger_batch.info(f"{prefix} seq_lens: min={seq_lens.min().item()}, max={seq_lens.max().item()}, mean={seq_lens.float().mean().item():.1f}")
 
-    response_mask = batch.batch.get('response_mask')
     if 'response_mask' in batch.batch:
+        response_mask = batch.batch['response_mask']
         resp_lens = response_mask.sum(dim=-1)
         logger_batch.info(f"{prefix} response_lens: min={resp_lens.min().item()}, max={resp_lens.max().item()}, mean={resp_lens.float().mean().item():.1f}")
+    else:
+        response_mask = None
 
     if 'token_level_rewards' in batch.batch:
         rewards = batch.batch['token_level_rewards']
@@ -148,9 +150,9 @@ def log_sample_generations(
         sorted_states: Sorted list of (parent_idx, branch_pos) from select_next_states,
                        sorted by descending branch_pos. If None or empty, function returns early.
     """
-    global_rid = global_batch.non_tensor_batch.get("rid")
-    batch_pid = batch.non_tensor_batch.get("pid")
-    batch_rid = batch.non_tensor_batch.get("rid")
+    global_rid = global_batch.non_tensor_batch["rid"]
+    batch_pid = batch.non_tensor_batch["pid"]
+    batch_rid = batch.non_tensor_batch["rid"]
 
     pad_token_id = tokenizer.pad_token_id
 
