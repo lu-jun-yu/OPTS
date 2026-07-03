@@ -5,7 +5,7 @@ export VLLM_LOGGING_LEVEL=WARN
 MODEL_SIZE=1.7B
 Experiment_Name=dapo_0521_${MODEL_SIZE}
 
-python3 -m verl.trainer.main_ppo \
+CUDA_VISIBLE_DEVICES=0 python3 -m verl.trainer.main_ppo \
  algorithm.adv_estimator=grpo \
  data.train_files=data/train.parquet \
  data.val_files=data/test.parquet \

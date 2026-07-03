@@ -3,10 +3,10 @@ export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=1.7B
-Experiment_Name=reinforce_pp_baseline_0521_${MODEL_SIZE}
+Experiment_Name=grpo_0521_${MODEL_SIZE}
 
 CUDA_VISIBLE_DEVICES=0 python3 -m verl.trainer.main_ppo \
- algorithm.adv_estimator=reinforce_plus_plus_baseline \
+ algorithm.adv_estimator=grpo \
  data.train_files=data/train.parquet \
  data.val_files=data/test.parquet \
  data.train_batch_size=512 \

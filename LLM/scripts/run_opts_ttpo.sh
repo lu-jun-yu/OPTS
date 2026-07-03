@@ -10,6 +10,7 @@ export TRANSFORMERS_VERBOSITY="${TRANSFORMERS_VERBOSITY:-error}"
 export VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-WARN}"
 export WANDB_INIT_TIMEOUT="${WANDB_INIT_TIMEOUT:-300}"
 export WANDB_SERVICE_WAIT="${WANDB_SERVICE_WAIT:-60}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
 # Normalize proxy env vars for libraries that only respect specific cases/protocols.
 if [[ -z "${https_proxy:-}" ]]; then

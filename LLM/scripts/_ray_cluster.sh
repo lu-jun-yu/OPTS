@@ -9,6 +9,8 @@
 #   MODE, NNODES, GPUS_PER_NODE, RAY_HEAD_ADDR, RAY_HEAD_PORT,
 #   RAY_DASHBOARD_PORT, RAY_* port overrides, RAY_START_EXTRA_ARGS, RAY_ADDRESS.
 
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+
 # Normalize proxy env vars for libraries that only respect specific cases/protocols.
 if [[ -z "${https_proxy:-}" ]]; then
     if [[ -n "${HTTPS_PROXY:-}" ]]; then

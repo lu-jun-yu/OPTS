@@ -52,6 +52,7 @@ mkdir -p "${EVAL_ROOT}"
 # knobs below are no-ops when MODE=local (default) but let the orchestrator
 # drive a two-machine Ray cluster without re-setting them on each call.
 export MODEL_SIZE STEP N_SAMPLES OPTS_KS OUT_ROOT GEN_ROOT LOG_ROOT
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export MODE="${MODE:-local}"
 export NNODES="${NNODES:-1}"
 export GPUS_PER_NODE="${GPUS_PER_NODE:-1}"
