@@ -32,6 +32,7 @@ CUDA_VISIBLE_DEVICES=0 python3 -m verl.trainer.main_ppo \
  critic.optim.lr=1e-5 \
  critic.model.path=models/Qwen3-${MODEL_SIZE} \
  critic.ppo_micro_batch_size_per_gpu=32 \
+ critic.value_head_activation=sigmoid \
  custom_reward_function.path=utils/reward_fn.py \
  custom_reward_function.name=compute_score \
  algorithm.use_kl_in_reward=False \
