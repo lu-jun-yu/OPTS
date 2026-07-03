@@ -6,8 +6,6 @@ Assumptions:
 
 - The machine is Linux x86_64.
 - CUDA and cuDNN are already installed and available on the machine.
-- `Miniconda3-latest-Linux-x86_64.sh` is available in the current directory.
-- `miniconda_opts_verl.tar.gz` is available in the current directory.
 - The OPTS repository is available at `~/OPTS`.
 
 ## 1. Install Miniconda
@@ -57,7 +55,5 @@ hf download Qwen/Qwen3-8B --local-dir models/Qwen3-8B
 
 ```bash
 cd ~/OPTS/LLM
-bash scripts/run_reinforce_pp_baseline.sh
-bash scripts/run_dapo.sh
-bash scripts/run_gpg.sh
+bash scripts/run_ppo_8B.sh
 ```
