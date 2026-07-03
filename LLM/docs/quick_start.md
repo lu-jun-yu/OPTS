@@ -44,14 +44,48 @@ pip install --no-deps -e .
 
 The Conda environment setup is complete.
 
-## 5. Download the Base Model
+## 5. Install CUDA:
+
+```bash
+wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-ubuntu2204.pin
+mv cuda-ubuntu2204.pin /etc/apt/preferences.d/cuda-repository-pin-600
+
+wget https://developer.download.nvidia.com/compute/cuda/12.8.0/local_installers/cuda-repo-ubuntu2204-12-8-local_12.8.0-570.86.10-1_amd64.deb
+dpkg -i cuda-repo-ubuntu2204-12-8-local_12.8.0-570.86.10-1_amd64.deb
+cp /var/cuda-repo-ubuntu2204-12-8-local/cuda-*-keyring.gpg /usr/share/keyrings/
+
+apt-get update
+apt-get -y install cuda-toolkit-12-8
+
+update-alternatives --set cuda /usr/local/cuda-12.8
+
+# Add CUDA to PATH permanently
+echo 'export PATH=/usr/local/cuda-12.8/bin:$PATH' >> ~/.bashrc
+echo 'export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
+source ~/.bashrc
+nvcc --version
+```
+
+## 6. Install cuDNN:
+
+```bash
+wget https://developer.download.nvidia.com/compute/cudnn/9.20.0/local_installers/cudnn-local-repo-ubuntu2204-9.20.0_1.0-1_amd64.deb
+dpkg -i cudnn-local-repo-ubuntu2204-9.20.0_1.0-1_amd64.deb
+cp /var/cudnn-local-repo-ubuntu2204-9.20.0/cudnn-*-keyring.gpg /usr/share/keyrings/
+
+apt-get update
+apt-get -y install cudnn
+apt-get -y install cudnn9-cuda-12
+```
+
+## 7. Download the Base Model
 
 ```bash
 cd ~/OPTS/LLM
 hf download Qwen/Qwen3-8B --local-dir models/Qwen3-8B
 ```
 
-## 6. Start the Baseline Run
+## 8. Start the Baseline Run
 
 ```bash
 cd ~/OPTS/LLM
