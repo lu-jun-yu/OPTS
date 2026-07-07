@@ -3,10 +3,10 @@ export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=8B
-Experiment_Name=ppo_0703_${MODEL_SIZE}
+Experiment_Name=gpg_0703_${MODEL_SIZE}
 
 WANDB_MODE=offline CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m verl.trainer.main_ppo \
- algorithm.adv_estimator=gae \
+ algorithm.adv_estimator=gpg \
  data.train_files=data/train.parquet \
  data.val_files=data/test.parquet \
  data.train_batch_size=4096 \
@@ -20,24 +20,20 @@ WANDB_MODE=offline CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m verl.trainer.main_ppo
  actor_rollout_ref.actor.ppo_mini_batch_size=4096 \
  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16 \
  actor_rollout_ref.actor.use_kl_loss=False \
+ actor_rollout_ref.actor.policy_loss.loss_mode=gpg \
  actor_rollout_ref.rollout.name=vllm \
  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=64 \
  actor_rollout_ref.rollout.tensor_model_parallel_size=4 \
  actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+ actor_rollout_ref.rollout.n=8 \
  actor_rollout_ref.rollout.val_kwargs.n=32 \
  actor_rollout_ref.rollout.val_kwargs.do_sample=True \
  actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
  actor_rollout_ref.rollout.val_kwargs.top_p=0.95 \
- critic.enable=True \
- critic.optim.lr=1e-5 \
- critic.model.path=models/Qwen3-${MODEL_SIZE} \
- critic.ppo_micro_batch_size_per_gpu=32 \
- critic.value_head_activation=sigmoid \
  custom_reward_function.path=utils/reward_fn.py \
  custom_reward_function.name=compute_score \
  algorithm.use_kl_in_reward=False \
  algorithm.kl_ctrl.kl_coef=0.0 \
- algorithm.lam=0.999 \
  trainer.logger='["console","wandb"]' \
  trainer.val_before_train=False \
  trainer.n_gpus_per_node=4 \
