@@ -80,58 +80,35 @@ TARGET_TASKS = [
 NCOLS = 6
 NROWS = 10  # ceil(57/6) = 10
 
-COLOR_PPO = "#1f77b4"
-COLOR_A2C = "#2ca02c"
-OPTS_TTPO_COLORS = [
-    "#d62728",  # red
-    "#ff7f0e",  # orange
-    "#9467bd",  # purple
-    "#8c564b",  # brown
-    "#e377c2",  # pink
-    "#17becf",  # cyan
-    "#bcbd22",  # olive
-    "#7f7f7f",  # gray
+# 冷暖色穿插的调色板
+COOL_COLORS = [
+    "#1f77b4",  # 蓝
+    "#2ca02c",  # 绿
+    "#9467bd",  # 紫
+    "#17becf",  # 青
 ]
-EXTRA_ALGO_COLORS = ["#1f77b4", "#2ca02c", "#17becf", "#8c564b", "#e377c2", "#bcbd22", "#7f7f7f"]
+WARM_COLORS = [
+    "#d62728",  # 红
+    "#ff7f0e",  # 橙
+    "#8c564b",  # 棕
+    "#e377c2",  # 粉
+]
 
 
-def build_algo_colors(algo_keys):
-    sorted_keys = sorted(algo_keys)
-    colors = {}
-
-    opts_keys = [k for k in sorted_keys if k[0].startswith("opts_ttpo")]
-    opts_color_map = {
-        k: OPTS_TTPO_COLORS[i % len(OPTS_TTPO_COLORS)]
-        for i, k in enumerate(opts_keys)
-    }
-
-    used_colors = set()
-
-    for algo_key in sorted_keys:
-        algo_name, _ = algo_key
-        if algo_name == "ppo_atari":
-            colors[algo_key] = COLOR_PPO
-        elif algo_name == "a2c_atari":
-            colors[algo_key] = COLOR_A2C
-        elif algo_name.startswith("opts_ttpo"):
-            colors[algo_key] = opts_color_map[algo_key]
+def get_alternating_colors(n):
+    colors = []
+    for i in range(n):
+        if i % 2 == 0:
+            colors.append(COOL_COLORS[(i // 2) % len(COOL_COLORS)])
         else:
-            continue
-        used_colors.add(colors[algo_key])
-
-    extra_i = 0
-    for algo_key in sorted_keys:
-        if algo_key in colors:
-            continue
-
-        while EXTRA_ALGO_COLORS[extra_i % len(EXTRA_ALGO_COLORS)] in used_colors:
-            extra_i += 1
-
-        colors[algo_key] = EXTRA_ALGO_COLORS[extra_i % len(EXTRA_ALGO_COLORS)]
-        used_colors.add(colors[algo_key])
-        extra_i += 1
-
+            colors.append(WARM_COLORS[(i // 2) % len(WARM_COLORS)])
     return colors
+
+
+def assign_algo_colors(algo_keys):
+    sorted_keys = sorted(algo_keys)
+    colors = get_alternating_colors(len(sorted_keys))
+    return {algo_key: colors[i] for i, algo_key in enumerate(sorted_keys)}
 
 
 def smooth_data(data, window_size=5):
@@ -265,7 +242,7 @@ def plot_all_tasks(results_dir="../cleanrl/results", output_dir="./visual",
         for algo_key in task_data.keys():
             all_algos.add(algo_key)
 
-    algo_colors = build_algo_colors(all_algos)
+    algo_colors = assign_algo_colors(all_algos)
 
     # 创建 10行6列 子图
     fig, axes = plt.subplots(NROWS, NCOLS, figsize=(NCOLS * 4, NROWS * 3))
