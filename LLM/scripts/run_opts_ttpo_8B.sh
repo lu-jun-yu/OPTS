@@ -50,6 +50,7 @@ WANDB_MODE=offline CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m trainer.main_opts_ttp
  trainer.nnodes=1 \
  trainer.project_name=opts_ttpo_${MODEL_SIZE} \
  trainer.experiment_name=${Experiment_Name} \
+ trainer.default_local_dir=/share/lujunyu/ckpts/opts_ckpts/opts_ttpo_${MODEL_SIZE}/${Experiment_Name} \
  trainer.save_freq=20 \
  trainer.test_freq=20 \
  trainer.total_training_steps=400 \

@@ -3,7 +3,7 @@ export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=1.7B
-Experiment_Name=dapo_0703_${MODEL_SIZE}
+Experiment_Name=dapo_0703_n8_${MODEL_SIZE}
 
 CUDA_VISIBLE_DEVICES=0 python3 -m verl.trainer.main_ppo \
  algorithm.adv_estimator=grpo \
@@ -50,6 +50,7 @@ CUDA_VISIBLE_DEVICES=0 python3 -m verl.trainer.main_ppo \
  trainer.nnodes=1 \
  trainer.project_name=opts_ttpo_${MODEL_SIZE} \
  trainer.experiment_name=${Experiment_Name} \
+ trainer.default_local_dir=/share/lujunyu/ckpts/opts_ckpts/opts_ttpo_${MODEL_SIZE}/${Experiment_Name} \
  trainer.save_freq=20 \
  trainer.test_freq=20 \
  trainer.total_training_steps=400 2>&1 | tee logs/${Experiment_Name}.log

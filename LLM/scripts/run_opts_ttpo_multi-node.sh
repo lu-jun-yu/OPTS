@@ -248,6 +248,7 @@ build_train_cmd() {
         trainer.nnodes="${NNODES}"
         trainer.project_name="opts_ttpo_${MODEL_SIZE}"
         trainer.experiment_name="${EXPERIMENT_NAME}"
+        trainer.default_local_dir="/share/lujunyu/ckpts/opts_ckpts/opts_ttpo_${MODEL_SIZE}/${EXPERIMENT_NAME}"
         trainer.save_freq=20
         trainer.test_freq=20
         trainer.total_epochs=15
