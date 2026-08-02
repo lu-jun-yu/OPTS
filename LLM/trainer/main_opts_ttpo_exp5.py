@@ -245,7 +245,7 @@ class TaskRunner:
             reward_pool = [config.reward_model.n_gpus_per_node] * config.reward_model.nnodes
             resource_pool_spec["reward_pool"] = reward_pool
 
-            from trainer.opts_ttpo.ray_trainer_exp5 import ResourcePoolManager
+        from trainer.opts_ttpo.ray_trainer_exp5 import ResourcePoolManager
 
         resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=self.mapping)
         return resource_pool_manager
