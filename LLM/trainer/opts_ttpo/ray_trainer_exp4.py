@@ -62,10 +62,11 @@ from verl.workers.utils.padding import left_right_2_no_padding, no_padding_2_pad
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 
 # Import OPTS_TTPO specific functions from local core_algos
-from .core_algos import (
+from .core_algos_exp4 import (
     AdvantageEstimator,
     agg_loss,
     compute_branch_weight,
+    compute_equal_branch_weight,
 )
 from utils.logger_batch import *
 
@@ -294,7 +295,7 @@ def compute_advantage(
         data.batch["returns"] = returns
     elif adv_estimator == AdvantageEstimator.TreeGAE:
         # TreeGAE for OPTS_TTPO: recompute affected trajectories from new leaves upward
-        from .core_algos import compute_treegae_advantage_return
+        from .core_algos_exp4 import compute_treegae_advantage_return
 
         assert new_sample_indices is not None, "TreeGAE requires round-local new_sample_indices."
 
@@ -309,7 +310,6 @@ def compute_advantage(
             pid=list(data.non_tensor_batch["pid"]),
             branch_pos=data.non_tensor_batch["branch_pos"],
             cid=list(data.non_tensor_batch["cid"]),
-            state_branches=data.batch["state_branches"],
             new_sample_indices=new_sample_indices,
             raw_prompt_len=data.non_tensor_batch["raw_prompt_len"],
             max_prompt_len=data.batch["attention_mask"].shape[1] - data.batch["response_mask"].shape[1],
@@ -726,8 +726,8 @@ def select_next_states(
         search_count: {uid: count}, cumulative within training iteration.
         max_otrc_scores: {uid: max otrc_score at selected node}.
         max_search_per_tree: Max searches per tree per iteration.
-        max_prompt_length: Maximum allowed prompt length.
         tree_search_state_by_uid: Cached greedy terminal / OTRC state keyed by uid.
+        max_prompt_length: Maximum allowed prompt length.
         batch_size: Maximum number of candidates to select.
 
     Returns:
@@ -747,14 +747,15 @@ def select_next_states(
             root_uids.add(uid[i])
 
     candidates = []
-    active_uids = [u for u in root_uids if search_count.get(u, 0) < max_search_per_tree]
-    for u in active_uids:
+    for u in root_uids:
         state = tree_search_state_by_uid[u]
         max_otrc_scores.setdefault(u, state.raw_otrc_score)
 
     if max_otrc_scores:
         mean_threshold = np.mean(list(max_otrc_scores.values()))
-        for u in active_uids:
+        for u in root_uids:
+            if search_count.get(u, 0) >= max_search_per_tree:
+                continue
             state = tree_search_state_by_uid[u]
             if state.raw_otrc_score <= mean_threshold:
                 continue
@@ -912,13 +913,13 @@ def compute_aggregated_returns(batch: DataProto) -> list[float]:
 
     Args:
         batch: Global batch with episodic_returns (pre-computed),
-               branch_weight, response_mask, uid.
+               return_branch_weight, response_mask, uid.
 
     Returns:
         List of per-uid aggregated returns.
     """
     response_mask = batch.batch["response_mask"]
-    branch_weight = batch.batch["branch_weight"]
+    branch_weight = batch.batch["return_branch_weight"]
     uid = batch.non_tensor_batch["uid"]
     episodic_returns = batch.non_tensor_batch["episodic_returns"]
 
@@ -2379,15 +2380,23 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                     with timed_block("opts_ttpo_final_processing", step=self.global_steps):
                         batch = global_batch
 
-                        # Compute branch_weight
+                        # Leaf-proportion weights are used for training.
                         branch_weight = compute_branch_weight(
-                            state_branches=batch.batch["state_branches"],
+                            response_mask=batch.batch["response_mask"],
                             pid=batch.non_tensor_batch["pid"],
                             rid=batch.non_tensor_batch["rid"],
                             uid=batch.non_tensor_batch["uid"],
                             branch_pos=batch.non_tensor_batch["branch_pos"],
                         )
                         batch.batch["branch_weight"] = branch_weight
+                        # Monitoring keeps the original equal-branch weighting.
+                        batch.batch["return_branch_weight"] = compute_equal_branch_weight(
+                            state_branches=batch.batch["state_branches"],
+                            pid=batch.non_tensor_batch["pid"],
+                            rid=batch.non_tensor_batch["rid"],
+                            uid=batch.non_tensor_batch["uid"],
+                            branch_pos=batch.non_tensor_batch["branch_pos"],
+                        )
                         # Pre-compute global weighted-token-mean denominator sum_t(mask_t * w_t)
                         # so per-micro-batch agg_loss can use it directly (no all_reduce).
                         weighted_mask = batch.batch["response_mask"].float() * branch_weight

@@ -62,7 +62,7 @@ from verl.workers.utils.padding import left_right_2_no_padding, no_padding_2_pad
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 
 # Import OPTS_TTPO specific functions from local core_algos
-from .core_algos import (
+from .core_algos_exp5 import (
     AdvantageEstimator,
     agg_loss,
     compute_branch_weight,
@@ -294,7 +294,7 @@ def compute_advantage(
         data.batch["returns"] = returns
     elif adv_estimator == AdvantageEstimator.TreeGAE:
         # TreeGAE for OPTS_TTPO: recompute affected trajectories from new leaves upward
-        from .core_algos import compute_treegae_advantage_return
+        from .core_algos_exp5 import compute_treegae_advantage_return
 
         assert new_sample_indices is not None, "TreeGAE requires round-local new_sample_indices."
 
@@ -309,7 +309,6 @@ def compute_advantage(
             pid=list(data.non_tensor_batch["pid"]),
             branch_pos=data.non_tensor_batch["branch_pos"],
             cid=list(data.non_tensor_batch["cid"]),
-            state_branches=data.batch["state_branches"],
             new_sample_indices=new_sample_indices,
             raw_prompt_len=data.non_tensor_batch["raw_prompt_len"],
             max_prompt_len=data.batch["attention_mask"].shape[1] - data.batch["response_mask"].shape[1],
@@ -749,7 +748,7 @@ def select_next_states(
     candidates = []
     for u in root_uids:
         state = tree_search_state_by_uid[u]
-        max_otrc_scores[u] = state.raw_otrc_score
+        max_otrc_scores.setdefault(u, state.raw_otrc_score)
 
     if max_otrc_scores:
         mean_threshold = np.mean(list(max_otrc_scores.values()))
@@ -908,18 +907,18 @@ class PromptBuffer:
 def compute_aggregated_returns(batch: DataProto) -> list[float]:
     """Compute per-uid aggregated returns for monitoring metrics.
 
-    Per uid (tree), compute weighted average of episodic returns using
-    inverse branch_weight. Return the list of per-uid aggregated returns.
+    Per uid (tree), compute the branch-weighted average of episodic returns.
+    Return the list of per-uid aggregated returns.
 
     Args:
         batch: Global batch with episodic_returns (pre-computed),
-               branch_weight, response_mask, uid.
+               return_branch_weight, response_mask, uid.
 
     Returns:
         List of per-uid aggregated returns.
     """
     response_mask = batch.batch["response_mask"]
-    branch_weight = batch.batch["branch_weight"]
+    branch_weight = batch.batch["return_branch_weight"]
     uid = batch.non_tensor_batch["uid"]
     episodic_returns = batch.non_tensor_batch["episodic_returns"]
 
@@ -941,8 +940,8 @@ def compute_aggregated_returns(batch: DataProto) -> list[float]:
         for i in indices:
             w = last_token_weights[i].item()
             if w > 0:
-                weighted_sum += float(episodic_returns[i]) / w
-                weight_sum += 1.0 / w
+                weighted_sum += float(episodic_returns[i]) * w
+                weight_sum += w
         if weight_sum > 0:
             aggregated_returns.append(weighted_sum / weight_sum)
 
@@ -995,19 +994,19 @@ def weighted_masked_whiten(
 
     Similar to masked_whiten in verl.utils.torch_functional, but uses
     TTPO branch-weight correction over valid response tokens:
-      mean = sum(adv / w) / sum(1 / w)
-      var  = sum((adv - mean)^2 / w) / sum(1 / w)
+      mean = sum(adv * w) / sum(w)
+      var  = sum((adv - mean)^2 * w) / sum(w)
       adv' = (adv - mean) / sqrt(var + eps)
 
     Statistics are computed on valid response tokens only.
     """
     valid = response_mask.to(dtype=advantages.dtype)
-    inv_weight = valid / torch.clamp(branch_weight.to(dtype=advantages.dtype), min=eps)
-    inv_weight_sum = inv_weight.sum()
+    weight = valid * branch_weight.to(dtype=advantages.dtype)
+    weight_sum = weight.sum()
 
-    adv_mean = (advantages * inv_weight).sum() / inv_weight_sum
-    denom = inv_weight_sum - 1 if inv_weight_sum - 1 > 0 else inv_weight_sum
-    adv_var = ((advantages - adv_mean) ** 2 * inv_weight).sum() / denom
+    adv_mean = (advantages * weight).sum() / weight_sum
+    denom = weight_sum - 1 if weight_sum - 1 > 0 else weight_sum
+    adv_var = ((advantages - adv_mean) ** 2 * weight).sum() / denom
     normalized = (advantages - adv_mean) * torch.rsqrt(adv_var + eps)
     if not shift_mean:
         normalized = normalized + adv_mean
@@ -2380,7 +2379,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                     with timed_block("opts_ttpo_final_processing", step=self.global_steps):
                         batch = global_batch
 
-                        # Compute branch_weight
+                        # Equal branch-splitting weights are used for training.
                         branch_weight = compute_branch_weight(
                             state_branches=batch.batch["state_branches"],
                             pid=batch.non_tensor_batch["pid"],
@@ -2389,10 +2388,18 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                             branch_pos=batch.non_tensor_batch["branch_pos"],
                         )
                         batch.batch["branch_weight"] = branch_weight
-                        # Pre-compute global weighted-token-mean denominator sum_t(mask_t/W_t)
+                        # Monitoring keeps the original equal-branch weighting.
+                        batch.batch["return_branch_weight"] = compute_branch_weight(
+                            state_branches=batch.batch["state_branches"],
+                            pid=batch.non_tensor_batch["pid"],
+                            rid=batch.non_tensor_batch["rid"],
+                            uid=batch.non_tensor_batch["uid"],
+                            branch_pos=batch.non_tensor_batch["branch_pos"],
+                        )
+                        # Pre-compute global weighted-token-mean denominator sum_t(mask_t * w_t)
                         # so per-micro-batch agg_loss can use it directly (no all_reduce).
-                        inv_w = batch.batch["response_mask"].float() / branch_weight.clamp(min=1e-8)
-                        batch.meta_info["weighted_inv_weight_sum"] = float(inv_w.sum().item())
+                        weighted_mask = batch.batch["response_mask"].float() * branch_weight
+                        batch.meta_info["weighted_weight_sum"] = float(weighted_mask.sum().item())
                         batch.batch["advantages"] = weighted_masked_whiten(
                             advantages=batch.batch["advantages"],
                             response_mask=batch.batch["response_mask"],

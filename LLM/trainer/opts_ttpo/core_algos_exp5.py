@@ -213,7 +213,6 @@ def compute_treegae_advantage_return(
     pid: Optional[np.ndarray] = None,
     branch_pos: Optional[np.ndarray] = None,
     cid: Optional[list] = None,
-    state_branches: Optional[torch.Tensor] = None,
     new_sample_indices: Optional[np.ndarray] = None,
     raw_prompt_len: Optional[np.ndarray] = None,
     max_prompt_len: Optional[int] = None,
@@ -222,7 +221,7 @@ def compute_treegae_advantage_return(
     """Compute TreeGAE advantage for tree-structured trajectories.
 
     TreeGAE extends standard GAE to handle tree structures where trajectories can branch.
-    At branch nodes, the advantage is computed as the mean of all branch advantages.
+    At branch nodes, the maximum successor advantage is propagated backward.
 
     Note: For existing trajectories, advantages are already computed. This function only
     recomputes the affected subgraph. Unlike the previous ancestor-by-ancestor propagation,
@@ -253,8 +252,6 @@ def compute_treegae_advantage_return(
             shape is (bs,). Branch position in parent trajectory (-1 for root trajectories).
         cid: `(list)`
             list of dict. Children mapping {branch_position: [child_rid_list]} for each trajectory.
-        state_branches: `(torch.Tensor)`
-            shape is (bs, response_length). Number of branches at each state.
         new_sample_indices: `(np.ndarray)`
             Indices of newly sampled trajectories in the current round.
         raw_prompt_len: `(np.ndarray)`
@@ -284,7 +281,6 @@ def compute_treegae_advantage_return(
 
         raw_prompt_len = torch.as_tensor(raw_prompt_len, device=device, dtype=torch.long)
         branch_pos = torch.as_tensor(branch_pos, device=device, dtype=torch.long)
-        state_branches = state_branches.to(device=device, dtype=dtype)
         valid_prompt_len = attention_mask[:, :max_prompt_len].sum(dim=1).to(torch.long)
 
         parent_indices = torch.tensor(
@@ -295,48 +291,62 @@ def compute_treegae_advantage_return(
 
         history_len = valid_prompt_len - raw_prompt_len
 
-        child_first_adv_sum = torch.zeros((batch_size, gen_len), device=device, dtype=dtype)
+        child_first_adv_max = torch.zeros((batch_size, gen_len), device=device, dtype=dtype)
+        child_first_adv_present = torch.zeros((batch_size, gen_len), device=device, dtype=torch.bool)
         for parent_idx, children_by_pos in enumerate(cid):
             for pos, child_rids in children_by_pos.items():
                 pos = int(pos)
                 child_indices = [rid2idx[c_rid] for c_rid in child_rids]
-                child_first_adv_sum[parent_idx, pos] = advantages[child_indices, 0].sum()
+                child_first_adv_max[parent_idx, pos] = advantages[child_indices, 0].max()
+                child_first_adv_present[parent_idx, pos] = True
 
         current_idx = torch.as_tensor(new_sample_indices, device=device, dtype=torch.long).clone()
         current_p_idx = parent_indices[current_idx]
         nextvalues = torch.zeros(current_idx.shape[0], device=device, dtype=dtype)
         lastgaelam = torch.zeros(current_idx.shape[0], device=device, dtype=dtype)
+        last_adv_present = torch.zeros(current_idx.shape[0], device=device, dtype=torch.bool)
 
         for u in reversed(range(gen_len)):
             idx = current_idx
             local_t = u - history_len[idx]
 
-            tree_lastgaelam = (child_first_adv_sum[idx, local_t] + lastgaelam) / state_branches[idx, local_t]
+            child_adv_present = child_first_adv_present[idx, local_t]
+            child_adv = child_first_adv_max[idx, local_t]
+            neg_inf = torch.full_like(lastgaelam, float("-inf"))
+            tree_lastgaelam = torch.where(
+                child_adv_present | last_adv_present,
+                torch.maximum(
+                    torch.where(child_adv_present, child_adv, neg_inf),
+                    torch.where(last_adv_present, lastgaelam, neg_inf),
+                ),
+                torch.zeros_like(lastgaelam),
+            )
             delta = token_level_rewards[idx, local_t] + gamma * nextvalues - values[idx, local_t]
             lastgaelam_ = delta + gamma * lam * tree_lastgaelam
 
             mask_t = response_mask[idx, local_t].to(dtype)
             nextvalues = values[idx, local_t] * mask_t + (1 - mask_t) * nextvalues
             lastgaelam = lastgaelam_ * mask_t + (1 - mask_t) * lastgaelam
+            last_adv_present = last_adv_present | mask_t.to(torch.bool)
 
             first_token = local_t == 0
-            if first_token.any():
-                first_idx = idx[first_token]
-                old_adv0 = advantages[first_idx, 0].clone()
-
             advantages[idx, local_t] = lastgaelam
 
             if first_token.any() and u > 0:
                 first_idx = idx[first_token]
                 first_parent = current_p_idx[first_token]
                 parent_cols = branch_pos[first_idx]
-                delta_adv0 = advantages[first_idx, 0] - old_adv0
-                child_first_adv_sum[first_parent, parent_cols] += delta_adv0
+                parent_positions = torch.stack((first_parent, parent_cols), dim=1).unique(dim=0)
+                for parent_idx, parent_pos in parent_positions.tolist():
+                    child_indices = [rid2idx[c_rid] for c_rid in cid[parent_idx][parent_pos]]
+                    child_first_adv_max[parent_idx, parent_pos] = advantages[child_indices, 0].max()
+                    child_first_adv_present[parent_idx, parent_pos] = True
 
                 next_pos = parent_cols + 1
                 next_mask = response_mask[first_parent, next_pos].to(dtype)
                 nextvalues[first_token] = values[first_parent, next_pos] * next_mask
                 lastgaelam[first_token] = advantages[first_parent, next_pos] * next_mask
+                last_adv_present[first_token] = next_mask.to(torch.bool)
                 current_idx[first_token] = first_parent
                 current_p_idx[first_token] = parent_indices[first_parent]
 
@@ -2028,7 +2038,7 @@ def compute_branch_weight(
     uid: np.ndarray,
     branch_pos: np.ndarray,
 ) -> torch.Tensor:
-    """Compute direct branch weights for TTPO gradient correction.
+    """Compute direct weights by splitting equally at every branch.
 
     branch_weight[t] is the reciprocal product of all ancestor branch counts.
     Traces the full ancestor chain back to the root, accumulating state_branches
