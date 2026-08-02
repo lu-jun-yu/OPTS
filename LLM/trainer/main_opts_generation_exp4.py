@@ -46,10 +46,10 @@ from verl.utils.fs import copy_to_local
 from verl.utils.hdfs_io import makedirs
 from verl.workers.fsdp_workers import ActorRolloutRefWorker, AsyncActorRolloutRefWorker, CriticWorker
 
-from trainer.opts_ttpo.core_algos import (
+from trainer.opts_ttpo.core_algos_exp4 import (
     compute_treegae_advantage_return,
 )
-from trainer.opts_ttpo.ray_trainer_exp2 import (
+from trainer.opts_ttpo.ray_trainer_exp4 import (
     PromptBuffer,
     compute_episodic_returns,
     compute_response_mask,
@@ -380,7 +380,6 @@ def main_task(config):
             pid=list(global_batch.non_tensor_batch["pid"]),
             branch_pos=list(global_batch.non_tensor_batch["branch_pos"]),
             cid=list(global_batch.non_tensor_batch["cid"]),
-            state_branches=global_batch.batch["state_branches"],
             new_sample_indices=new_sample_indices,
             raw_prompt_len=global_batch.non_tensor_batch["raw_prompt_len"],
             max_prompt_len=global_batch.batch["attention_mask"].shape[1] - global_batch.batch["response_mask"].shape[1],

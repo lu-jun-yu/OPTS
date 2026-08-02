@@ -62,7 +62,7 @@ from verl.workers.utils.padding import left_right_2_no_padding, no_padding_2_pad
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 
 # Import OPTS_TTPO specific functions from local core_algos
-from .core_algos_exp3 import (
+from .core_algos_exp4 import (
     AdvantageEstimator,
     agg_loss,
     compute_branch_weight,
@@ -295,7 +295,7 @@ def compute_advantage(
         data.batch["returns"] = returns
     elif adv_estimator == AdvantageEstimator.TreeGAE:
         # TreeGAE for OPTS_TTPO: recompute affected trajectories from new leaves upward
-        from .core_algos_exp3 import compute_treegae_advantage_return
+        from .core_algos_exp4 import compute_treegae_advantage_return
 
         assert new_sample_indices is not None, "TreeGAE requires round-local new_sample_indices."
 
@@ -749,7 +749,7 @@ def select_next_states(
     candidates = []
     for u in root_uids:
         state = tree_search_state_by_uid[u]
-        max_otrc_scores[u] = state.raw_otrc_score
+        max_otrc_scores.setdefault(u, state.raw_otrc_score)
 
     if max_otrc_scores:
         mean_threshold = np.mean(list(max_otrc_scores.values()))
