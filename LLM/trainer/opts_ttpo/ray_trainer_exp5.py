@@ -62,7 +62,7 @@ from verl.workers.utils.padding import left_right_2_no_padding, no_padding_2_pad
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 
 # Import OPTS_TTPO specific functions from local core_algos
-from .core_algos_exp5_2 import (
+from .core_algos_exp5 import (
     AdvantageEstimator,
     agg_loss,
     compute_branch_weight,
@@ -294,7 +294,7 @@ def compute_advantage(
         data.batch["returns"] = returns
     elif adv_estimator == AdvantageEstimator.TreeGAE:
         # TreeGAE for OPTS_TTPO: recompute affected trajectories from new leaves upward
-        from .core_algos_exp5_2 import compute_treegae_advantage_return
+        from .core_algos_exp5 import compute_treegae_advantage_return
 
         assert new_sample_indices is not None, "TreeGAE requires round-local new_sample_indices."
 
@@ -2396,10 +2396,10 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                             uid=batch.non_tensor_batch["uid"],
                             branch_pos=batch.non_tensor_batch["branch_pos"],
                         )
-                        # Normalize weighted gradients by the number of valid tokens, not by their weight sum.
-                        # This global denominator lets each micro-batch use the same scale without an all_reduce.
+                        # Pre-compute global weighted-token-mean denominator sum_t(mask_t * w_t)
+                        # so per-micro-batch agg_loss can use it directly (no all_reduce).
                         weighted_mask = batch.batch["response_mask"].float() * branch_weight
-                        batch.meta_info["weighted_weight_sum"] = float(batch.batch["response_mask"].sum().item())
+                        batch.meta_info["weighted_weight_sum"] = float(weighted_mask.sum().item())
                         batch.batch["advantages"] = weighted_masked_whiten(
                             advantages=batch.batch["advantages"],
                             response_mask=batch.batch["response_mask"],
