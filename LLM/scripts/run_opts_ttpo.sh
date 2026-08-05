@@ -50,5 +50,5 @@ CUDA_VISIBLE_DEVICES=5,6 python3 -m trainer.main_opts_ttpo_exp6 \
  trainer.default_local_dir=/share/lujunyu/ckpts/opts_ckpts/opts_ttpo_${MODEL_SIZE}/${Experiment_Name} \
  trainer.save_freq=20 \
  trainer.test_freq=20 \
- trainer.total_epochs=${TOTAL_TRAINING_STEPS:-400} \
- trainer.total_training_steps=${TOTAL_TRAINING_STEPS:-400} 2>&1 | tee logs/${Experiment_Name}.log
+ trainer.total_epochs=400 \
+ trainer.total_training_steps=400 2>&1 | tee logs/${Experiment_Name}.log
