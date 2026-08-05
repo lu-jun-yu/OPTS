@@ -46,10 +46,10 @@ from verl.utils.fs import copy_to_local
 from verl.utils.hdfs_io import makedirs
 from verl.workers.fsdp_workers import ActorRolloutRefWorker, AsyncActorRolloutRefWorker, CriticWorker
 
-from trainer.opts_ttpo.core_algos_exp4 import (
+from trainer.opts_ttpo.core_algos_exp5_2 import (
     compute_treegae_advantage_return,
 )
-from trainer.opts_ttpo.ray_trainer_exp4 import (
+from trainer.opts_ttpo.ray_trainer_exp5_2 import (
     PromptBuffer,
     compute_episodic_returns,
     compute_response_mask,

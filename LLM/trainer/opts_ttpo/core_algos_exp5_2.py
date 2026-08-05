@@ -950,9 +950,9 @@ def agg_loss(
             Set this to a constant value to ensure consistent normalization throughout training.
         branch_weight: direct sample weight for "weighted-token-mean" mode, shape (bs, response_length).
             Required when loss_agg_mode is "weighted-token-mean".
-        weighted_weight_sum: global denominator sum_t(mask_t * w_t) for weighted-token-mean,
-            pre-computed on the driver over the entire batch. Required when
-            loss_agg_mode is "weighted-token-mean".
+        weighted_weight_sum: global valid-token denominator for the weighted loss.
+            The legacy parameter name is retained for worker compatibility. Required
+            when loss_agg_mode is "weighted-token-mean".
 
     Returns:
         loss: `a scalar torch.Tensor`
@@ -967,7 +967,7 @@ def agg_loss(
         loss = verl_F.masked_sum(loss_mat, loss_mask) / batch_num_tokens * dp_size
     elif loss_agg_mode == "weighted-token-mean":
         assert weighted_weight_sum is not None, (
-            "weighted-token-mean requires weighted_weight_sum (pre-computed on driver)."
+            "weighted-token-mean requires its denominator (passed as weighted_weight_sum)."
         )
         local_numerator = verl_F.masked_sum(loss_mat * branch_weight, loss_mask)
         loss = local_numerator / max(weighted_weight_sum, 1e-8) * dp_size
@@ -1117,8 +1117,8 @@ def compute_policy_loss_vanilla(
             Direct TTPO sample weight, shape (batch_size, response_length).
             When provided, uses "weighted-token-mean" aggregation mode.
         weighted_weight_sum: `(float)`:
-            Global denominator sum_t(mask_t * w_t) pre-computed on the driver.
-            Required when ``branch_weight`` is provided.
+            Global valid-token denominator pre-computed on the driver. The legacy
+            parameter name is retained for worker compatibility.
         dp_size: `(int)`:
             Data-parallel world size for TTPO weighted aggregation.
     """
@@ -1629,8 +1629,8 @@ def compute_value_loss(
             Direct TTPO sample weight, shape (batch_size, response_length).
             When provided, uses "weighted-token-mean" aggregation mode.
         weighted_weight_sum (float, optional):
-            Global denominator sum_t(mask_t * w_t) pre-computed on the driver.
-            Required when ``branch_weight`` is provided.
+            Global valid-token denominator pre-computed on the driver. The legacy
+            parameter name is retained for worker compatibility.
         dp_size (int, optional):
             Data-parallel world size for TTPO weighted aggregation.
 

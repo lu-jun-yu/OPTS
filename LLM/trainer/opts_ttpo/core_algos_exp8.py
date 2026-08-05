@@ -201,79 +201,6 @@ def get_kl_controller(kl_ctrl):
         raise NotImplementedError
 
 
-def _compute_tree_leaf_counts(
-    response_mask: torch.Tensor,
-    pid: np.ndarray,
-    rid: np.ndarray,
-    branch_pos: np.ndarray,
-) -> torch.Tensor:
-    """Count descendant leaves with depth-wise propagation and a reverse scan."""
-    batch_size, response_len = response_mask.shape
-    rid2idx = {r: i for i, r in enumerate(rid)}
-    parent_indices = [-1 if parent_rid is None else rid2idx[parent_rid] for parent_rid in pid]
-
-    depths = [-1] * batch_size
-
-    def trajectory_depth(idx: int) -> int:
-        if depths[idx] >= 0:
-            return depths[idx]
-        parent_idx = parent_indices[idx]
-        depths[idx] = 0 if parent_idx < 0 else trajectory_depth(parent_idx) + 1
-        return depths[idx]
-
-    for idx in range(batch_size):
-        trajectory_depth(idx)
-
-    device = response_mask.device
-    parent_indices = torch.tensor(parent_indices, device=device, dtype=torch.long)
-    depths = torch.tensor(depths, device=device, dtype=torch.long)
-    branch_pos = torch.as_tensor(branch_pos, device=device, dtype=torch.long)
-    valid_lengths = response_mask.sum(dim=-1).to(torch.long)
-    assert torch.all(valid_lengths > 0), "Tree trajectories must contain at least one valid token."
-
-    child_mask = parent_indices >= 0
-    child_indices = torch.nonzero(child_mask, as_tuple=False).squeeze(-1)
-    child_parents = parent_indices[child_indices]
-    child_branch_pos = branch_pos[child_indices]
-    assert torch.all(child_branch_pos >= 0) and torch.all(
-        child_branch_pos < valid_lengths[child_parents]
-    ), "Every child trajectory must branch from a valid parent token."
-
-    # Each trajectory contributes one continuation leaf unless a child replaces
-    # the continuation at its final valid token. Child subtree totals are then
-    # accumulated into their parents one tree level at a time.
-    continuation_leaf_counts = torch.ones(batch_size, device=device, dtype=torch.long)
-    terminal_children = child_indices[
-        child_branch_pos == valid_lengths[child_parents] - 1
-    ]
-    continuation_leaf_counts[parent_indices[terminal_children]] = 0
-    trajectory_leaf_counts = continuation_leaf_counts.clone()
-    max_depth = int(depths.max().item()) if batch_size > 0 else 0
-    for depth in range(max_depth, 0, -1):
-        level_children = torch.nonzero(depths == depth, as_tuple=False).squeeze(-1)
-        trajectory_leaf_counts.scatter_add_(
-            0,
-            parent_indices[level_children],
-            trajectory_leaf_counts[level_children],
-        )
-
-    # A child branching at position p contributes to every ancestor token t <= p.
-    branch_leaf_counts = torch.zeros(
-        (batch_size, response_len), device=device, dtype=torch.long
-    )
-    branch_leaf_counts.view(-1).scatter_add_(
-        0,
-        child_parents * response_len + child_branch_pos,
-        trajectory_leaf_counts[child_indices],
-    )
-    descendant_leaf_counts = torch.flip(
-        torch.cumsum(torch.flip(branch_leaf_counts, dims=(1,)), dim=1),
-        dims=(1,),
-    )
-    leaf_counts = descendant_leaf_counts + continuation_leaf_counts.unsqueeze(1)
-    return leaf_counts * response_mask.to(torch.long)
-
-
 @register_adv_est(AdvantageEstimator.TreeGAE)
 def compute_treegae_advantage_return(
     token_level_rewards: torch.Tensor,
@@ -294,7 +221,7 @@ def compute_treegae_advantage_return(
     """Compute TreeGAE advantage for tree-structured trajectories.
 
     TreeGAE extends standard GAE to handle tree structures where trajectories can branch.
-    At branch nodes, child advantages are weighted by their subtree leaf counts.
+    At branch nodes, the maximum successor advantage is propagated backward.
 
     Note: For existing trajectories, advantages are already computed. This function only
     recomputes the affected subgraph. Unlike the previous ancestor-by-ancestor propagation,
@@ -363,36 +290,36 @@ def compute_treegae_advantage_return(
         )
 
         history_len = valid_prompt_len - raw_prompt_len
-        leaf_counts = _compute_tree_leaf_counts(response_mask, pid, rid, branch_pos).to(device=device, dtype=dtype)
 
-        child_first_adv_weighted_sum = torch.zeros((batch_size, gen_len), device=device, dtype=dtype)
-        child_first_leaf_sum = torch.zeros((batch_size, gen_len), device=device, dtype=dtype)
+        child_first_adv_max = torch.zeros((batch_size, gen_len), device=device, dtype=dtype)
+        child_first_adv_present = torch.zeros((batch_size, gen_len), device=device, dtype=torch.bool)
         for parent_idx, children_by_pos in enumerate(cid):
             for pos, child_rids in children_by_pos.items():
                 pos = int(pos)
                 child_indices = [rid2idx[c_rid] for c_rid in child_rids]
-                child_leaf_counts = leaf_counts[child_indices, 0]
-                child_first_adv_weighted_sum[parent_idx, pos] = (
-                    advantages[child_indices, 0] * child_leaf_counts
-                ).sum()
-                child_first_leaf_sum[parent_idx, pos] = child_leaf_counts.sum()
+                child_first_adv_max[parent_idx, pos] = advantages[child_indices, 0].max()
+                child_first_adv_present[parent_idx, pos] = True
 
         current_idx = torch.as_tensor(new_sample_indices, device=device, dtype=torch.long).clone()
         current_p_idx = parent_indices[current_idx]
         nextvalues = torch.zeros(current_idx.shape[0], device=device, dtype=dtype)
         lastgaelam = torch.zeros(current_idx.shape[0], device=device, dtype=dtype)
-        last_leaf_count = torch.zeros(current_idx.shape[0], device=device, dtype=dtype)
+        last_adv_present = torch.zeros(current_idx.shape[0], device=device, dtype=torch.bool)
 
         for u in reversed(range(gen_len)):
             idx = current_idx
             local_t = u - history_len[idx]
 
-            successor_leaf_count = child_first_leaf_sum[idx, local_t] + last_leaf_count
-            successor_adv_sum = child_first_adv_weighted_sum[idx, local_t] + lastgaelam * last_leaf_count
+            child_adv_present = child_first_adv_present[idx, local_t]
+            child_adv = child_first_adv_max[idx, local_t]
+            neg_inf = torch.full_like(lastgaelam, float("-inf"))
             tree_lastgaelam = torch.where(
-                successor_leaf_count > 0,
-                successor_adv_sum / successor_leaf_count.clamp(min=1),
-                torch.zeros_like(successor_adv_sum),
+                child_adv_present | last_adv_present,
+                torch.maximum(
+                    torch.where(child_adv_present, child_adv, neg_inf),
+                    torch.where(last_adv_present, lastgaelam, neg_inf),
+                ),
+                torch.zeros_like(lastgaelam),
             )
             delta = token_level_rewards[idx, local_t] + gamma * nextvalues - values[idx, local_t]
             lastgaelam_ = delta + gamma * lam * tree_lastgaelam
@@ -400,29 +327,26 @@ def compute_treegae_advantage_return(
             mask_t = response_mask[idx, local_t].to(dtype)
             nextvalues = values[idx, local_t] * mask_t + (1 - mask_t) * nextvalues
             lastgaelam = lastgaelam_ * mask_t + (1 - mask_t) * lastgaelam
-            last_leaf_count = leaf_counts[idx, local_t] * mask_t + (1 - mask_t) * last_leaf_count
+            last_adv_present = last_adv_present | mask_t.to(torch.bool)
 
             first_token = local_t == 0
-            if first_token.any():
-                first_idx = idx[first_token]
-                old_adv0 = advantages[first_idx, 0].clone()
-
             advantages[idx, local_t] = lastgaelam
 
             if first_token.any() and u > 0:
                 first_idx = idx[first_token]
                 first_parent = current_p_idx[first_token]
                 parent_cols = branch_pos[first_idx]
-                delta_adv0 = advantages[first_idx, 0] - old_adv0
-                child_first_adv_weighted_sum[first_parent, parent_cols] += (
-                    delta_adv0 * leaf_counts[first_idx, 0]
-                )
+                parent_positions = torch.stack((first_parent, parent_cols), dim=1).unique(dim=0)
+                for parent_idx, parent_pos in parent_positions.tolist():
+                    child_indices = [rid2idx[c_rid] for c_rid in cid[parent_idx][parent_pos]]
+                    child_first_adv_max[parent_idx, parent_pos] = advantages[child_indices, 0].max()
+                    child_first_adv_present[parent_idx, parent_pos] = True
 
                 next_pos = parent_cols + 1
                 next_mask = response_mask[first_parent, next_pos].to(dtype)
                 nextvalues[first_token] = values[first_parent, next_pos] * next_mask
                 lastgaelam[first_token] = advantages[first_parent, next_pos] * next_mask
-                last_leaf_count[first_token] = leaf_counts[first_parent, next_pos] * next_mask
+                last_adv_present[first_token] = next_mask.to(torch.bool)
                 current_idx[first_token] = first_parent
                 current_p_idx[first_token] = parent_indices[first_parent]
 
@@ -1026,9 +950,9 @@ def agg_loss(
             Set this to a constant value to ensure consistent normalization throughout training.
         branch_weight: direct sample weight for "weighted-token-mean" mode, shape (bs, response_length).
             Required when loss_agg_mode is "weighted-token-mean".
-        weighted_weight_sum: global denominator sum_t(mask_t * w_t) for weighted-token-mean,
-            pre-computed on the driver over the entire batch. Required when
-            loss_agg_mode is "weighted-token-mean".
+        weighted_weight_sum: global valid-token denominator for the weighted loss.
+            The legacy parameter name is retained for worker compatibility. Required
+            when loss_agg_mode is "weighted-token-mean".
 
     Returns:
         loss: `a scalar torch.Tensor`
@@ -1043,7 +967,7 @@ def agg_loss(
         loss = verl_F.masked_sum(loss_mat, loss_mask) / batch_num_tokens * dp_size
     elif loss_agg_mode == "weighted-token-mean":
         assert weighted_weight_sum is not None, (
-            "weighted-token-mean requires weighted_weight_sum (pre-computed on driver)."
+            "weighted-token-mean requires its denominator (passed as weighted_weight_sum)."
         )
         local_numerator = verl_F.masked_sum(loss_mat * branch_weight, loss_mask)
         loss = local_numerator / max(weighted_weight_sum, 1e-8) * dp_size
@@ -1193,8 +1117,8 @@ def compute_policy_loss_vanilla(
             Direct TTPO sample weight, shape (batch_size, response_length).
             When provided, uses "weighted-token-mean" aggregation mode.
         weighted_weight_sum: `(float)`:
-            Global denominator sum_t(mask_t * w_t) pre-computed on the driver.
-            Required when ``branch_weight`` is provided.
+            Global valid-token denominator pre-computed on the driver. The legacy
+            parameter name is retained for worker compatibility.
         dp_size: `(int)`:
             Data-parallel world size for TTPO weighted aggregation.
     """
@@ -1705,8 +1629,8 @@ def compute_value_loss(
             Direct TTPO sample weight, shape (batch_size, response_length).
             When provided, uses "weighted-token-mean" aggregation mode.
         weighted_weight_sum (float, optional):
-            Global denominator sum_t(mask_t * w_t) pre-computed on the driver.
-            Required when ``branch_weight`` is provided.
+            Global valid-token denominator pre-computed on the driver. The legacy
+            parameter name is retained for worker compatibility.
         dp_size (int, optional):
             Data-parallel world size for TTPO weighted aggregation.
 
@@ -2107,14 +2031,14 @@ def compute_policy_loss_bypass_mode(
 # OPTS_TTPO Specific Functions
 # ============================================================================
 
-def compute_equal_branch_weight(
+def compute_branch_weight(
     state_branches: torch.Tensor,
     pid: np.ndarray,
     rid: np.ndarray,
     uid: np.ndarray,
     branch_pos: np.ndarray,
 ) -> torch.Tensor:
-    """Compute the original direct weights obtained by equal branch splitting.
+    """Compute direct weights by splitting equally at every branch.
 
     branch_weight[t] is the reciprocal product of all ancestor branch counts.
     Traces the full ancestor chain back to the root, accumulating state_branches
@@ -2166,29 +2090,3 @@ def compute_equal_branch_weight(
     branch_weight = branch_factor.reciprocal()
 
     return branch_weight
-
-
-def compute_branch_weight(
-    response_mask: torch.Tensor,
-    pid: np.ndarray,
-    rid: np.ndarray,
-    uid: np.ndarray,
-    branch_pos: np.ndarray,
-) -> torch.Tensor:
-    """Compute direct training weights from subtree leaf proportions."""
-    leaf_counts = _compute_tree_leaf_counts(response_mask, pid, rid, branch_pos)
-    uid2idx = {tree_uid: idx for idx, tree_uid in enumerate(dict.fromkeys(uid))}
-    uid_indices = torch.tensor(
-        [uid2idx[tree_uid] for tree_uid in uid],
-        device=response_mask.device,
-        dtype=torch.long,
-    )
-    root_mask = torch.tensor(
-        [parent_rid is None for parent_rid in pid],
-        device=response_mask.device,
-        dtype=torch.bool,
-    )
-    tree_leaf_counts = torch.zeros(len(uid2idx), device=response_mask.device, dtype=torch.long)
-    tree_leaf_counts.scatter_add_(0, uid_indices[root_mask], leaf_counts[root_mask, 0])
-    tree_denominators = tree_leaf_counts[uid_indices].to(torch.float32).unsqueeze(1)
-    return leaf_counts.to(torch.float32) / tree_denominators * response_mask.to(torch.float32)

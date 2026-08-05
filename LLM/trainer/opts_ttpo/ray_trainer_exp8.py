@@ -62,11 +62,10 @@ from verl.workers.utils.padding import left_right_2_no_padding, no_padding_2_pad
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 
 # Import OPTS_TTPO specific functions from local core_algos
-from .core_algos_exp4 import (
+from .core_algos_exp8 import (
     AdvantageEstimator,
     agg_loss,
     compute_branch_weight,
-    compute_equal_branch_weight,
 )
 from utils.logger_batch import *
 
@@ -295,7 +294,7 @@ def compute_advantage(
         data.batch["returns"] = returns
     elif adv_estimator == AdvantageEstimator.TreeGAE:
         # TreeGAE for OPTS_TTPO: recompute affected trajectories from new leaves upward
-        from .core_algos_exp4 import compute_treegae_advantage_return
+        from .core_algos_exp8 import compute_treegae_advantage_return
 
         assert new_sample_indices is not None, "TreeGAE requires round-local new_sample_indices."
 
@@ -2083,6 +2082,10 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
 
         # Batch size for each round
         batch_size = self.config.data.get("gen_batch_size", self.config.data.train_batch_size)
+        lam_warmup_steps = int(self.config.algorithm.get("lam_warmup_steps", 0))
+        if lam_warmup_steps < 0:
+            raise ValueError(f"algorithm.lam_warmup_steps must be non-negative, got {lam_warmup_steps}")
+        configured_lam = float(self.config.algorithm.lam)
 
         for epoch in range(current_epoch, self.config.trainer.total_epochs):
             for batch_idx in range(len(self.train_dataloader)):
@@ -2090,6 +2093,10 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                     self.actor_rollout_wg.async_calls_finalize_fn_exec(blocking=False)
                 metrics = {}
                 timing_raw = {}
+                lam_warmup_active = self.global_steps <= lam_warmup_steps
+                effective_lam = 1.0 if lam_warmup_active else configured_lam
+                metrics["opts_ttpo/effective_lam"] = effective_lam
+                metrics["opts_ttpo/lam_warmup_active"] = float(lam_warmup_active)
 
                 with marked_timer("start_profile", timing_raw):
                     self._start_profiling(
@@ -2332,7 +2339,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                     global_batch,
                                     adv_estimator=self.config.algorithm.adv_estimator,
                                     gamma=self.config.algorithm.gamma,
-                                    lam=self.config.algorithm.lam,
+                                    lam=effective_lam,
                                     norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                                     config=self.config.algorithm,
                                     new_sample_indices=new_sample_indices,
@@ -2380,9 +2387,9 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                     with timed_block("opts_ttpo_final_processing", step=self.global_steps):
                         batch = global_batch
 
-                        # Leaf-proportion weights are used for training.
+                        # Equal branch-splitting weights are used for training.
                         branch_weight = compute_branch_weight(
-                            response_mask=batch.batch["response_mask"],
+                            state_branches=batch.batch["state_branches"],
                             pid=batch.non_tensor_batch["pid"],
                             rid=batch.non_tensor_batch["rid"],
                             uid=batch.non_tensor_batch["uid"],
@@ -2390,17 +2397,17 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                         )
                         batch.batch["branch_weight"] = branch_weight
                         # Monitoring keeps the original equal-branch weighting.
-                        batch.batch["return_branch_weight"] = compute_equal_branch_weight(
+                        batch.batch["return_branch_weight"] = compute_branch_weight(
                             state_branches=batch.batch["state_branches"],
                             pid=batch.non_tensor_batch["pid"],
                             rid=batch.non_tensor_batch["rid"],
                             uid=batch.non_tensor_batch["uid"],
                             branch_pos=batch.non_tensor_batch["branch_pos"],
                         )
-                        # Pre-compute global weighted-token-mean denominator sum_t(mask_t * w_t)
-                        # so per-micro-batch agg_loss can use it directly (no all_reduce).
+                        # Normalize weighted gradients by the number of valid tokens, not by their weight sum.
+                        # This global denominator lets each micro-batch use the same scale without an all_reduce.
                         weighted_mask = batch.batch["response_mask"].float() * branch_weight
-                        batch.meta_info["weighted_weight_sum"] = float(weighted_mask.sum().item())
+                        batch.meta_info["weighted_weight_sum"] = float(batch.batch["response_mask"].sum().item())
                         batch.batch["advantages"] = weighted_masked_whiten(
                             advantages=batch.batch["advantages"],
                             response_mask=batch.batch["response_mask"],
