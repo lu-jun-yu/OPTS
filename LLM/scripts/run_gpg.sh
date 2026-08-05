@@ -5,7 +5,7 @@ export VLLM_LOGGING_LEVEL=WARN
 MODEL_SIZE=1.7B
 Experiment_Name=gpg_0703_n8_${MODEL_SIZE}
 
-CUDA_VISIBLE_DEVICES=1 python3 -m verl.trainer.main_ppo \
+CUDA_VISIBLE_DEVICES=4 python3 -m verl.trainer.main_ppo \
  algorithm.adv_estimator=gpg \
  data.train_files=data/train.parquet \
  data.val_files=data/test.parquet \
@@ -43,4 +43,5 @@ CUDA_VISIBLE_DEVICES=1 python3 -m verl.trainer.main_ppo \
  trainer.default_local_dir=/share/lujunyu/ckpts/opts_ckpts/opts_ttpo_${MODEL_SIZE}/${Experiment_Name} \
  trainer.save_freq=20 \
  trainer.test_freq=20 \
- trainer.total_training_steps=400 2>&1 | tee logs/${Experiment_Name}.log
+ trainer.total_epochs=${TOTAL_TRAINING_STEPS:-400} \
+ trainer.total_training_steps=${TOTAL_TRAINING_STEPS:-400} 2>&1 | tee logs/${Experiment_Name}.log
