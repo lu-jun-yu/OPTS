@@ -10,13 +10,13 @@ TASKS=(Walker2d-v4 Hopper-v4 HalfCheetah-v4 Ant-v4 Humanoid-v4)
 total_timesteps=1000000
 num_steps=2048
 num_minibatches=32
-tau=0.6
+tau=0.2
 
 for task in "${TASKS[@]}"; do
     echo "Starting $task with ${#SEEDS[@]} seeds x ${#SEARCHES[@]} searches..."
     for search in "${SEARCHES[@]}"; do
         for seed in "${SEEDS[@]}"; do
-            python cleanrl/cleanrl/opts_ttpo_continuous_action.py \
+            python cleanrl/cleanrl/opts_ttpo_continuous_action_exp6.py \
                 --env-id "$task" \
                 --total-timesteps "$total_timesteps" \
                 --num-steps "$num_steps" \

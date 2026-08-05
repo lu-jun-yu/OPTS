@@ -16,7 +16,7 @@ for task in "${TASKS[@]}"; do
     echo "Starting $task with ${#SEEDS[@]} seeds x ${#SEARCHES[@]} searches..."
     for search in "${SEARCHES[@]}"; do
         for seed in "${SEEDS[@]}"; do
-            python cleanrl/cleanrl/opts_ttpo_continuous_action.py \
+            python cleanrl/cleanrl/opts_ttpo_continuous_action_exp4_2.py \
                 --env-id "$task" \
                 --total-timesteps "$total_timesteps" \
                 --num-steps "$num_steps" \
