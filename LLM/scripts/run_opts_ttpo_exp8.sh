@@ -3,7 +3,7 @@ export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=1.7B
-Experiment_Name=opts_ttpo_exp8_lw100_0805_n8_${MODEL_SIZE}
+Experiment_Name=opts_ttpo_exp8_0805_n8_${MODEL_SIZE}
 
 CUDA_VISIBLE_DEVICES=5,6 python3 -m trainer.main_opts_ttpo_exp8 \
  algorithm.adv_estimator=treegae \
