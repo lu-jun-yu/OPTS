@@ -948,11 +948,10 @@ def agg_loss(
         global_batch_size: global batch size
         loss_scale_factor: scale factor for "seq-mean-token-sum-norm" mode. If None, uses loss_mask.shape[-1].
             Set this to a constant value to ensure consistent normalization throughout training.
-        branch_weight: direct sample weight for "weighted-token-mean" mode, shape (bs, response_length).
+        branch_weight: per-tree normalized token weight, shape (bs, response_length).
             Required when loss_agg_mode is "weighted-token-mean".
-        weighted_weight_sum: global valid-token denominator for the weighted loss.
-            The legacy parameter name is retained for worker compatibility. Required
-            when loss_agg_mode is "weighted-token-mean".
+        weighted_weight_sum: global number of uid trees for the two-level weighted loss.
+            The legacy parameter name is retained for worker compatibility.
 
     Returns:
         loss: `a scalar torch.Tensor`
@@ -1117,7 +1116,7 @@ def compute_policy_loss_vanilla(
             Direct TTPO sample weight, shape (batch_size, response_length).
             When provided, uses "weighted-token-mean" aggregation mode.
         weighted_weight_sum: `(float)`:
-            Global valid-token denominator pre-computed on the driver. The legacy
+            Global number of uid trees pre-computed on the driver. The legacy
             parameter name is retained for worker compatibility.
         dp_size: `(int)`:
             Data-parallel world size for TTPO weighted aggregation.
@@ -1629,7 +1628,7 @@ def compute_value_loss(
             Direct TTPO sample weight, shape (batch_size, response_length).
             When provided, uses "weighted-token-mean" aggregation mode.
         weighted_weight_sum (float, optional):
-            Global valid-token denominator pre-computed on the driver. The legacy
+            Global number of uid trees pre-computed on the driver. The legacy
             parameter name is retained for worker compatibility.
         dp_size (int, optional):
             Data-parallel world size for TTPO weighted aggregation.

@@ -983,6 +983,34 @@ def compute_search_count_rate_metrics(
     return metrics
 
 
+def normalize_branch_weight_per_tree(
+    branch_weight: torch.Tensor,
+    response_mask: torch.Tensor,
+    uid: np.ndarray,
+) -> tuple[torch.Tensor, int]:
+    """Normalize valid-token branch weights independently within each uid tree."""
+    masked_weight = branch_weight * response_mask.to(dtype=branch_weight.dtype)
+    unique_uids = list(dict.fromkeys(uid))
+    uid2idx = {tree_uid: idx for idx, tree_uid in enumerate(unique_uids)}
+    uid_indices = torch.tensor(
+        [uid2idx[tree_uid] for tree_uid in uid],
+        device=branch_weight.device,
+        dtype=torch.long,
+    )
+
+    trajectory_weight_sums = masked_weight.sum(dim=-1)
+    tree_weight_sums = torch.zeros(
+        len(unique_uids),
+        device=branch_weight.device,
+        dtype=branch_weight.dtype,
+    )
+    tree_weight_sums.scatter_add_(0, uid_indices, trajectory_weight_sums)
+    assert torch.all(tree_weight_sums > 0), "Every uid tree must contain positive valid-token branch weight."
+
+    loss_branch_weight = masked_weight / tree_weight_sums[uid_indices].unsqueeze(-1)
+    return loss_branch_weight, len(unique_uids)
+
+
 def weighted_masked_whiten(
     advantages: torch.Tensor,
     response_mask: torch.Tensor,
@@ -2395,7 +2423,12 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                             uid=batch.non_tensor_batch["uid"],
                             branch_pos=batch.non_tensor_batch["branch_pos"],
                         )
-                        batch.batch["branch_weight"] = branch_weight
+                        loss_branch_weight, num_trees = normalize_branch_weight_per_tree(
+                            branch_weight=branch_weight,
+                            response_mask=batch.batch["response_mask"],
+                            uid=batch.non_tensor_batch["uid"],
+                        )
+                        batch.batch["branch_weight"] = loss_branch_weight
                         # Monitoring keeps the original equal-branch weighting.
                         batch.batch["return_branch_weight"] = compute_branch_weight(
                             state_branches=batch.batch["state_branches"],
@@ -2404,10 +2437,9 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                             uid=batch.non_tensor_batch["uid"],
                             branch_pos=batch.non_tensor_batch["branch_pos"],
                         )
-                        # Normalize weighted gradients by the number of valid tokens, not by their weight sum.
-                        # This global denominator lets each micro-batch use the same scale without an all_reduce.
-                        weighted_mask = batch.batch["response_mask"].float() * branch_weight
-                        batch.meta_info["weighted_weight_sum"] = float(batch.batch["response_mask"].sum().item())
+                        # Each tree's loss weights sum to one; averaging over the global tree count
+                        # remains correct after data-parallel and micro-batch splitting.
+                        batch.meta_info["weighted_weight_sum"] = float(num_trees)
                         batch.batch["advantages"] = weighted_masked_whiten(
                             advantages=batch.batch["advantages"],
                             response_mask=batch.batch["response_mask"],
