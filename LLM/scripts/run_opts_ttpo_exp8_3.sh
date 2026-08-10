@@ -3,7 +3,7 @@ export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=1.7B
-Experiment_Name=opts_ttpo_exp8_3_sr0.3_s5_0810_n8_${MODEL_SIZE}
+Experiment_Name=opts_ttpo_exp8_3_0810_n8_${MODEL_SIZE}
 
 CUDA_VISIBLE_DEVICES=5,6 python3 -m trainer.main_opts_ttpo_exp8_3 \
  algorithm.adv_estimator=treegae \
@@ -30,7 +30,7 @@ CUDA_VISIBLE_DEVICES=5,6 python3 -m trainer.main_opts_ttpo_exp8_3 \
  actor_rollout_ref.rollout.val_kwargs.do_sample=True \
  actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
  actor_rollout_ref.rollout.val_kwargs.top_p=0.95 \
- actor_rollout_ref.rollout.max_search_per_tree=5 \
+ actor_rollout_ref.rollout.max_search_per_tree=3 \
  critic.enable=True \
  critic.optim.lr=1e-5 \
  critic.model.path=models/Qwen3-${MODEL_SIZE} \
