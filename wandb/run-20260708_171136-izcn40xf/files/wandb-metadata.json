@@ -1,0 +1,15 @@
+{
+  "os": "Windows-10-10.0.26200-SP0",
+  "python": "CPython 3.10.14",
+  "startedAt": "2026-07-08T09:11:36.220981Z",
+  "program": "<stdin>",
+  "git": {
+    "remote": "https://github.com/lu-jun-yu/OPTS.git",
+    "commit": "b6133692ecec8b476ec82c812a4bc837d237cb7c"
+  },
+  "email": "julianlou2002@gmail.com",
+  "root": "D:\\OneDrive - link.tyut.edu.cn\\CursorProjects\\OPTS",
+  "host": "Heartunder-Blade",
+  "executable": "C:\\Users\\卢俊羽\\AppData\\Local\\Temp\\wandb-sync-0251\\Scripts\\python.exe",
+  "writerId": "t7fv16gj36ios9nw3w9jlgkf39lmri13"
+}
