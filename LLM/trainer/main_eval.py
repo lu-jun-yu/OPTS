@@ -18,13 +18,15 @@ Test sets (from dataset_survey.md):
   - math500      500  high-school baseline      (data/math12k/test.parquet)
   - minervamath  272  college-level OOD          (data/minervamath/test.parquet)
   - amc23         40  mid-level competition      (data/amc23/test.parquet)
+  - aime24        30  hard competition benchmark (data/aime24/test.parquet)
   - aime25        30  hard competition ceiling   (data/aime25/test.parquet)
+  - aime26        30  hard competition benchmark (data/aime26/test.parquet)
 
 Usage:
     # Greedy pass@1
     python -m trainer.main_eval \
         --model_path Qwen/Qwen3-4B \
-        --datasets math500 minervamath amc23 aime25
+        --datasets math500 minervamath amc23 aime24 aime25 aime26
 
     # pass@k (n=64, temperature=1.0)
     python -m trainer.main_eval \
@@ -71,7 +73,9 @@ DATASET_PATHS = {
     "math500": "data/math12k/test.parquet",
     "minervamath": "data/minervamath/test.parquet",
     "amc23": "data/amc23/test.parquet",
+    "aime24": "data/aime24/test.parquet",
     "aime25": "data/aime25/test.parquet",
+    "aime26": "data/aime26/test.parquet",
 }
 
 

@@ -3,9 +3,24 @@ export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=8B
-Experiment_Name=ppo_0703_${MODEL_SIZE}
+Experiment_Name=ppo_0805_n8_${MODEL_SIZE}
+RAY_TEMP_DIR="/tmp/ray/${Experiment_Name}"
 
-WANDB_MODE=offline CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m verl.trainer.main_ppo \
+cleanup_ray_temp() {
+    local status=$?
+    trap - EXIT INT TERM
+    timeout 20s ray stop --force >/dev/null 2>&1 || true
+    find "${RAY_TEMP_DIR}" -depth -delete 2>/dev/null || true
+    exit "${status}"
+}
+
+find "${RAY_TEMP_DIR}" -depth -delete 2>/dev/null || true
+mkdir -p logs "${RAY_TEMP_DIR}"
+trap cleanup_ray_temp EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python3 -m verl.trainer.main_ppo \
  algorithm.adv_estimator=gae \
  data.train_files=data/train.parquet \
  data.val_files=data/test.parquet \
@@ -21,9 +36,9 @@ WANDB_MODE=offline CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m verl.trainer.main_ppo
  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16 \
  actor_rollout_ref.actor.use_kl_loss=False \
  actor_rollout_ref.rollout.name=vllm \
- actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=64 \
- actor_rollout_ref.rollout.tensor_model_parallel_size=4 \
- actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+ actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=128 \
+ actor_rollout_ref.rollout.tensor_model_parallel_size=8 \
+ actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
  actor_rollout_ref.rollout.val_kwargs.n=32 \
  actor_rollout_ref.rollout.val_kwargs.do_sample=True \
  actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
@@ -40,7 +55,7 @@ WANDB_MODE=offline CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m verl.trainer.main_ppo
  algorithm.lam=0.999 \
  trainer.logger='["console","wandb"]' \
  trainer.val_before_train=False \
- trainer.n_gpus_per_node=4 \
+ trainer.n_gpus_per_node=8 \
  trainer.nnodes=1 \
  trainer.project_name=opts_ttpo_${MODEL_SIZE} \
  trainer.experiment_name=${Experiment_Name} \
@@ -48,4 +63,6 @@ WANDB_MODE=offline CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m verl.trainer.main_ppo
  trainer.save_freq=20 \
  trainer.test_freq=20 \
  trainer.total_epochs=400 \
- trainer.total_training_steps=400 2>&1 | tee logs/${Experiment_Name}.log
+ trainer.total_training_steps=400 \
+ ray_kwargs.ray_init.num_cpus=32 \
+ +ray_kwargs.ray_init._temp_dir="${RAY_TEMP_DIR}" 2>&1 | tee logs/${Experiment_Name}.log

@@ -4,6 +4,21 @@ export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=1.7B
 Experiment_Name=grpo_0703_${MODEL_SIZE}
+RAY_TEMP_DIR="/tmp/ray/${Experiment_Name}"
+
+cleanup_ray_temp() {
+    local status=$?
+    trap - EXIT INT TERM
+    timeout 20s ray stop --force >/dev/null 2>&1 || true
+    find "${RAY_TEMP_DIR}" -depth -delete 2>/dev/null || true
+    exit "${status}"
+}
+
+find "${RAY_TEMP_DIR}" -depth -delete 2>/dev/null || true
+mkdir -p logs "${RAY_TEMP_DIR}"
+trap cleanup_ray_temp EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 CUDA_VISIBLE_DEVICES=0 python3 -m verl.trainer.main_ppo \
  algorithm.adv_estimator=grpo \
@@ -43,4 +58,6 @@ CUDA_VISIBLE_DEVICES=0 python3 -m verl.trainer.main_ppo \
  trainer.save_freq=20 \
  trainer.test_freq=20 \
  trainer.total_epochs=400 \
- trainer.total_training_steps=400 2>&1 | tee logs/${Experiment_Name}.log
+ trainer.total_training_steps=400 \
+ ray_kwargs.ray_init.num_cpus=32 \
+ +ray_kwargs.ray_init._temp_dir="${RAY_TEMP_DIR}" 2>&1 | tee logs/${Experiment_Name}.log

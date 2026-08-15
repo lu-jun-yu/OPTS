@@ -4,9 +4,21 @@ export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=8B
 Experiment_Name=opts_ttpo_0703_${MODEL_SIZE}
-RAY_TEMP_DIR="/data/ray/tmp/${Experiment_Name}"
+RAY_TEMP_DIR="/tmp/ray/${Experiment_Name}"
 
+cleanup_ray_temp() {
+    local status=$?
+    trap - EXIT INT TERM
+    timeout 20s ray stop --force >/dev/null 2>&1 || true
+    find "${RAY_TEMP_DIR}" -depth -delete 2>/dev/null || true
+    exit "${status}"
+}
+
+find "${RAY_TEMP_DIR}" -depth -delete 2>/dev/null || true
 mkdir -p logs "${RAY_TEMP_DIR}"
+trap cleanup_ray_temp EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 WANDB_MODE=offline CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m trainer.main_opts_ttpo \
  algorithm.adv_estimator=treegae \
@@ -55,4 +67,5 @@ WANDB_MODE=offline CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m trainer.main_opts_ttp
  trainer.test_freq=20 \
  trainer.total_epochs=400 \
  trainer.total_training_steps=400 \
+ ray_kwargs.ray_init.num_cpus=32 \
  +ray_kwargs.ray_init._temp_dir="${RAY_TEMP_DIR}" 2>&1 | tee logs/${Experiment_Name}.log

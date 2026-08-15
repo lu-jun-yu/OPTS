@@ -241,7 +241,9 @@ The training and test data are already included in the `LLM/data/` directory; no
 | Test | math12k | [hiyouga/math12k](https://huggingface.co/datasets/hiyouga/math12k) (split: test) |
 | Test | MinervaMath | [math-ai/minervamath](https://huggingface.co/datasets/math-ai/minervamath) (split: test) |
 | Test | AMC23 | [math-ai/amc23](https://huggingface.co/datasets/math-ai/amc23) (split: test) |
+| Test | AIME24 | [math-ai/aime24](https://huggingface.co/datasets/math-ai/aime24) (split: test) |
 | Test | AIME25 | [math-ai/aime25](https://huggingface.co/datasets/math-ai/aime25) (split: test) |
+| Test | AIME26 | [math-ai/aime26](https://huggingface.co/datasets/math-ai/aime26) (split: test) |
 
 ### Input/Output Format
 

@@ -62,8 +62,8 @@ RAY_HEAD_ADDR="${RAY_HEAD_ADDR:-127.0.0.1}"
 RAY_HEAD_PORT="${RAY_HEAD_PORT:-6379}"
 RAY_DASHBOARD_PORT="${RAY_DASHBOARD_PORT:-8265}"
 RAY_NODE_IP_ADDRESS="${RAY_NODE_IP_ADDRESS:-}"
-RAY_NUM_CPUS="${RAY_NUM_CPUS:-}"
-RAY_TEMP_DIR="${RAY_TEMP_DIR:-}"
+RAY_NUM_CPUS=32
+RAY_TEMP_DIR="/tmp/ray/${EXPERIMENT_NAME}"
 RAY_OBJECT_MANAGER_PORT="${RAY_OBJECT_MANAGER_PORT:-}"
 RAY_NODE_MANAGER_PORT="${RAY_NODE_MANAGER_PORT:-}"
 RAY_MIN_WORKER_PORT="${RAY_MIN_WORKER_PORT:-}"
@@ -77,6 +77,22 @@ RAY_START_EXTRA_ARGS="${RAY_START_EXTRA_ARGS:-}"
 RAY_ADDRESS="${RAY_HEAD_ADDR}:${RAY_HEAD_PORT}"
 
 mkdir -p logs
+
+cleanup_local_ray_temp() {
+    local status=$?
+    trap - EXIT INT TERM
+    timeout 20s ray stop --force >/dev/null 2>&1 || true
+    find "${RAY_TEMP_DIR}" -depth -delete 2>/dev/null || true
+    exit "${status}"
+}
+
+prepare_local_ray_temp() {
+    find "${RAY_TEMP_DIR}" -depth -delete 2>/dev/null || true
+    mkdir -p "${RAY_TEMP_DIR}"
+    trap cleanup_local_ray_temp EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+}
 
 RAY_EXTRA_ARGS=()
 if [[ -n "${RAY_START_EXTRA_ARGS}" ]]; then
@@ -280,6 +296,7 @@ run_training() {
 
 case "${MODE}" in
     local)
+        prepare_local_ray_temp
         run_training
         ;;
     head)

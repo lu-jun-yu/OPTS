@@ -2,6 +2,7 @@ import argparse
 import os
 
 import datasets
+import pyarrow.parquet as pq
 
 
 if __name__ == "__main__":
@@ -17,9 +18,19 @@ if __name__ == "__main__":
         help="Path to minervamath test.parquet file.",
     )
     parser.add_argument(
+        "--aime24_path",
+        default="data/aime24/test.parquet",
+        help="Path to aime24 test.parquet file.",
+    )
+    parser.add_argument(
         "--aime25_path",
         default="data/aime25/test.parquet",
         help="Path to aime25 test.parquet file.",
+    )
+    parser.add_argument(
+        "--aime26_path",
+        default="data/aime26/test.parquet",
+        help="Path to aime26 test.parquet file.",
     )
     parser.add_argument(
         "--amc23_path",
@@ -49,7 +60,9 @@ if __name__ == "__main__":
     # Expand paths
     math500_path = os.path.expanduser(args.math500_path)
     minervamath_path = os.path.expanduser(args.minervamath_path)
+    aime24_path = os.path.expanduser(args.aime24_path)
     aime25_path = os.path.expanduser(args.aime25_path)
+    aime26_path = os.path.expanduser(args.aime26_path)
     amc23_path = os.path.expanduser(args.amc23_path)
     output_path = os.path.expanduser(args.output_path)
 
@@ -62,16 +75,26 @@ if __name__ == "__main__":
     minervamath_ds = datasets.Dataset.from_parquet(minervamath_path)
     print(f"  minervamath samples: {len(minervamath_ds)}")
 
+    print(f"Reading aime24 from: {aime24_path}")
+    aime24_ds = datasets.Dataset.from_parquet(aime24_path)
+    print(f"  aime24 samples: {len(aime24_ds)}")
+
     print(f"Reading aime25 from: {aime25_path}")
     aime25_ds = datasets.Dataset.from_parquet(aime25_path)
     print(f"  aime25 samples: {len(aime25_ds)}")
+
+    print(f"Reading aime26 from: {aime26_path}")
+    aime26_ds = datasets.Dataset.from_parquet(aime26_path)
+    print(f"  aime26 samples: {len(aime26_ds)}")
 
     print(f"Reading amc23 from: {amc23_path}")
     amc23_ds = datasets.Dataset.from_parquet(amc23_path)
     print(f"  amc23 samples: {len(amc23_ds)}")
 
     # Merge datasets
-    merged_ds = datasets.concatenate_datasets([math500_ds, minervamath_ds, aime25_ds, amc23_ds])
+    merged_ds = datasets.concatenate_datasets(
+        [math500_ds, minervamath_ds, aime24_ds, aime25_ds, aime26_ds, amc23_ds]
+    )
     print(f"Merged samples: {len(merged_ds)}")
 
     # Shuffle if requested
@@ -85,5 +108,5 @@ if __name__ == "__main__":
         os.makedirs(output_dir, exist_ok=True)
 
     # Save merged dataset
-    merged_ds.to_parquet(output_path)
+    pq.write_table(merged_ds.data.table, output_path, compression="snappy", use_dictionary=True)
     print(f"Saved merged dataset to: {output_path}")

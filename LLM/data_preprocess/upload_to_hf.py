@@ -70,8 +70,12 @@ def generate_dataset_card(repo_id: str, data_dir: str) -> str:
         test_desc_parts.append("- [hiyouga/math12k](https://huggingface.co/datasets/hiyouga/math12k): MATH500")
     if "math-ai/minervamath" in test_sources:
         test_desc_parts.append("- [math-ai/minervamath](https://huggingface.co/datasets/math-ai/minervamath): Minerva Math")
+    if "math-ai/aime24" in test_sources:
+        test_desc_parts.append("- [math-ai/aime24](https://huggingface.co/datasets/math-ai/aime24): AIME 2024")
     if "math-ai/aime25" in test_sources:
         test_desc_parts.append("- [math-ai/aime25](https://huggingface.co/datasets/math-ai/aime25): AIME 2025")
+    if "math-ai/aime26" in test_sources:
+        test_desc_parts.append("- [math-ai/aime26](https://huggingface.co/datasets/math-ai/aime26): AIME 2026")
     if "math-ai/amc23" in test_sources:
         test_desc_parts.append("- [math-ai/amc23](https://huggingface.co/datasets/math-ai/amc23): AMC 2023")
     test_desc = "\n".join(test_desc_parts) if test_desc_parts else ""

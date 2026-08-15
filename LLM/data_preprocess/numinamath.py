@@ -138,7 +138,14 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42, help="Random seed for sampling.")
     parser.add_argument(
         "--test_data_dirs", nargs="*",
-        default=["data/aime25", "data/amc23", "data/math12k", "data/minervamath"],
+        default=[
+            "data/aime24",
+            "data/aime25",
+            "data/aime26",
+            "data/amc23",
+            "data/math12k",
+            "data/minervamath",
+        ],
         help="Test data directories for deduplication (each should contain test.parquet).",
     )
 

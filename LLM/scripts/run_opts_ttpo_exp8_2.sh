@@ -4,6 +4,21 @@ export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=1.7B
 Experiment_Name=opts_ttpo_exp8_2_0808_n8_${MODEL_SIZE}
+RAY_TEMP_DIR="/tmp/ray/${Experiment_Name}"
+
+cleanup_ray_temp() {
+    local status=$?
+    trap - EXIT INT TERM
+    timeout 20s ray stop --force >/dev/null 2>&1 || true
+    find "${RAY_TEMP_DIR}" -depth -delete 2>/dev/null || true
+    exit "${status}"
+}
+
+find "${RAY_TEMP_DIR}" -depth -delete 2>/dev/null || true
+mkdir -p logs "${RAY_TEMP_DIR}"
+trap cleanup_ray_temp EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 CUDA_VISIBLE_DEVICES=5,6 python3 -m trainer.main_opts_ttpo_exp8_2 \
  algorithm.adv_estimator=treegae \
@@ -18,10 +33,10 @@ CUDA_VISIBLE_DEVICES=5,6 python3 -m trainer.main_opts_ttpo_exp8_2 \
  actor_rollout_ref.actor.optim.weight_decay=0.1 \
  actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
  actor_rollout_ref.actor.ppo_mini_batch_size=512 \
- actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16 \
+ actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=32 \
  actor_rollout_ref.actor.use_kl_loss=False \
  actor_rollout_ref.rollout.name=vllm \
- actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=64 \
+ actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=128 \
  actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
  actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
  actor_rollout_ref.rollout.search=opts \
@@ -34,7 +49,7 @@ CUDA_VISIBLE_DEVICES=5,6 python3 -m trainer.main_opts_ttpo_exp8_2 \
  critic.enable=True \
  critic.optim.lr=1e-5 \
  critic.model.path=models/Qwen3-${MODEL_SIZE} \
- critic.ppo_micro_batch_size_per_gpu=32 \
+ critic.ppo_micro_batch_size_per_gpu=64 \
  critic.value_head_activation=sigmoid \
  custom_reward_function.path=utils/reward_fn.py \
  custom_reward_function.name=compute_score \
@@ -52,4 +67,6 @@ CUDA_VISIBLE_DEVICES=5,6 python3 -m trainer.main_opts_ttpo_exp8_2 \
  trainer.save_freq=20 \
  trainer.test_freq=20 \
  trainer.total_epochs=400 \
- trainer.total_training_steps=400 2>&1 | tee logs/${Experiment_Name}.log
+ trainer.total_training_steps=400 \
+ ray_kwargs.ray_init.num_cpus=32 \
+ +ray_kwargs.ray_init._temp_dir="${RAY_TEMP_DIR}" 2>&1 | tee logs/${Experiment_Name}.log
