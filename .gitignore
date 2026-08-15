@@ -4,6 +4,7 @@ LLM/models/Qwen3-8B
 LLM/outputs/
 LLM/checkpoints/
 LLM/wandb/
+wandb/
 Atari_MuJoCo/checkpoints
 Atari_MuJoCo/runs
 *.deb
