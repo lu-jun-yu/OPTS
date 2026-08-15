@@ -1,0 +1,38 @@
+{
+  "os": "Windows-10-10.0.26200-SP0",
+  "python": "CPython 3.10.14",
+  "startedAt": "2026-07-08T08:53:51.219368Z",
+  "program": "<stdin>",
+  "git": {
+    "remote": "https://github.com/lu-jun-yu/OPTS.git",
+    "commit": "b6133692ecec8b476ec82c812a4bc837d237cb7c"
+  },
+  "email": "julianlou2002@gmail.com",
+  "root": "D:\\OneDrive - link.tyut.edu.cn\\CursorProjects\\OPTS",
+  "host": "Heartunder-Blade",
+  "executable": "C:\\Users\\卢俊羽\\AppData\\Local\\Temp\\wandb-sync-0251\\Scripts\\python.exe",
+  "cpu_count": 8,
+  "cpu_count_logical": 16,
+  "gpu": "NVIDIA GeForce RTX 3050 Laptop GPU",
+  "gpu_count": 1,
+  "disk": {
+    "/": {
+      "total": "296022437888",
+      "used": "145352282112"
+    }
+  },
+  "memory": {
+    "total": "17024741376"
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA GeForce RTX 3050 Laptop GPU",
+      "memoryTotal": "4294967296",
+      "cudaCores": 2048,
+      "architecture": "Ampere",
+      "uuid": "GPU-1405df4a-6894-3c83-173b-974541cdb58a"
+    }
+  ],
+  "cudaVersion": "12.3",
+  "writerId": "wt61pv70ucuqa1wd15x2kat5djm090t3"
+}
