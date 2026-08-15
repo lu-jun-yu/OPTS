@@ -6,31 +6,35 @@ export MKL_NUM_THREADS=1
 SEEDS=(1 2 3 4 5)
 SEARCHES=(1 2 3 4 5 6 7 8)
 TASKS=(Walker2d-v4 Hopper-v4 HalfCheetah-v4 Ant-v4 Humanoid-v4)
+TAUS=(0.4 0.5 0.6 0.7)
 
 total_timesteps=1000000
 num_steps=2048
 num_minibatches=32
-tau=0.0
-learning_rate=1e-4
+learning_rate=2e-4
 
-for task in "${TASKS[@]}"; do
-    echo "Starting $task with ${#SEEDS[@]} seeds x ${#SEARCHES[@]} searches..."
-    for search in "${SEARCHES[@]}"; do
-        for seed in "${SEEDS[@]}"; do
-            python cleanrl/cleanrl/opts_ttpo_continuous_action_exp5_1.py \
-                --env-id "$task" \
-                --total-timesteps "$total_timesteps" \
-                --num-steps "$num_steps" \
-                --num-minibatches "$num_minibatches" \
-                --learning-rate "$learning_rate" \
-                --max-search-per-tree "$search" \
-                --tau "$tau" \
-                --no-cuda \
-                --seed "$seed" &
+for tau in "${TAUS[@]}"; do
+    echo "Starting tau=$tau..."
+    for task in "${TASKS[@]}"; do
+        echo "Starting $task with ${#SEEDS[@]} seeds x ${#SEARCHES[@]} searches at tau=$tau..."
+        for search in "${SEARCHES[@]}"; do
+            for seed in "${SEEDS[@]}"; do
+                python cleanrl/cleanrl/opts_ttpo_continuous_action_exp5_1.py \
+                    --env-id "$task" \
+                    --total-timesteps "$total_timesteps" \
+                    --num-steps "$num_steps" \
+                    --num-minibatches "$num_minibatches" \
+                    --learning-rate "$learning_rate" \
+                    --max-search-per-tree "$search" \
+                    --tau "$tau" \
+                    --no-cuda \
+                    --seed "$seed" &
+            done
         done
+        wait
+        echo "$task done at tau=$tau"
     done
-    wait
-    echo "$task done"
+    echo "tau=$tau done"
 done
 
 echo "OPTS-TTPO continuous-action runs done"
