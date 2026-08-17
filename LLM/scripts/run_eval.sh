@@ -4,9 +4,10 @@
 #   1) Call scripts/run_parallel_generation.sh — merge FSDP actors + generate
 #      N_SAMPLES (128) i.i.d. responses per prompt for DAPO, GPG, PPO,
 #      REINFORCE++, OPTS-TTPO.
-#   2) Call scripts/run_opts_generation.sh for each reward mode in
-#      OPTS_REWARD_MODES — merge OPTS-TTPO actor+critic + run
-#      trainer.main_opts_generation with n_samples=128 (OPTS tree search).
+#   2) Call scripts/run_opts_generation.sh — merge OPTS-TTPO actor+critic and
+#      run trainer.main_opts_generation (OPTS tree search). The reward mode is
+#      set inside that script; Task 3 below needs a separate REWARD_MODE=value
+#      run of it.
 #   3) Score every parquet with trainer.main_eval --pregenerated_parquet:
 #        - Task 1: avg@PASSCONS_K, pass@PASSCONS_K, cons@PASSCONS_K over the
 #          first PASSCONS_K of N_SAMPLES responses (default K=32).
@@ -18,14 +19,8 @@
 #   4) Summarize generation wall-clock times so pass@k-style i.i.d. sampling
 #      and OPTS tree-search can be compared directly.
 #
-# Ray modes (forwarded to the generation scripts via env vars):
-#   MODE=local (default)         — single-node single-GPU end-to-end
-#   MODE=train NNODES=2 \        — drive merge+gen on an already-started
-#       GPUS_PER_NODE=1 \          two-machine single-GPU Ray cluster.
-#       RAY_HEAD_ADDR=<head_ip>    Start the cluster first with
-#                                  `MODE=head` / `MODE=worker bash scripts/run_parallel_generation.sh`
-#                                  (or `scripts/run_opts_generation.sh`) on the respective machines.
-#
+# Generation knobs (checkpoint, budget, reward mode) are set inside the two
+# generation scripts; eval knobs are the variables directly below.
 # Set SKIP_GEN=1 to bypass steps 1 and 2 (evaluate-only on existing parquets).
 
 set -euo pipefail
@@ -34,44 +29,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LLM_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${LLM_DIR}"
 
-MODEL_SIZE="${MODEL_SIZE:-1.7B}"
-STEP="${STEP:-300}"
-N_SAMPLES="${N_SAMPLES:-128}"
-PASSCONS_K="${PASSCONS_K:-32}"
-OPTS_KS="${OPTS_KS:-8 16 32 64 128}"
-OPTS_REWARD_MODES="${OPTS_REWARD_MODES:-reward value}"
+STEP=300
+N_SAMPLES=128
+PASSCONS_K=32
+OPTS_KS="8 16 32 64 128"
 OPTS_KS_TAG="${OPTS_KS// /-}"
+SKIP_GEN=0
 
-OUT_ROOT="${OUT_ROOT:-outputs/step${STEP}}"
-GEN_ROOT="${GEN_ROOT:-${OUT_ROOT}/gen}"
-EVAL_ROOT="${EVAL_ROOT:-${OUT_ROOT}/eval}"
-LOG_ROOT="${LOG_ROOT:-logs/step${STEP}}"
+OUT_ROOT="outputs/step${STEP}"
+GEN_ROOT="${OUT_ROOT}/gen"
+EVAL_ROOT="${OUT_ROOT}/eval"
+LOG_ROOT="logs/step${STEP}"
 mkdir -p "${EVAL_ROOT}"
 
-# Propagate common vars (generation + Ray) into the two sub-scripts. The Ray
-# knobs below are no-ops when MODE=local (default) but let the orchestrator
-# drive a two-machine Ray cluster without re-setting them on each call.
-export MODEL_SIZE STEP N_SAMPLES OPTS_KS OUT_ROOT GEN_ROOT LOG_ROOT
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
-export MODE="${MODE:-local}"
-export NNODES="${NNODES:-1}"
-export GPUS_PER_NODE="${GPUS_PER_NODE:-1}"
-export RAY_HEAD_ADDR="${RAY_HEAD_ADDR:-127.0.0.1}"
-export RAY_HEAD_PORT="${RAY_HEAD_PORT:-6379}"
-
 METHODS=("dapo" "gpg" "ppo" "reinforce_pp" "opts_ttpo")
-read -r -a OPTS_REWARD_MODE_ARR <<< "${OPTS_REWARD_MODES}"
 
-if [[ "${SKIP_GEN:-0}" != "1" ]]; then
-    echo "========== Stage 1: i.i.d. generation for ${METHODS[*]}  (MODE=${MODE}) =========="
+if [[ "${SKIP_GEN}" != "1" ]]; then
+    echo "========== Stage 1: i.i.d. generation for ${METHODS[*]} =========="
     bash "${SCRIPT_DIR}/run_parallel_generation.sh"
 
-    echo "========== Stage 2: OPTS tree-search generation for opts_ttpo  (MODE=${MODE}) =========="
-    for reward_mode in "${OPTS_REWARD_MODE_ARR[@]}"; do
-        echo "--- opts_ttpo reward_mode=${reward_mode} ---"
-        REWARD_MODE="${reward_mode}" OPTS_GEN_TAG="${reward_mode}" \
-            bash "${SCRIPT_DIR}/run_opts_generation.sh"
-    done
+    echo "========== Stage 2: OPTS tree-search generation for opts_ttpo =========="
+    bash "${SCRIPT_DIR}/run_opts_generation.sh"
 fi
 
 echo "========== Stage 3: Task 1 — avg@${PASSCONS_K}, pass@${PASSCONS_K}, cons@${PASSCONS_K} =========="
