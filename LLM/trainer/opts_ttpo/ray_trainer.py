@@ -309,7 +309,6 @@ def compute_advantage(
             pid=list(data.non_tensor_batch["pid"]),
             branch_pos=data.non_tensor_batch["branch_pos"],
             cid=list(data.non_tensor_batch["cid"]),
-            state_branches=data.batch["state_branches"],
             new_sample_indices=new_sample_indices,
             raw_prompt_len=data.non_tensor_batch["raw_prompt_len"],
             max_prompt_len=data.batch["attention_mask"].shape[1] - data.batch["response_mask"].shape[1],
@@ -710,12 +709,10 @@ def select_next_states(
     max_otrc_scores: dict,
     max_search_per_tree: int,
     tree_search_state_by_uid: Dict[Any, TreeSearchState],
-    gamma: float,
-    max_prompt_length: int,
-    batch_size: int,
-    tokenizer=None,
+    max_searched_tree_ratio: float,
+    search_batch_size: int,
 ) -> Dict[str, Tuple[int, int]]:
-    """Select next states for expansion using OTRC.
+    """Select above-mean-baseline OTRC states under a global searched-tree ratio.
 
     Returns the OTRC-selected nodes (not the branch points). The caller must
     convert to parent nodes via selected_to_branch_points() before using as
@@ -724,11 +721,13 @@ def select_next_states(
     Args:
         batch: DataProto containing all required tensors and non-tensor data.
         search_count: {uid: count}, cumulative within training iteration.
-        max_otrc_scores: {uid: max otrc_score at selected node}.
+        max_otrc_scores: {uid: raw otrc_score at first qualification}, used for
+            the cross-tree mean baseline gate.
         max_search_per_tree: Max searches per tree per iteration.
-        max_prompt_length: Maximum allowed prompt length.
         tree_search_state_by_uid: Cached greedy terminal / OTRC state keyed by uid.
-        batch_size: Maximum number of candidates to select.
+        max_searched_tree_ratio: Maximum fraction of unique trees that may
+            have search_count > 0.
+        search_batch_size: Maximum number of searches generated this round.
 
     Returns:
         next_states: Dict mapping uid to (traj_idx_in_global, token_pos) of the
@@ -746,24 +745,39 @@ def select_next_states(
         if root_mask[i]:
             root_uids.add(uid[i])
 
-    candidates = []
+    searched_uids = {u for u in root_uids if search_count.get(u, 0) > 0}
+    max_searched_tree_count = int(max_searched_tree_ratio * len(root_uids))
+    new_tree_budget = max_searched_tree_count - len(searched_uids)
+    assert new_tree_budget >= 0, (
+        f"searched-tree ratio invariant violated: searched={len(searched_uids)}, "
+        f"limit={max_searched_tree_count}, total={len(root_uids)}"
+    )
+
     active_uids = [u for u in root_uids if search_count.get(u, 0) < max_search_per_tree]
     for u in active_uids:
+        max_otrc_scores.setdefault(u, tree_search_state_by_uid[u].raw_otrc_score)
+
+    candidates = []
+    mean_threshold = np.mean(list(max_otrc_scores.values()))
+    for u in active_uids:
         state = tree_search_state_by_uid[u]
-        max_otrc_scores.setdefault(u, state.raw_otrc_score)
+        if state.raw_otrc_score <= mean_threshold:
+            continue
+        traj_idx = rid2idx[state.candidate_rid]
+        candidates.append((state.candidate_otrc_score, u, traj_idx, state.candidate_pos))
 
-    if max_otrc_scores:
-        mean_threshold = np.mean(list(max_otrc_scores.values()))
-        for u in active_uids:
-            state = tree_search_state_by_uid[u]
-            if state.raw_otrc_score <= mean_threshold:
-                continue
-            traj_idx = rid2idx[state.candidate_rid]
-            candidates.append((state.candidate_otrc_score, u, traj_idx, state.candidate_pos))
-
-    # --- Global sort and select top batch_size ---
     candidates.sort(key=lambda x: x[0], reverse=True)
-    selected = candidates[:batch_size]
+    selected = []
+    selected_new_tree_count = 0
+    for candidate in candidates:
+        if len(selected) >= search_batch_size:
+            break
+        u = candidate[1]
+        if u not in searched_uids:
+            if selected_new_tree_count >= new_tree_budget:
+                continue
+            selected_new_tree_count += 1
+        selected.append(candidate)
 
     # Build next_states (selected nodes) and update search_count
     # state_branches is NOT updated here — caller must convert to parent
@@ -774,8 +788,12 @@ def select_next_states(
         search_count[u] = search_count.get(u, 0) + 1
 
     if candidates:
+        searched_tree_count_after = len(searched_uids) + selected_new_tree_count
         logger_batch.info(
             f"[select_next_states] candidates={len(candidates)}, selected={len(selected)}, "
+            f"selected_new={selected_new_tree_count}, selected_repeat={len(selected) - selected_new_tree_count}, "
+            f"searched_trees={searched_tree_count_after}/{len(root_uids)}, "
+            f"searched_tree_limit={max_searched_tree_count}, "
             f"otrc_score_range=[{candidates[0][0]:.4f}, {candidates[-1][0]:.4f}]"
         )
     else:
@@ -912,13 +930,13 @@ def compute_aggregated_returns(batch: DataProto) -> list[float]:
 
     Args:
         batch: Global batch with episodic_returns (pre-computed),
-               branch_weight, response_mask, uid.
+               return_branch_weight, response_mask, uid.
 
     Returns:
         List of per-uid aggregated returns.
     """
     response_mask = batch.batch["response_mask"]
-    branch_weight = batch.batch["branch_weight"]
+    branch_weight = batch.batch["return_branch_weight"]
     uid = batch.non_tensor_batch["uid"]
     episodic_returns = batch.non_tensor_batch["episodic_returns"]
 
@@ -980,7 +998,39 @@ def compute_search_count_rate_metrics(
     for i in range(max_search_per_tree + 1):
         matched = sum(1 for u in unique_uids if search_count.get(u, 0) == i)
         metrics[f"opts_ttpo/step_search_count_{i}_rate"] = matched / total_prompts
+    searched_tree_count = sum(1 for u in unique_uids if search_count.get(u, 0) > 0)
+    metrics["opts_ttpo/step_searched_tree_count"] = searched_tree_count
+    metrics["opts_ttpo/step_total_tree_count"] = total_prompts
+    metrics["opts_ttpo/step_searched_tree_rate"] = searched_tree_count / total_prompts
     return metrics
+
+
+def normalize_branch_weight_per_tree(
+    branch_weight: torch.Tensor,
+    response_mask: torch.Tensor,
+    uid: np.ndarray,
+) -> tuple[torch.Tensor, int]:
+    """Normalize valid-token branch weights independently within each uid tree."""
+    masked_weight = branch_weight * response_mask.to(dtype=branch_weight.dtype)
+    unique_uids = list(dict.fromkeys(uid))
+    uid2idx = {tree_uid: idx for idx, tree_uid in enumerate(unique_uids)}
+    uid_indices = torch.tensor(
+        [uid2idx[tree_uid] for tree_uid in uid],
+        device=branch_weight.device,
+        dtype=torch.long,
+    )
+
+    trajectory_weight_sums = masked_weight.sum(dim=-1)
+    tree_weight_sums = torch.zeros(
+        len(unique_uids),
+        device=branch_weight.device,
+        dtype=branch_weight.dtype,
+    )
+    tree_weight_sums.scatter_add_(0, uid_indices, trajectory_weight_sums)
+    assert torch.all(tree_weight_sums > 0), "Every uid tree must contain positive valid-token branch weight."
+
+    loss_branch_weight = masked_weight / tree_weight_sums[uid_indices].unsqueeze(-1)
+    return loss_branch_weight, len(unique_uids)
 
 
 def weighted_masked_whiten(
@@ -2082,6 +2132,12 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
 
         # Batch size for each round
         batch_size = self.config.data.get("gen_batch_size", self.config.data.train_batch_size)
+        max_searched_tree_ratio = float(self.config.algorithm.get("max_searched_tree_ratio", 0.3))
+        if not 0.0 <= max_searched_tree_ratio <= 1.0:
+            raise ValueError(
+                "algorithm.max_searched_tree_ratio must be in [0, 1], "
+                f"got {max_searched_tree_ratio}"
+            )
 
         for epoch in range(current_epoch, self.config.trainer.total_epochs):
             for batch_idx in range(len(self.train_dataloader)):
@@ -2089,6 +2145,8 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                     self.actor_rollout_wg.async_calls_finalize_fn_exec(blocking=False)
                 metrics = {}
                 timing_raw = {}
+                metrics["opts_ttpo/max_searched_tree_ratio"] = max_searched_tree_ratio
+                metrics["opts_ttpo/search_batch_size"] = batch_size
 
                 with marked_timer("start_profile", timing_raw):
                     self._start_profiling(
@@ -2357,10 +2415,8 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                     max_otrc_scores=max_otrc_scores,
                                     max_search_per_tree=max_search_per_tree,
                                     tree_search_state_by_uid=tree_search_state_by_uid,
-                                    gamma=self.config.algorithm.gamma,
-                                    max_prompt_length=self.config.data.max_prompt_length,
-                                    batch_size=batch_size,
-                                    tokenizer=self.tokenizer,
+                                    max_searched_tree_ratio=max_searched_tree_ratio,
+                                    search_batch_size=batch_size,
                                 )
                                 # Convert selected nodes to parent branch points
                                 # (also updates state_branches in-place)
@@ -2379,7 +2435,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                     with timed_block("opts_ttpo_final_processing", step=self.global_steps):
                         batch = global_batch
 
-                        # Compute branch_weight
+                        # Equal branch-splitting weights are used for training.
                         branch_weight = compute_branch_weight(
                             state_branches=batch.batch["state_branches"],
                             pid=batch.non_tensor_batch["pid"],
@@ -2387,11 +2443,23 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                             uid=batch.non_tensor_batch["uid"],
                             branch_pos=batch.non_tensor_batch["branch_pos"],
                         )
-                        batch.batch["branch_weight"] = branch_weight
-                        # Pre-compute global weighted-token-mean denominator sum_t(mask_t * w_t)
-                        # so per-micro-batch agg_loss can use it directly (no all_reduce).
-                        weighted_mask = batch.batch["response_mask"].float() * branch_weight
-                        batch.meta_info["weighted_weight_sum"] = float(weighted_mask.sum().item())
+                        loss_branch_weight, num_trees = normalize_branch_weight_per_tree(
+                            branch_weight=branch_weight,
+                            response_mask=batch.batch["response_mask"],
+                            uid=batch.non_tensor_batch["uid"],
+                        )
+                        batch.batch["branch_weight"] = loss_branch_weight
+                        # Monitoring keeps the original equal-branch weighting.
+                        batch.batch["return_branch_weight"] = compute_branch_weight(
+                            state_branches=batch.batch["state_branches"],
+                            pid=batch.non_tensor_batch["pid"],
+                            rid=batch.non_tensor_batch["rid"],
+                            uid=batch.non_tensor_batch["uid"],
+                            branch_pos=batch.non_tensor_batch["branch_pos"],
+                        )
+                        # Each tree's loss weights sum to one; averaging over the global tree count
+                        # remains correct after data-parallel and micro-batch splitting.
+                        batch.meta_info["weighted_weight_sum"] = float(num_trees)
                         batch.batch["advantages"] = weighted_masked_whiten(
                             advantages=batch.batch["advantages"],
                             response_mask=batch.batch["response_mask"],

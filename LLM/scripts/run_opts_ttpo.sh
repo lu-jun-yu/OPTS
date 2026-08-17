@@ -3,7 +3,7 @@ export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=1.7B
-Experiment_Name=opts_ttpo_exp6_0804_n8_${MODEL_SIZE}
+Experiment_Name=opts_ttpo_0817_n8_${MODEL_SIZE}
 RAY_TEMP_DIR="/tmp/ray/${Experiment_Name}"
 
 cleanup_ray_temp() {
@@ -20,7 +20,7 @@ trap cleanup_ray_temp EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-CUDA_VISIBLE_DEVICES=5,6 python3 -m trainer.main_opts_ttpo_exp6 \
+CUDA_VISIBLE_DEVICES=5,6 python3 -m trainer.main_opts_ttpo \
  algorithm.adv_estimator=treegae \
  data.train_files=data/train.parquet \
  data.val_files=data/test.parquet \
@@ -33,10 +33,10 @@ CUDA_VISIBLE_DEVICES=5,6 python3 -m trainer.main_opts_ttpo_exp6 \
  actor_rollout_ref.actor.optim.weight_decay=0.1 \
  actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
  actor_rollout_ref.actor.ppo_mini_batch_size=512 \
- actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16 \
+ actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=32 \
  actor_rollout_ref.actor.use_kl_loss=False \
  actor_rollout_ref.rollout.name=vllm \
- actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=64 \
+ actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=128 \
  actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
  actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
  actor_rollout_ref.rollout.search=opts \
@@ -56,6 +56,7 @@ CUDA_VISIBLE_DEVICES=5,6 python3 -m trainer.main_opts_ttpo_exp6 \
  algorithm.use_kl_in_reward=False \
  algorithm.kl_ctrl.kl_coef=0.0 \
  algorithm.lam=0.999 \
+ +algorithm.max_searched_tree_ratio=0.4 \
  trainer.logger='["console","wandb"]' \
  trainer.val_before_train=False \
  trainer.n_gpus_per_node=2 \

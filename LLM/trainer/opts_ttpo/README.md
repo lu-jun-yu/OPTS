@@ -42,11 +42,15 @@ actor_rollout_ref:
   rollout:
     n: 4                    # 循环采样的轮数
     max_search_per_tree: 4  # 每棵树每个训练迭代最大搜索次数
+
+algorithm:
+  max_searched_tree_ratio: 0.3  # 允许被搜索的树占比上限
 ```
 
 **参数说明：**
 - `n`（n_rounds）：总共进行的采样轮数，决定树的深度和广度
 - `max_search_per_tree`：每棵树（uid）在一个训练 step 内允许的最大搜索次数，达到上限后该树不再被 OTRC 选中
+- `max_searched_tree_ratio`：一个训练 step 内允许产生搜索（search_count > 0）的树占总树数的比例上限，超出预算的新树候选被跳过（已搜索过的树继续搜索不占预算）
 
 
 ## 3 数据结构详解
@@ -76,7 +80,8 @@ actor_rollout_ref:
 | 键名 | 形状 | 说明 |
 |------|------|------|
 | state_branches | (bs, response_len) | 每个状态的分支数 |
-| branch_weight | (bs, response_len) | 策略梯度权重因子（更新阶段计算） |
+| branch_weight | (bs, response_len) | 训练用策略梯度权重（树内归一化，更新阶段计算） |
+| return_branch_weight | (bs, response_len) | 原始未归一化的 1/W 权重（监控/aggregated return 用） |
 
 #### 3.1.2 non_tensor_batch（非张量数据）
 
@@ -177,6 +182,7 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
   1. **初始权重**：沿祖先链从当前轨迹追溯到根，累乘每段祖先轨迹上 `state_branches[:branch_pos+1]` 的乘积，最后乘以根处同 uid 的根轨迹数
   2. **轨迹内传播**：`weight[t] = init_weight * cumprod(state_branches[0:t])`
 - 含义：从根到当前节点路径上所有祖先分支数的累乘
+- 训练前经 `normalize_branch_weight_per_tree` 在每棵 uid 树内归一化；原始值存于 `return_branch_weight`
 - 用于校正策略梯度，保证无偏估计
 
 
@@ -256,10 +262,9 @@ for epoch in ...:
             -------- d. 反向：TreeGAE --------
 
             compute_treegae_advantage_return：在 global_batch 上计算 TreeGAE 优势
-              - 第一个循环：对新样本执行标准 GAE
-              - 第二个循环：向祖先轨迹传播优势值（线程池并行）
-                - 非分支位置：正常 GAE 传播
-                - 分支位置：取所有子分支首 token 优势的均值再传播
+              - 在统一 response 坐标上做全局逆序扫描，对受影响子图做增量更新
+              - 非分支位置：正常 GAE 传播
+              - 分支位置：取所有子分支首 token 优势与当前 continuation 优势的最大值再传播
 
             -------- e. 选择（非最后一轮） --------
 
@@ -268,18 +273,20 @@ for epoch in ...:
                   - 跳过搜索次数已达上限的树
                   - 沿最优路径计算 otrc_score，选择 argmax
                   - 记录各树的 max_otrc_scores[uid] = otrc_score[k]
-                  - 用 max_otrc_scores 的均值做门控（仅保留 otrc_score[k] 更大的候选）
+                  - 用 max_otrc_scores 的跨树均值做门控（仅保留 otrc_score[k] 超过均值的候选）
                   - 应用 prompt 长度约束和 </think> 位置掩码
-                  - 全局排序，取 top batch_size 个候选
+                  - 在 max_searched_tree_ratio 新树预算约束下全局排序，取 top batch_size 个候选
 
                 selected_to_branch_points：将选中节点转换为其父节点作为分支点，更新 state_branches
 
         ======== 后处理 ========
 
         compute_branch_weight：沿祖先链追溯到根，累乘 state_branches，根节点乘以同 uid 的根轨迹数
+        normalize_branch_weight_per_tree：将 branch_weight 在每棵 uid 树内归一化（每棵树权重和为 1），
+          作为训练用 branch_weight；原始未归一化权重另存为 return_branch_weight 供监控
         weighted_masked_whiten：对 global_batch 的 advantages 做全局加权白化
           - 仅统计 response_mask=1 的 token
-          - 权重使用 1 / branch_weight
+          - 权重使用树内归一化后的 branch_weight
           - 与 masked_whiten 一致，使用 (adv-mean)/sqrt(var+eps)
 
         计算 aggregated_returns：按 uid 分组，组内用 weight 倒数加权平均 episodic_returns
@@ -293,7 +300,7 @@ for epoch in ...:
 
         更新 Actor：
           - branch_weight 存在时使用 "weighted-token-mean" 聚合：
-            loss = masked_sum(loss_mat / W) / masked_sum(1 / W) * dp_size
+            loss = masked_sum(loss_mat * w) / num_trees * dp_size（w 为树内归一化权重）
 
 
 ```
@@ -306,7 +313,7 @@ for epoch in ...:
 $$
 \hat{A}_t = \begin{cases}
 \delta_t + \gamma \lambda \hat{A}_{t+1} & \text{if } t \notin \text{branch\_nodes} \\
-\delta_t + \gamma \lambda \cdot \frac{1}{|B_t|} \sum_{b \in B_t} \hat{A}_b^{(0)} & \text{if } t \in \text{branch\_nodes}
+\delta_t + \gamma \lambda \cdot \max_{b \in B_t} \hat{A}_b^{(0)} & \text{if } t \in \text{branch\_nodes}
 \end{cases}
 $$
 
@@ -314,13 +321,13 @@ $$
 - $\delta_t = r_t + \gamma V(s_{t+1}) - V(s_t)$ 为 TD 误差
 - $B_t$ 为从状态 $t$ 分出的所有子轨迹集合（包括当前轨迹自身的延续）
 - $\hat{A}_b^{(0)}$ 为子轨迹 $b$ 的第一个 token 的优势值
-- 分支节点的均值计算：`(sum(child_advantages[:, 0]) + continuation_advantage) / state_branches[t]`
+- 分支节点的最大值计算：`max(max(child_advantages[:, 0]), continuation_advantage)`
 
 **实现细节**：
 1. 第一个循环对新样本执行标准 GAE（从后向前）
 2. 第二个循环从 next_states 指定的父轨迹开始，从 branch_pos 向前传播优势值
-3. 传播过程中，遇到分支位置时取所有子分支首 token 优势的均值
-4. 使用 child_first_adv_sum 缓存子分支首 token 的 advantage 和
+3. 传播过程中，遇到分支位置时取所有子分支首 token 优势与当前 continuation 优势的最大值
+4. 使用 child_first_adv_max 缓存子分支首 token 的 advantage 最大值
 5. 在统一 response 坐标上做全局逆序扫描，对受影响子图做增量更新
 
 ### 5.2 OTRC
@@ -366,9 +373,9 @@ otrc_score 即为节点的选择评分。选择流程：
 1. 跳过 `search_count >= max_search_per_tree` 的树
 2. 对每棵树沿最优路径计算 otrc_score，取 argmax
 3. 记录 `max_otrc_scores[uid] = otrc_score[argmax]`（LLM 中使用原始 otrc_score，不做长度归一化）
-4. 用 `max_otrc_scores` 的正值均值做门控，仅保留 `otrc_score[argmax]` 超过均值的候选
+4. 用 `max_otrc_scores` 的跨树均值做门控（baseline），仅保留 `raw_otrc_score` 超过均值的候选
 5. 应用掩码：prompt 长度约束 + `</think>` 位置约束（确保分支在思考阶段内）
-6. 跨所有树全局排序，取 top batch_size 个候选
+6. 跨所有树全局排序，在 `max_searched_tree_ratio` 的新树预算约束下取 top batch_size 个候选（已搜索过的树不占用新树预算）
 7. 通过 `selected_to_branch_points` 将选中节点转换为其父节点作为分支点
 
 **step_mean_return 更新机制**：
@@ -389,17 +396,20 @@ $$
 
 其中 $\text{init\_weight}_i$ 通过沿祖先链追溯计算：从当前轨迹开始，依次找到父轨迹、祖父轨迹直到根轨迹，将每段祖先轨迹上从位置 0 到 branch_pos 的所有 state_branches 值相乘累积到 weight 中，最后再乘以同 uid 下根轨迹的数量。
 
-**Loss 聚合**：当 branch_weight 存在时，自动切换为 "weighted-token-mean" 模式。policy loss 和 value loss 均除以 branch_weight 后加权求和，而非简单均值：
+**Loss 聚合**：当 branch_weight 存在时，自动切换为 "weighted-token-mean" 模式。训练用的 branch_weight 先经 `normalize_branch_weight_per_tree` 在每棵 uid 树内归一化（每棵树的有效 token 权重和为 1），policy loss 和 value loss 再加权求和并除以全局树数：
 
 $$
-\text{loss} = \frac{\sum_t \text{loss}_t / W_t \cdot \text{mask}_t}{\sum_t (1/W_t) \cdot \text{mask}_t} \cdot \text{dp\_size}
+\text{loss} = \frac{\sum_t \text{loss}_t \cdot w_t \cdot \text{mask}_t}{\text{num\_trees}} \cdot \text{dp\_size},
+\quad w_t = \frac{(1/W_t)\cdot m_t}{\sum_{t' \in \text{tree}} (1/W_{t'})\cdot m_{t'}}
 $$
+
+监控口径保留原始未归一化的 $1/W$ 权重，存于 `return_branch_weight`。
 
 当 branch_weight 不存在时（非 OPTS_TTPO 模式），退化为标准聚合模式。
 
 ### 5.4 Weighted Advantage Whitening
 
-OPTS_TTPO 在 step 后处理阶段使用 `weighted_masked_whiten` 对优势做全局加权白化：
+OPTS_TTPO 在 step 后处理阶段使用 `weighted_masked_whiten` 对优势做全局加权白化（权重使用树内归一化后的训练 branch_weight）：
 
 $$
 \mu = \frac{\sum_t \hat{A}_t \cdot (1/W_t)\cdot m_t}{\sum_t (1/W_t)\cdot m_t},
@@ -417,7 +427,7 @@ $$
 
 每个 step 结束后，计算 aggregated_returns：
 
-1. 取每条轨迹最后一个有效 token 位置的 branch_weight 作为权重
+1. 取每条轨迹最后一个有效 token 位置的 `return_branch_weight`（原始未归一化的 branch_weight）作为权重
 2. 按 uid 分组，对组内 episodic_returns 用 weight 倒数加权平均，得到每个 uid 的 aggregated_return
 3. 计算各 uid 的 aggregated_return 的均值，更新 step_mean_return（仅监控指标）
 
@@ -457,8 +467,9 @@ LLM/trainer/opts_ttpo/
 | `merge_batches` | ray_trainer.py | 合并两个 DataProto batch |
 | `compute_aggregated_returns` | ray_trainer.py | 按 uid 分组计算 weight 加权平均 episodic return |
 | `PromptBuffer` | ray_trainer.py | 从 dataloader 按需抽取 prompt 的缓冲区 |
-| `compute_treegae_advantage_return` | core_algos.py | TreeGAE 优势估计：新样本 GAE + 祖先传播 |
+| `compute_treegae_advantage_return` | core_algos.py | TreeGAE 优势估计：全局逆序扫描增量更新，分支位置取最大值回传 |
 | `compute_branch_weight` | core_algos.py | 计算分支权重因子：祖先链追溯 + 轨迹内 cumprod |
+| `normalize_branch_weight_per_tree` | ray_trainer.py | 将 branch_weight 在每棵 uid 树内归一化，供训练 loss 使用 |
 | `agg_loss` | core_algos.py | Loss 聚合，新增 "weighted-token-mean" 模式 |
 | `compute_value_loss` | core_algos.py | PPO value loss，新增 branch_weight 参数 |
 | `compute_policy_loss_vanilla` | core_algos.py | PPO policy loss，新增 branch_weight 参数 |
@@ -479,6 +490,7 @@ algorithm:
   adv_estimator: treegae    # 使用 TreeGAE 优势估计
   gamma: 1.0                # 折扣因子
   lam: 0.95                 # GAE lambda
+  max_searched_tree_ratio: 0.3  # 允许被搜索的树占比上限
 ```
 
 ### 6.4 verl 框架修改

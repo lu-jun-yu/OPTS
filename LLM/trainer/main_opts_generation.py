@@ -380,7 +380,6 @@ def main_task(config):
             pid=list(global_batch.non_tensor_batch["pid"]),
             branch_pos=list(global_batch.non_tensor_batch["branch_pos"]),
             cid=list(global_batch.non_tensor_batch["cid"]),
-            state_branches=global_batch.batch["state_branches"],
             new_sample_indices=new_sample_indices,
             raw_prompt_len=global_batch.non_tensor_batch["raw_prompt_len"],
             max_prompt_len=global_batch.batch["attention_mask"].shape[1] - global_batch.batch["response_mask"].shape[1],
@@ -443,10 +442,8 @@ def main_task(config):
                 max_otrc_scores=max_otrc_scores,
                 max_search_per_tree=max_search_per_tree,
                 tree_search_state_by_uid=tree_search_state_by_uid,
-                gamma=gamma,
-                max_prompt_length=prompt_length,
-                batch_size=effective_batch_size,
-                tokenizer=tokenizer,
+                max_searched_tree_ratio=1.0,
+                search_batch_size=effective_batch_size,
             )
             next_states = selected_to_branch_points(selected_states, global_batch)
 
