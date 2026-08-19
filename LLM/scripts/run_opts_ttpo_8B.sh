@@ -49,6 +49,7 @@ WANDB_MODE=offline CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m trainer.main_opts_ttp
  critic.enable=True \
  critic.optim.lr=1e-5 \
  critic.model.path=models/Qwen3-${MODEL_SIZE} \
+ critic.model.use_remove_padding=True \
  critic.ppo_micro_batch_size_per_gpu=32 \
  critic.value_head_activation=sigmoid \
  custom_reward_function.path=utils/reward_fn.py \

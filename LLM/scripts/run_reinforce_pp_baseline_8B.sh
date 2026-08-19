@@ -20,7 +20,7 @@ trap cleanup_ray_temp EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-CUDA_VISIBLE_DEVICES=3,4 python3 -m verl.trainer.main_ppo \
+CUDA_VISIBLE_DEVICES=2,3 python3 -m verl.trainer.main_ppo \
  algorithm.adv_estimator=reinforce_plus_plus_baseline \
  data.train_files=data/train.parquet \
  data.val_files=data/test.parquet \

@@ -20,7 +20,7 @@ trap cleanup_ray_temp EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-CUDA_VISIBLE_DEVICES=5,6 python3 -m trainer.main_opts_ttpo \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m trainer.main_opts_ttpo \
  algorithm.adv_estimator=treegae \
  data.train_files=data/train.parquet \
  data.val_files=data/test.parquet \
@@ -45,21 +45,22 @@ CUDA_VISIBLE_DEVICES=5,6 python3 -m trainer.main_opts_ttpo \
  actor_rollout_ref.rollout.val_kwargs.do_sample=True \
  actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
  actor_rollout_ref.rollout.val_kwargs.top_p=0.95 \
- actor_rollout_ref.rollout.max_search_per_tree=3 \
+ actor_rollout_ref.rollout.max_search_per_tree=7 \
  critic.enable=True \
  critic.optim.lr=1e-5 \
  critic.model.path=models/Qwen3-${MODEL_SIZE} \
+ critic.model.use_remove_padding=True \
  critic.ppo_micro_batch_size_per_gpu=64 \
  critic.value_head_activation=sigmoid \
  custom_reward_function.path=utils/reward_fn.py \
  custom_reward_function.name=compute_score \
  algorithm.use_kl_in_reward=False \
  algorithm.kl_ctrl.kl_coef=0.0 \
- algorithm.lam=0.999 \
+ algorithm.lam=0.998 \
  +algorithm.max_searched_tree_ratio=0.4 \
  trainer.logger='["console","wandb"]' \
  trainer.val_before_train=False \
- trainer.n_gpus_per_node=2 \
+ trainer.n_gpus_per_node=4 \
  trainer.nnodes=1 \
  trainer.project_name=opts_ttpo_${MODEL_SIZE} \
  trainer.experiment_name=${Experiment_Name} \
