@@ -291,14 +291,30 @@ def compute_treegae_advantage_return(
 
         history_len = valid_prompt_len - raw_prompt_len
 
+        def _segmented_child_max(entries, out_max, out_present):
+            """Segment-max of children's first-token advantages per (parent, pos) branch point.
+
+            entries: list of (parent_idx, branch_position, child_idx) triples.
+            """
+            if not entries:
+                return
+            e = torch.tensor(entries, device=device, dtype=torch.long)
+            flat_keys = e[:, 0] * gen_len + e[:, 1]
+            child_vals = advantages[e[:, 2], 0]
+            uniq_keys, inv = torch.unique(flat_keys, return_inverse=True)
+            seg_max = torch.full((uniq_keys.shape[0],), float("-inf"), device=device, dtype=dtype)
+            seg_max.scatter_reduce_(0, inv, child_vals, reduce="amax", include_self=True)
+            out_max.view(-1)[uniq_keys] = seg_max
+            out_present.view(-1)[uniq_keys] = True
+
         child_first_adv_max = torch.zeros((batch_size, gen_len), device=device, dtype=dtype)
         child_first_adv_present = torch.zeros((batch_size, gen_len), device=device, dtype=torch.bool)
+        pre_scan_entries = []
         for parent_idx, children_by_pos in enumerate(cid):
             for pos, child_rids in children_by_pos.items():
                 pos = int(pos)
-                child_indices = [rid2idx[c_rid] for c_rid in child_rids]
-                child_first_adv_max[parent_idx, pos] = advantages[child_indices, 0].max()
-                child_first_adv_present[parent_idx, pos] = True
+                pre_scan_entries.extend((parent_idx, pos, rid2idx[c_rid]) for c_rid in child_rids)
+        _segmented_child_max(pre_scan_entries, child_first_adv_max, child_first_adv_present)
 
         current_idx = torch.as_tensor(new_sample_indices, device=device, dtype=torch.long).clone()
         current_p_idx = parent_indices[current_idx]
@@ -306,20 +322,27 @@ def compute_treegae_advantage_return(
         lastgaelam = torch.zeros(current_idx.shape[0], device=device, dtype=dtype)
         last_adv_present = torch.zeros(current_idx.shape[0], device=device, dtype=torch.bool)
 
-        for u in reversed(range(gen_len)):
+        # Positions above u_start are masked for all active trajectories (no state change);
+        # resp_len clamped >= 1 so every new sample's first token is visited.
+        resp_len = response_mask[current_idx].sum(dim=1).to(torch.long).clamp_(min=1)
+        u_start = min(int((history_len[current_idx] + resp_len).max().item()) - 1, gen_len - 1)
+
+        neg_inf = torch.full_like(lastgaelam, float("-inf"))
+        zeros_like_lastgaelam = torch.zeros_like(lastgaelam)
+
+        for u in range(u_start, -1, -1):
             idx = current_idx
             local_t = u - history_len[idx]
 
             child_adv_present = child_first_adv_present[idx, local_t]
             child_adv = child_first_adv_max[idx, local_t]
-            neg_inf = torch.full_like(lastgaelam, float("-inf"))
             tree_lastgaelam = torch.where(
                 child_adv_present | last_adv_present,
                 torch.maximum(
                     torch.where(child_adv_present, child_adv, neg_inf),
                     torch.where(last_adv_present, lastgaelam, neg_inf),
                 ),
-                torch.zeros_like(lastgaelam),
+                zeros_like_lastgaelam,
             )
             delta = token_level_rewards[idx, local_t] + gamma * nextvalues - values[idx, local_t]
             lastgaelam_ = delta + gamma * lam * tree_lastgaelam
@@ -337,10 +360,12 @@ def compute_treegae_advantage_return(
                 first_parent = current_p_idx[first_token]
                 parent_cols = branch_pos[first_idx]
                 parent_positions = torch.stack((first_parent, parent_cols), dim=1).unique(dim=0)
+                refresh_entries = []
                 for parent_idx, parent_pos in parent_positions.tolist():
-                    child_indices = [rid2idx[c_rid] for c_rid in cid[parent_idx][parent_pos]]
-                    child_first_adv_max[parent_idx, parent_pos] = advantages[child_indices, 0].max()
-                    child_first_adv_present[parent_idx, parent_pos] = True
+                    refresh_entries.extend(
+                        (parent_idx, parent_pos, rid2idx[c_rid]) for c_rid in cid[parent_idx][parent_pos]
+                    )
+                _segmented_child_max(refresh_entries, child_first_adv_max, child_first_adv_present)
 
                 next_pos = parent_cols + 1
                 next_mask = response_mask[first_parent, next_pos].to(dtype)

@@ -2214,7 +2214,11 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 if not self.async_rollout_mode:
                                     gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch_output)
                                 else:
-                                    gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch_output)
+                                    # Weights are unchanged across rounds within a step: keep the
+                                    # engine awake to skip re-sync and preserve the prefix cache.
+                                    gen_batch_output = self.async_rollout_manager.generate_sequences(
+                                        gen_batch_output, sleep_after=(round_idx == n_rounds - 1)
+                                    )
                                 log_batch_state(gen_batch_output, stage="after_generate", step=self.global_steps, round_idx=round_idx)
 
                             timing_raw.update(gen_batch_output.meta_info["timing"])
@@ -2274,33 +2278,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                 rollout_corr_config=rollout_corr_config,
                                 policy_loss_config=self.config.actor_rollout_ref.actor.policy_loss,
                             )
-                        else:  # Recompute old_log_probs
-                            with marked_timer("old_log_prob", timing_raw, color="blue"):
-                                with timed_block("compute_old_log_prob", step=self.global_steps, round_idx=round_idx):
-                                    old_log_prob, old_log_prob_mfu = self._compute_old_log_prob(batch)
-                                    entropys = old_log_prob.batch["entropys"]
-                                    response_masks = batch.batch["response_mask"]
-                                    actor_config = self.config.actor_rollout_ref.actor
-                                    entropy_agg = agg_loss(
-                                        loss_mat=entropys,
-                                        loss_mask=response_masks,
-                                        loss_agg_mode=actor_config.loss_agg_mode,
-                                        loss_scale_factor=actor_config.loss_scale_factor,
-                                    )
-                                    old_log_prob_metrics = {
-                                        "actor/entropy": entropy_agg.detach().item(),
-                                        "perf/mfu/actor_infer": old_log_prob_mfu,
-                                    }
-                                    metrics.update(old_log_prob_metrics)
-                                    old_log_prob.batch.pop("entropys")
-                                    batch = batch.union(old_log_prob)
-                                if "rollout_log_probs" in batch.batch.keys():
-                                    # TODO: we may want to add diff of probs too.
-                                    from verl.utils.debug.metrics import calculate_debug_metrics
-
-                                    metrics.update(calculate_debug_metrics(batch))
-
-                        assert "old_log_probs" in batch.batch, f'"old_log_prob" not in {batch.batch.keys()=}'
+                        # old_log_prob recompute is deferred to after the round loop.
 
                         if self.use_reference_policy:
                             # compute reference log_prob
@@ -2431,6 +2409,35 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                         round_elapsed = time.perf_counter() - round_start_time
                         logger_batch.info(f"[step={self.global_steps}][round={round_idx}] ----- ROUND END (elapsed: {round_elapsed:.3f}s) -----")
 
+                    # === Post-rounds: recompute old_log_prob once on the full global_batch ===
+                    if not bypass_recomputing_logprobs:  # Recompute old_log_probs
+                        with marked_timer("old_log_prob", timing_raw, color="blue"):
+                            with timed_block("compute_old_log_prob", step=self.global_steps):
+                                old_log_prob, old_log_prob_mfu = self._compute_old_log_prob(global_batch)
+                                entropys = old_log_prob.batch["entropys"]
+                                response_masks = global_batch.batch["response_mask"]
+                                actor_config = self.config.actor_rollout_ref.actor
+                                entropy_agg = agg_loss(
+                                    loss_mat=entropys,
+                                    loss_mask=response_masks,
+                                    loss_agg_mode=actor_config.loss_agg_mode,
+                                    loss_scale_factor=actor_config.loss_scale_factor,
+                                )
+                                old_log_prob_metrics = {
+                                    "actor/entropy": entropy_agg.detach().item(),
+                                    "perf/mfu/actor_infer": old_log_prob_mfu,
+                                }
+                                metrics.update(old_log_prob_metrics)
+                                old_log_prob.batch.pop("entropys")
+                                global_batch = global_batch.union(old_log_prob)
+                            if "rollout_log_probs" in global_batch.batch.keys():
+                                # TODO: we may want to add diff of probs too.
+                                from verl.utils.debug.metrics import calculate_debug_metrics
+
+                                metrics.update(calculate_debug_metrics(global_batch))
+
+                    assert "old_log_probs" in global_batch.batch, f'"old_log_prob" not in {global_batch.batch.keys()=}'
+
                     # === Post-rounds: prepare for training update ===
                     with timed_block("opts_ttpo_final_processing", step=self.global_steps):
                         batch = global_batch
@@ -2450,13 +2457,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                         )
                         batch.batch["branch_weight"] = loss_branch_weight
                         # Monitoring keeps the original equal-branch weighting.
-                        batch.batch["return_branch_weight"] = compute_branch_weight(
-                            state_branches=batch.batch["state_branches"],
-                            pid=batch.non_tensor_batch["pid"],
-                            rid=batch.non_tensor_batch["rid"],
-                            uid=batch.non_tensor_batch["uid"],
-                            branch_pos=batch.non_tensor_batch["branch_pos"],
-                        )
+                        batch.batch["return_branch_weight"] = branch_weight
                         # Each tree's loss weights sum to one; averaging over the global tree count
                         # remains correct after data-parallel and micro-batch splitting.
                         batch.meta_info["weighted_weight_sum"] = float(num_trees)
