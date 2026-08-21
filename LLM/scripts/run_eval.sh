@@ -29,27 +29,34 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LLM_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${LLM_DIR}"
 
-STEP=300
+STEP=400
 N_SAMPLES=128
 PASSCONS_K=32
 OPTS_KS="8 16 32 64 128"
 OPTS_KS_TAG="${OPTS_KS// /-}"
 SKIP_GEN=0
+# max_search_per_tree values to generate/evaluate; results are saved with a
+# "_s${s}" filename tag so different search depths can be compared.
+OPTS_MAX_SEARCHES=${OPTS_MAX_SEARCHES:-"3 7"}
 
-OUT_ROOT="outputs/step${STEP}"
+OUT_ROOT="results/step${STEP}"
 GEN_ROOT="${OUT_ROOT}/gen"
 EVAL_ROOT="${OUT_ROOT}/eval"
 LOG_ROOT="logs/step${STEP}"
 mkdir -p "${EVAL_ROOT}"
 
-METHODS=("dapo" "gpg" "ppo" "reinforce_pp" "opts_ttpo")
+# Match the actual filenames produced by scripts/run_parallel_generation.sh.
+METHODS=("dapo_0703_n8" "ppo_0704_n8" "reinforce_pp_baseline_0703_n8" "opts_ttpo_exp8_3_0810_n8")
 
 if [[ "${SKIP_GEN}" != "1" ]]; then
     echo "========== Stage 1: i.i.d. generation for ${METHODS[*]} =========="
     bash "${SCRIPT_DIR}/run_parallel_generation.sh"
 
     echo "========== Stage 2: OPTS tree-search generation for opts_ttpo =========="
-    bash "${SCRIPT_DIR}/run_opts_generation.sh"
+    for s in ${OPTS_MAX_SEARCHES}; do
+        REWARD_MODE=reward MAX_SEARCH_PER_TREE=${s} bash "${SCRIPT_DIR}/run_opts_generation.sh"
+        REWARD_MODE=value MAX_SEARCH_PER_TREE=${s} bash "${SCRIPT_DIR}/run_opts_generation.sh"
+    done
 fi
 
 echo "========== Stage 3: Task 1 — avg@${PASSCONS_K}, pass@${PASSCONS_K}, cons@${PASSCONS_K} =========="
@@ -68,18 +75,20 @@ for method in "${METHODS[@]}"; do
 done
 
 echo "========== Stage 3: Task 2 — opts@k (reward) + pass@k (i.i.d.) for opts_ttpo =========="
-iid_parquet="${GEN_ROOT}/opts_ttpo_iid_n${N_SAMPLES}.parquet"
-reward_opts_parquet="${GEN_ROOT}/opts_ttpo_opts_reward_n${N_SAMPLES}.parquet"
-if [[ -f "${reward_opts_parquet}" ]]; then
-    echo "--- opts_ttpo OPTS parquet (reward) ---"
-    python3 -m trainer.main_eval \
-        --pregenerated_parquet "${reward_opts_parquet}" \
-        --metrics opts --k ${OPTS_KS} \
-        --output_tag "task2_reward_opts_k${OPTS_KS_TAG}" \
-        --output_dir "${EVAL_ROOT}"
-else
-    echo "[missing] ${reward_opts_parquet}" >&2
-fi
+iid_parquet="${GEN_ROOT}/opts_ttpo_exp8_3_0810_n8_iid_n${N_SAMPLES}.parquet"
+for s in ${OPTS_MAX_SEARCHES}; do
+    reward_opts_parquet="${GEN_ROOT}/opts_ttpo_opts_reward_s${s}_n${N_SAMPLES}.parquet"
+    if [[ -f "${reward_opts_parquet}" ]]; then
+        echo "--- opts_ttpo OPTS parquet (reward, s=${s}) ---"
+        python3 -m trainer.main_eval \
+            --pregenerated_parquet "${reward_opts_parquet}" \
+            --metrics opts --k ${OPTS_KS} \
+            --output_tag "task2_reward_opts_k${OPTS_KS_TAG}" \
+            --output_dir "${EVAL_ROOT}"
+    else
+        echo "[missing] ${reward_opts_parquet}" >&2
+    fi
+done
 if [[ -f "${iid_parquet}" ]]; then
     echo "--- opts_ttpo i.i.d. parquet (pass@k reference) ---"
     python3 -m trainer.main_eval \
@@ -92,17 +101,19 @@ else
 fi
 
 echo "========== Stage 3: Task 3 — opts@k (value) + cons@k (i.i.d.) for opts_ttpo =========="
-value_opts_parquet="${GEN_ROOT}/opts_ttpo_opts_value_n${N_SAMPLES}.parquet"
-if [[ -f "${value_opts_parquet}" ]]; then
-    echo "--- opts_ttpo OPTS parquet (value) ---"
-    python3 -m trainer.main_eval \
-        --pregenerated_parquet "${value_opts_parquet}" \
-        --metrics opts --k ${OPTS_KS} \
-        --output_tag "task3_value_opts_k${OPTS_KS_TAG}" \
-        --output_dir "${EVAL_ROOT}"
-else
-    echo "[missing] ${value_opts_parquet}" >&2
-fi
+for s in ${OPTS_MAX_SEARCHES}; do
+    value_opts_parquet="${GEN_ROOT}/opts_ttpo_opts_value_s${s}_n${N_SAMPLES}.parquet"
+    if [[ -f "${value_opts_parquet}" ]]; then
+        echo "--- opts_ttpo OPTS parquet (value, s=${s}) ---"
+        python3 -m trainer.main_eval \
+            --pregenerated_parquet "${value_opts_parquet}" \
+            --metrics opts --k ${OPTS_KS} \
+            --output_tag "task3_value_opts_k${OPTS_KS_TAG}" \
+            --output_dir "${EVAL_ROOT}"
+    else
+        echo "[missing] ${value_opts_parquet}" >&2
+    fi
+done
 if [[ -f "${iid_parquet}" ]]; then
     echo "--- opts_ttpo i.i.d. parquet (cons@k reference) ---"
     python3 -m trainer.main_eval \

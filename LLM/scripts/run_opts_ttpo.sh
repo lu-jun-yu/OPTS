@@ -3,7 +3,7 @@ export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=1.7B
-Experiment_Name=opts_ttpo_0817_n8_${MODEL_SIZE}
+Experiment_Name=opts_ttpo_0820_n8_${MODEL_SIZE}
 RAY_TEMP_DIR="/tmp/ray/${Experiment_Name}"
 
 cleanup_ray_temp() {
@@ -50,13 +50,13 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m trainer.main_opts_ttpo \
  critic.optim.lr=1e-5 \
  critic.model.path=models/Qwen3-${MODEL_SIZE} \
  critic.model.use_remove_padding=True \
- critic.ppo_micro_batch_size_per_gpu=64 \
+ critic.ppo_micro_batch_size_per_gpu=128 \
  critic.value_head_activation=sigmoid \
  custom_reward_function.path=utils/reward_fn.py \
  custom_reward_function.name=compute_score \
  algorithm.use_kl_in_reward=False \
  algorithm.kl_ctrl.kl_coef=0.0 \
- algorithm.lam=0.998 \
+ algorithm.lam=0.999 \
  +algorithm.max_searched_tree_ratio=0.4 \
  trainer.logger='["console","wandb"]' \
  trainer.val_before_train=False \

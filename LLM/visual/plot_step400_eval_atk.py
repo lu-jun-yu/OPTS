@@ -3,46 +3,58 @@ import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 
 
-DEFAULT_TASK2_IID = "LLM/outputs/step460/eval/opts_ttpo_iid_n128__task2_iid_pass_k8-16-32-64-128.json"
-DEFAULT_TASK2_OPTS = "LLM/outputs/step460/eval/opts_ttpo_opts_reward_n128__task2_reward_opts_k8-16-32-64-128.json"
-DEFAULT_TASK3_IID = "LLM/outputs/step460/eval/opts_ttpo_iid_n128__task3_iid_cons_k8-16-32-64-128.json"
-DEFAULT_TASK3_OPTS = "LLM/outputs/step460/eval/opts_ttpo_opts_value_n128__task3_value_opts_k8-16-32-64-128.json"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_EVAL_DIR = REPO_ROOT / "LLM/results/step400/eval"
+DEFAULT_TASK2_IID = DEFAULT_EVAL_DIR / "opts_ttpo_exp8_3_0810_n8_iid_n128__task2_iid_pass_k8-16-32-64-128.json"
+DEFAULT_TASK2_OPTS = DEFAULT_EVAL_DIR / "opts_ttpo_opts_reward_n128__task2_reward_opts_k8-16-32-64-128.json"
+DEFAULT_TASK3_IID = DEFAULT_EVAL_DIR / "opts_ttpo_exp8_3_0810_n8_iid_n128__task3_iid_cons_k8-16-32-64-128.json"
+DEFAULT_TASK3_OPTS = DEFAULT_EVAL_DIR / "opts_ttpo_opts_value_n128__task3_value_opts_k8-16-32-64-128.json"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "paper/figures"
 
 DATASET_NAME_MAP = {
-    "hiyouga/math12k": "Math12k",
+    "hiyouga/math12k": "MATH500",
+    "math-ai/aime24": "AIME24",
     "math-ai/aime25": "AIME25",
+    "math-ai/aime26": "AIME26",
     "math-ai/amc23": "AMC23",
     "math-ai/minervamath": "MinervaMath",
 }
 
 DATASET_ORDER = [
     "hiyouga/math12k",
+    "math-ai/aime24",
     "math-ai/aime25",
+    "math-ai/aime26",
     "math-ai/amc23",
     "math-ai/minervamath",
 ]
 
 LINE_STYLES = [
     {
-        "color": "#4C78A8",
+        "color": "#456FA6",
         "marker": "o",
-        "linewidth": 2.2,
-        "markersize": 5,
+        "linewidth": 3.0,
+        "markersize": 8,
+        "markeredgecolor": "white",
+        "markeredgewidth": 0.9,
     },
     {
-        "color": "#E45756",
+        "color": "#D95F59",
         "marker": "s",
-        "linewidth": 2.2,
-        "markersize": 5,
+        "linewidth": 3.0,
+        "markersize": 8,
+        "markeredgecolor": "white",
+        "markeredgewidth": 0.9,
     },
 ]
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Plot step-460 eval scores at k as two 1x4 figures."
+        description="Plot step-400 eval scores at k as 1x6 PDF figures."
     )
     parser.add_argument("--task2-iid", default=DEFAULT_TASK2_IID)
     parser.add_argument("--task2-opts", default=DEFAULT_TASK2_OPTS)
@@ -50,14 +62,14 @@ def parse_args():
     parser.add_argument("--task3-opts", default=DEFAULT_TASK3_OPTS)
     parser.add_argument(
         "--output-dir",
-        default="LLM/visual",
-        help="Directory for output PNG/PDF files.",
+        default=DEFAULT_OUTPUT_DIR,
+        help="Directory for output files (default: paper/figures).",
     )
     parser.add_argument(
         "--format",
-        default="png",
+        default="pdf",
         choices=["png", "pdf", "svg"],
-        help="Output image format.",
+        help="Output image format (default: pdf).",
     )
     parser.add_argument(
         "--fixed-y",
@@ -114,7 +126,7 @@ def set_dynamic_ylim(axis, values):
     axis.set_ylim(max(0.0, low - pad), min(1.0, high + pad))
 
 
-def plot_pair(first_eval, second_eval, first_label, second_label, title, output_path, fixed_y):
+def plot_pair(first_eval, second_eval, first_label, second_label, output_path, fixed_y):
     if first_eval["k"] != second_eval["k"]:
         raise ValueError(
             f"k values differ: {first_eval['path']} has {first_eval['k']}, "
@@ -122,20 +134,35 @@ def plot_pair(first_eval, second_eval, first_label, second_label, title, output_
         )
 
     datasets = common_datasets(first_eval, second_eval)
-    if len(datasets) != 4:
-        raise ValueError(f"Expected 4 datasets, found {len(datasets)}: {datasets}")
+    if len(datasets) != len(DATASET_ORDER):
+        raise ValueError(
+            f"Expected {len(DATASET_ORDER)} datasets, found {len(datasets)}: {datasets}"
+        )
 
     k_values = first_eval["k"]
     x_values = list(range(len(k_values)))
 
     plt.rcParams.update(
         {
-            "font.size": 10,
+            "font.family": "serif",
+            "font.size": 18,
+            "axes.titlesize": 22,
+            "axes.labelsize": 20,
+            "xtick.labelsize": 16,
+            "ytick.labelsize": 16,
+            "legend.fontsize": 18,
+            "axes.edgecolor": "#777777",
+            "axes.linewidth": 0.9,
             "axes.spines.top": False,
             "axes.spines.right": False,
         }
     )
-    fig, axes = plt.subplots(1, 4, figsize=(15.5, 3.8), sharex=True)
+    fig, axes = plt.subplots(
+        1,
+        len(datasets),
+        figsize=(3.75 * len(datasets), 4.4),
+        sharex=True,
+    )
     legend_handles = []
     legend_labels = []
 
@@ -154,27 +181,43 @@ def plot_pair(first_eval, second_eval, first_label, second_label, title, output_
                 legend_handles.append(line)
                 legend_labels.append(label)
 
-        axis.set_title(DATASET_NAME_MAP.get(dataset, dataset), fontsize=11, pad=8)
+        axis.set_title(
+            DATASET_NAME_MAP.get(dataset, dataset),
+            fontweight="semibold",
+            pad=14,
+        )
         axis.set_xticks(x_values)
-        axis.set_xticklabels([f"@{k_value}" for k_value in k_values])
-        axis.set_xlabel("@k")
-        axis.grid(True, linestyle="--", linewidth=0.6, alpha=0.35)
+        axis.set_xticklabels([str(k_value) for k_value in k_values])
+        axis.tick_params(axis="x", labelbottom=True)
+        axis.tick_params(axis="both", colors="#333333", length=4, width=0.8)
+        axis.grid(
+            True,
+            axis="y",
+            color="#AEB6BF",
+            linestyle=(0, (3, 3)),
+            linewidth=0.8,
+            alpha=0.45,
+        )
+        axis.set_axisbelow(True)
+        axis.margins(x=0.04)
         if fixed_y:
             axis.set_ylim(0.0, 1.0)
         else:
             set_dynamic_ylim(axis, all_values)
+        axis.yaxis.set_major_locator(MaxNLocator(nbins=5))
 
-    axes[0].set_ylabel("Score")
-    fig.suptitle(title, fontsize=13, y=1.03)
+    axes[0].set_ylabel("Success rate", labelpad=10)
     fig.legend(
         legend_handles,
         legend_labels,
         loc="upper center",
         ncol=2,
         frameon=False,
-        bbox_to_anchor=(0.5, 1.02),
+        bbox_to_anchor=(0.5, 0.995),
+        handlelength=2.2,
+        columnspacing=1.8,
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.88), w_pad=1.4)
+    fig.tight_layout(rect=(0.005, 0.02, 0.995, 0.90), w_pad=1.6)
 
     output_file = Path(output_path)
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -189,27 +232,31 @@ def main():
 
     task2_iid = load_eval(args.task2_iid)
     task2_opts = load_eval(args.task2_opts)
-    task3_iid = load_eval(args.task3_iid)
-    task3_opts = load_eval(args.task3_opts)
-
     plot_pair(
         task2_iid,
         task2_opts,
-        "IID pass",
-        "Reward OPTS",
-        "Task 2: IID pass vs reward OPTS",
-        output_dir / f"step460_task2_iid_pass_vs_reward_opts.{args.format}",
+        "IID sampling",
+        "Reward-guided OPTS",
+        output_dir / f"step400_task2_iid_pass_vs_reward_opts.{args.format}",
         args.fixed_y,
     )
-    plot_pair(
-        task3_iid,
-        task3_opts,
-        "IID cons",
-        "Value OPTS",
-        "Task 3: IID cons vs value OPTS",
-        output_dir / f"step460_task3_iid_cons_vs_value_opts.{args.format}",
-        args.fixed_y,
-    )
+
+    task3_iid_path = Path(args.task3_iid)
+    task3_opts_path = Path(args.task3_opts)
+    if task3_iid_path.is_file() and task3_opts_path.is_file():
+        plot_pair(
+            load_eval(task3_iid_path),
+            load_eval(task3_opts_path),
+            "IID cons",
+            "Value OPTS",
+            output_dir / f"step400_task3_iid_cons_vs_value_opts.{args.format}",
+            args.fixed_y,
+        )
+    else:
+        print(
+            "Skipped task 3: both value-OPTS and IID-consistency JSON files "
+            "are required."
+        )
 
 
 if __name__ == "__main__":

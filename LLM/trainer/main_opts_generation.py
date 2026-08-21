@@ -214,7 +214,33 @@ def main_task(config):
             "Increase data.val_batch_size/data.batch_size or split the dataset explicitly."
         )
 
-    effective_batch_size = min(requested_batch_size, total_samples)
+    # Support batch_size = total_samples * 2^n: trade rounds for larger batches
+    # while keeping the total budget (total_samples * n_samples) unchanged.
+    # Each round draws batch_ratio full passes over the dataset, so every prompt
+    # still accumulates exactly the original n_samples responses in total.
+    batch_ratio = requested_batch_size // total_samples
+    assert requested_batch_size == total_samples * batch_ratio and (batch_ratio & (batch_ratio - 1)) == 0, (
+        f"data.val_batch_size must be len(test) * 2^n, "
+        f"got {requested_batch_size} for len(test)={total_samples}"
+    )
+    assert n_samples % batch_ratio == 0, (
+        f"n_samples={n_samples} must be divisible by batch_ratio={batch_ratio} "
+        f"(batch_size={requested_batch_size}, len(test)={total_samples})"
+    )
+
+    effective_batch_size = requested_batch_size
+    if batch_ratio > 1:
+        n_samples = n_samples // batch_ratio
+        print(
+            f"batch_size={requested_batch_size} = {batch_ratio} * len(test)={total_samples}, "
+            f"adjusted rounds to n_samples={n_samples} (total budget unchanged)."
+        )
+        # Snapshots are taken per round, so ks beyond the adjusted round count
+        # would never be saved; drop them up front to keep eval consistent.
+        dropped_ks = [k for k in opts_snapshot_ks if k > n_samples]
+        if dropped_ks:
+            print(f"Warning: dropping snapshot ks beyond n_samples={n_samples}: {dropped_ks}")
+            opts_snapshot_ks = [k for k in opts_snapshot_ks if k <= n_samples]
 
     from torchdata.stateful_dataloader import StatefulDataLoader
     from verl.trainer.main_ppo import create_rl_dataset
@@ -313,7 +339,10 @@ def main_task(config):
             size_divisor = rollout_config.agent.num_workers
             batch_padded, pad_size = pad_dataproto_to_divisor(batch, size_divisor)
             output = unpad_dataproto(
-                async_rollout_manager.generate_sequences(batch_padded), pad_size=pad_size
+                async_rollout_manager.generate_sequences(
+                    batch_padded, sleep_after=(round_idx == n_samples - 1)
+                ),
+                pad_size=pad_size,
             )
             # AgentLoopManager rebuilds non_tensor_batch; downstream tree
             # bookkeeping uses the input metadata order.
@@ -444,17 +473,18 @@ def main_task(config):
                 tree_search_state_by_uid=tree_search_state_by_uid,
                 max_searched_tree_ratio=1.0,
                 search_batch_size=effective_batch_size,
+                otrc_baseline=0.0,
             )
             next_states = selected_to_branch_points(selected_states, global_batch)
 
         print(f"[round {round_idx + 1}/{n_samples}] Done. "
               f"Collected {sum(len(v) for v in idx_responses.values())} total responses.")
 
-    expected_response_count = total_samples * n_samples
+    expected_response_count = effective_batch_size * n_samples
     if global_sample_counter != expected_response_count:
         raise RuntimeError(
             f"Unexpected OPTS generation count: got {global_sample_counter}, "
-            f"expected {expected_response_count} (= dataset_size * n_samples)."
+            f"expected {expected_response_count} (= effective_batch_size * n_samples)."
         )
 
     # === Assemble output ===

@@ -21,10 +21,10 @@ TARGET_TASKS = ["Hopper-v4", "Walker2d-v4", "HalfCheetah-v4", "Ant-v4", "Humanoi
 REF_TOTAL_TIMESTEPS = 1_000_000.0
 
 # PPO 蓝、RPO 绿；OPTS-TTPO 多版本使用一组不同颜色；其余算法用补充色
-COLOR_PPO = "#1f77b4"
+COLOR_PPO = "#4c72b0"  # seaborn deep 蓝（参考图配色）
 COLOR_RPO = "#2ca02c"
 OPTS_TTPO_COLORS = [
-    "#d62728",  # red
+    "#c44e52",  # seaborn deep 红（参考图配色）
     "#ff7f0e",  # orange
     "#9467bd",  # purple
     "#8c564b",  # brown
@@ -188,7 +188,7 @@ def parse_result_path(filepath):
 
 def aggregate_seed_results(all_seed_data):
     """
-    聚合多个 seed 的结果，对同一行计算 mean 和 std
+    聚合多个 seed 的结果，对同一行计算 mean 和 sem
 
     各 seed 的 step 条数不一致时，取最短长度截断后再按索引对齐聚合。
 
@@ -196,8 +196,8 @@ def aggregate_seed_results(all_seed_data):
         all_seed_data: 字典，key 是 seed，value 是 (step列表, mean_return列表, max_return列表, min_return列表) 元组
 
     Returns:
-        (aggregated_steps, aggregated_mean, aggregated_std) 元组
-        其中 std 是跨 seed 的 mean_return 的标准差
+        (aggregated_steps, aggregated_mean, aggregated_sem) 元组
+        其中 sem 是跨 seed 的 mean_return 的标准误（std / sqrt(n_seeds)）
     """
     if not all_seed_data:
         return [], [], []
@@ -222,7 +222,7 @@ def aggregate_seed_results(all_seed_data):
     aggregated_steps = list(first_values[0][:min_length])
 
     aggregated_mean_values = []
-    aggregated_std_values = []
+    aggregated_sem_values = []
 
     for i in range(min_length):
         row_values = []
@@ -235,11 +235,11 @@ def aggregate_seed_results(all_seed_data):
 
         if row_values:
             aggregated_mean_values.append(np.mean(row_values))
-            aggregated_std_values.append(np.std(row_values))
+            aggregated_sem_values.append(np.std(row_values) / np.sqrt(len(row_values)))
 
     aggregated_steps = aggregated_steps[:len(aggregated_mean_values)]
 
-    return aggregated_steps, aggregated_mean_values, aggregated_std_values
+    return aggregated_steps, aggregated_mean_values, aggregated_sem_values
 
 
 def load_algo_filters_from_config(task_name, config_filename="algo_select.json"):
@@ -286,7 +286,8 @@ def get_display_name(algo_name, date=None):
 
 
 def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
-                                algo_filters=None, smooth_window=5, seed_filters=None):
+                                algo_filters=None, smooth_window=5, seed_filters=None,
+                                output_path=None):
     """
     绘制所有5个任务的收敛曲线在一张图上（1行5列布局）
     
@@ -364,7 +365,16 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
     algo_colors = build_algo_colors(all_algos)
 
     fig, axes = plt.subplots(1, 5, figsize=(20, 4))
-    
+
+    # seaborn darkgrid 风格：灰蓝底色 + 白色网格线 + 去边框
+    for ax in axes:
+        ax.set_facecolor("#EAEAF2")
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.tick_params(colors="#262626", length=3)
+        ax.xaxis.label.set_color("#262626")
+        ax.yaxis.label.set_color("#262626")
+        ax.title.set_color("#262626")
     # 绘制每个任务
     for idx, task_name in enumerate(TARGET_TASKS):
         ax = axes[idx]
@@ -389,15 +399,15 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
             mean_values = smooth_data(data['mean'], w)
             std_values = smooth_data(data['std'], w)
 
-            # 绘制阴影区域（mean ± std）
+            # 绘制阴影区域（mean ± sem）
             ax.fill_between(steps[:len(mean_values)],
                           mean_values - std_values,
                           mean_values + std_values,
-                          color=color, alpha=0.2)
+                          color=color, alpha=0.3)
 
             # 绘制均值曲线
             ax.plot(steps[:len(mean_values)], mean_values,
-                   color=color, label=display_name, linewidth=1.5)
+                   color=color, label=display_name, linewidth=2.2)
 
         ax.set_title(task_name, fontsize=12)
         ax.set_xlabel("Timesteps", fontsize=10)
@@ -419,13 +429,14 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
                 ax.set_xticks([0, max_step_rounded])
                 ax.set_xticklabels(["0", f"{max_step_rounded // 1_000_000}M"])
         
-        ax.grid(True, alpha=0.3, which='major')
+        ax.grid(True, color="white", linewidth=1.2, which='major')
+        ax.set_axisbelow(True)
 
     handles, labels = [], []
     for algo_key in sorted(algo_colors.keys()):
         algo_name, date = algo_key
         display_name = get_display_name(algo_name, date)
-        handles.append(plt.Line2D([0], [0], color=algo_colors[algo_key], linewidth=2))
+        handles.append(plt.Line2D([0], [0], color=algo_colors[algo_key], linewidth=2.5))
         labels.append(display_name)
 
     ncol = min(len(handles), 4) if handles else 1
@@ -435,9 +446,12 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
     plt.tight_layout()
     
     # 保存图片
-    os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, "all_tasks_mujoco.png")
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    if output_path is None:
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, "all_tasks_mujoco.png")
+    else:
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    plt.savefig(output_path, dpi=600, bbox_inches='tight')
     print(f"Combined convergence curves saved to: {output_path}")
     plt.close()
 
@@ -519,11 +533,11 @@ def plot_convergence_curves(task_name, results_dir="./results", output_dir=".",
         mean_values = smooth_data(aggregated_mean, w)
         std_values = smooth_data(aggregated_std, w)
 
-        # 绘制阴影区域（mean ± std）
+        # 绘制阴影区域（mean ± sem）
         plt.fill_between(steps[:len(mean_values)],
                         mean_values - std_values,
                         mean_values + std_values,
-                        color=color, alpha=0.2)
+                        color=color, alpha=0.3)
 
         # 绘制均值曲线
         plt.plot(steps[:len(mean_values)], mean_values,
@@ -550,7 +564,7 @@ def plot_convergence_curves(task_name, results_dir="./results", output_dir=".",
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, f"{task_name}_convergence.png")
     plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.savefig(output_path, dpi=600, bbox_inches='tight')
     print(f"Convergence curve saved to: {output_path}")
     plt.close()
 
@@ -559,15 +573,20 @@ def main():
     """主函数：绘制5个MuJoCo任务的收敛曲线合并图
 
     用法：
-        python plot_convergence.py [--short-name] [--seeds 1,2,3] [results_dir] [algo1 algo2 ...]
+        python plot_convergence.py [--short-name] [--seeds 1,2,3] [--output PATH] [results_dir] [algo1 algo2 ...]
 
         --short-name        OPTS_TTPO 使用简称 "OPTS-TTPO"（默认显示全称）
         --seeds 1,2,3       只可视化指定随机种子的数据（逗号分隔，默认 seed 1-10）
+        --smooth N          约 1e6 total timesteps 时的平滑窗口参照（默认 5，越大越平滑）
+        --output PATH       输出文件路径（按扩展名决定格式；默认 <repo>/paper/figures/all_tasks_mujoco.pdf）
     """
     import sys
     global USE_SHORT_NAME
 
     seed_filters = None
+    repo_root = Path(__file__).resolve().parents[2]
+    output_path = str(repo_root / "paper" / "figures" / "all_tasks_mujoco.pdf")
+    smooth_window = 5
     raw_args = sys.argv[1:]
     filtered_args = []
     i = 0
@@ -580,6 +599,20 @@ def main():
                 i += 1
             else:
                 print("Error: --seeds requires an argument (e.g., --seeds 1,2,3)")
+                return
+        elif raw_args[i] == "--smooth":
+            if i + 1 < len(raw_args):
+                smooth_window = float(raw_args[i + 1])
+                i += 1
+            else:
+                print("Error: --smooth requires a numeric argument (e.g., --smooth 15)")
+                return
+        elif raw_args[i] == "--output":
+            if i + 1 < len(raw_args):
+                output_path = raw_args[i + 1]
+                i += 1
+            else:
+                print("Error: --output requires a file path argument")
                 return
         else:
             filtered_args.append(raw_args[i])
@@ -594,7 +627,9 @@ def main():
         script_dir = str(Path(__file__).resolve().parent)
         plot_all_tasks_convergence(results_dir, output_dir=script_dir,
                                    algo_filters=global_algo_filters,
-                                   seed_filters=seed_filters)
+                                   smooth_window=smooth_window,
+                                   seed_filters=seed_filters,
+                                   output_path=output_path)
     else:
         print(f"Results directory {results_dir} does not exist")
         print("Please run training first to generate results files.")

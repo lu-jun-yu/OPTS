@@ -14,21 +14,23 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 export NCCL_DEBUG=ERROR
 export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
-export CUDA_VISIBLE_DEVICES=0
+# Respect user-supplied GPU selection; default to 2 GPUs to match n_gpus_per_node.
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
 
 MODEL_SIZE=1.7B
-STEP=300
-CKPT_NAME="opts_ttpo_0805_${MODEL_SIZE}"
-CKPT_ROOT="checkpoints/opts_ttpo_${MODEL_SIZE}"
+STEP=400
+CKPT_NAME="opts_ttpo_exp8_3_0810_n8_${MODEL_SIZE}"
+CKPT_ROOT="/share/lujunyu/ckpts/opts_ckpts/opts_ttpo_${MODEL_SIZE}"
 DATA_PATH=data/test.parquet
 
 N_SAMPLES=128
-REWARD_MODE=reward
-OPTS_GEN_TAG="${REWARD_MODE}"
+REWARD_MODE=${REWARD_MODE:-reward}
+MAX_SEARCH_PER_TREE=${MAX_SEARCH_PER_TREE:-7}
+OPTS_GEN_TAG="${REWARD_MODE}_s${MAX_SEARCH_PER_TREE}"
 OPTS_KS="8 16 32 64 128"
 OPTS_KS_LIST="[$(echo ${OPTS_KS} | tr ' ' ',')]"
 
-OUT_ROOT="outputs/step${STEP}"
+OUT_ROOT="results/step${STEP}"
 MERGED_ROOT="${OUT_ROOT}/merged"
 GEN_ROOT="${OUT_ROOT}/gen"
 LOG_ROOT="logs/step${STEP}"
@@ -59,23 +61,24 @@ fi
 s=$(date +%s.%N)
 python3 -m trainer.main_opts_generation \
  trainer.nnodes=1 \
- trainer.n_gpus_per_node=1 \
+ trainer.n_gpus_per_node=2 \
  data.val_files="${DATA_PATH}" \
  data.prompt_key=prompt \
- data.val_batch_size=1024 \
+ data.val_batch_size=1804 \
  +data.n_samples=${N_SAMPLES} \
  +data.reward_mode=${REWARD_MODE} \
  +data.opts_snapshot_ks="${OPTS_KS_LIST}" \
  +data.output_path="${output_path}" \
  actor_rollout_ref.model.path="${dst_actor}" \
  critic.model.path="${dst_critic}" \
+ critic.model.use_remove_padding=True \
  critic.value_head_activation=sigmoid \
- critic.forward_micro_batch_size_per_gpu=8 \
+ critic.forward_micro_batch_size_per_gpu=64 \
  actor_rollout_ref.rollout.name=vllm \
  actor_rollout_ref.rollout.search=opts \
  actor_rollout_ref.rollout.load_format=auto \
  actor_rollout_ref.rollout.enforce_eager=True \
- actor_rollout_ref.rollout.max_search_per_tree=4 \
+ actor_rollout_ref.rollout.max_search_per_tree=${MAX_SEARCH_PER_TREE} \
  actor_rollout_ref.rollout.temperature=1.0 \
  actor_rollout_ref.rollout.top_p=0.95 \
  actor_rollout_ref.rollout.val_kwargs.top_p=0.95 \

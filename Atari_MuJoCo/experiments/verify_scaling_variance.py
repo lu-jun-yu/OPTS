@@ -128,11 +128,9 @@ def collect_opts_steps(env, agent, num_steps, device, max_search, tau,
     values = torch.zeros((num_steps, num_envs)).to(device)
     parent_indices = -torch.ones((num_steps, num_envs), dtype=torch.long).to(device)
     tree_indices = torch.zeros((num_steps, num_envs), dtype=torch.long).to(device)
-    state_branches = torch.ones((num_steps, num_envs), dtype=torch.long).to(device)
     advantages = torch.zeros((num_steps, num_envs)).to(device)
 
     env_states = [None] * num_steps
-    root_branch_counts = [{}]
     search_count = [{}]
     max_otrc_scores = [{}]
     tree_search_state = [{}]
@@ -155,8 +153,6 @@ def collect_opts_steps(env, agent, num_steps, device, max_search, tau,
 
         parent_indices[step, env_idx] = current_parent
         tree_indices[step, env_idx] = current_parent if current_parent < 0 else tree_indices[current_parent, env_idx]
-        if current_parent < 0:
-            root_branch_counts[0][current_parent] = root_branch_counts[0].get(current_parent, 0) + 1
         current_parent = step
 
         obs_np, reward, terminated, truncated, info = env.step(action.cpu().numpy())
@@ -213,7 +209,6 @@ def collect_opts_steps(env, agent, num_steps, device, max_search, tau,
                         env.restore_state(root_states[parent])
                     else:
                         env.restore_state(env_states[parent])
-                        state_branches[parent, env_idx] += 1
                     next_obs = obs[sel]
                     current_parent = parent
 
@@ -237,9 +232,7 @@ def collect_opts_steps(env, agent, num_steps, device, max_search, tau,
     weights = compute_branch_weight(
         num_steps=num_steps,
         parent_indices=parent_indices,
-        state_branches=state_branches,
         env_indices=[env_idx],
-        root_branch_counts=root_branch_counts,
     )
 
     print(f"  OPTS: {episode_count} episodes completed")
@@ -322,7 +315,7 @@ def collect_opts(env, agent, num_steps, device, max_search, tau, gamma, gae_lamb
 
 
 def compute_pg_gradient(agent, obs, actions, advantages, device, weights=None, weight_mean=None):
-    """计算策略梯度（仅 actor 参数）。weights 非 None 时按 OPTS IPW 加权，分母用全局权重均值×B（与训练最终版一致，跨样本恒定）"""
+    """计算策略梯度（仅 actor 参数）。weights 非 None 时按 OPTS branch weight 加权，分母用全局权重均值×B（与训练最终版一致，跨样本恒定）"""
     agent.zero_grad()
     obs, actions, advantages = obs.to(device), actions.to(device), advantages.to(device)
     action_mean = agent.actor_mean(obs)
@@ -332,7 +325,7 @@ def compute_pg_gradient(agent, obs, actions, advantages, device, weights=None, w
     pg_loss_per_sample = -(log_probs * advantages.detach())
     if weights is not None:
         weights = weights.to(device)
-        pg_loss = (pg_loss_per_sample / weights).sum() / (weight_mean * len(obs))
+        pg_loss = (pg_loss_per_sample * weights).sum() / (weight_mean * len(obs))
     else:
         pg_loss = pg_loss_per_sample.mean()
     pg_loss.backward()
@@ -348,7 +341,7 @@ def estimate_scaling_variance(agent, obs, actions, advantages, batch_sizes,
     对每个 B:
         重复 num_bootstrap 次:
             从 pool 中有放回采样 B 个 step
-            计算梯度 ĝ_B（OPTS 使用对应 weights 做 IPW 加权）
+            计算梯度 ĝ_B（OPTS 使用对应 weights 做 branch weight 加权）
             记录总方差 ||ĝ_B - g*||² = Σ_i (ĝ_B,i - g*_i)²
         Var(B) = mean, Std(B) = std
 
@@ -356,7 +349,7 @@ def estimate_scaling_variance(agent, obs, actions, advantages, batch_sizes,
         dict: {B: {"mean": float, "std": float}} for each valid batch_size
     """
     N = len(obs)
-    weight_mean = (1.0 / weights).mean().item() if weights is not None else None
+    weight_mean = weights.mean().item() if weights is not None else None
     results = {}
     max_batch_size = max(batch_sizes)
     if max_batch_size > N:

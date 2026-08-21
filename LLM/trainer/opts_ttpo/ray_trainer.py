@@ -711,6 +711,7 @@ def select_next_states(
     tree_search_state_by_uid: Dict[Any, TreeSearchState],
     max_searched_tree_ratio: float,
     search_batch_size: int,
+    otrc_baseline: Optional[float] = None,
 ) -> Dict[str, Tuple[int, int]]:
     """Select above-mean-baseline OTRC states under a global searched-tree ratio.
 
@@ -728,6 +729,8 @@ def select_next_states(
         max_searched_tree_ratio: Maximum fraction of unique trees that may
             have search_count > 0.
         search_batch_size: Maximum number of searches generated this round.
+        otrc_baseline: Explicit OTRC gating threshold; defaults to the cross-tree
+            mean of max_otrc_scores when None.
 
     Returns:
         next_states: Dict mapping uid to (traj_idx_in_global, token_pos) of the
@@ -758,7 +761,9 @@ def select_next_states(
         max_otrc_scores.setdefault(u, tree_search_state_by_uid[u].raw_otrc_score)
 
     candidates = []
-    mean_threshold = np.mean(list(max_otrc_scores.values()))
+    # Default baseline: cross-tree mean of max_otrc_scores; callers may pass an
+    # explicit baseline (e.g. 0 at inference time).
+    mean_threshold = np.mean(list(max_otrc_scores.values())) if otrc_baseline is None else otrc_baseline
     for u in active_uids:
         state = tree_search_state_by_uid[u]
         if state.raw_otrc_score <= mean_threshold:

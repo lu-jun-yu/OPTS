@@ -14,23 +14,24 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 export NCCL_DEBUG=ERROR
 export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
-export CUDA_VISIBLE_DEVICES=0
+# Respect user-supplied GPU selection; default to 2 GPUs to match n_gpus_per_node.
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
 
 MODEL_SIZE=1.7B
-STEP=300
-CKPT_ROOT="checkpoints/opts_ttpo_${MODEL_SIZE}"
+STEP=400
+CKPT_ROOT="/share/lujunyu/ckpts/opts_ckpts/opts_ttpo_${MODEL_SIZE}"
 DATA_PATH=data/test.parquet
 N_SAMPLES=128
-METHODS="dapo ppo reinforce_pp opts_ttpo"
+METHODS="dapo_0703_n8 ppo_0704_n8 reinforce_pp_baseline_0703_n8 opts_ttpo_exp8_3_0810_n8"
 
-OUT_ROOT="outputs/step${STEP}"
+OUT_ROOT="results/step${STEP}"
 MERGED_ROOT="${OUT_ROOT}/merged"
 GEN_ROOT="${OUT_ROOT}/gen"
 LOG_ROOT="logs/step${STEP}"
 mkdir -p "${MERGED_ROOT}" "${GEN_ROOT}" "${LOG_ROOT}"
 
 for method in ${METHODS}; do
-    src_actor="${CKPT_ROOT}/${method}_0326_${MODEL_SIZE}/global_step_${STEP}/actor"
+    src_actor="${CKPT_ROOT}/${method}_${MODEL_SIZE}/global_step_${STEP}/actor"
     dst_actor="${MERGED_ROOT}/${method}_actor"
     output_path="${GEN_ROOT}/${method}_iid_n${N_SAMPLES}.parquet"
 
@@ -50,7 +51,7 @@ for method in ${METHODS}; do
     s=$(date +%s.%N)
     python3 -m verl.trainer.main_generation \
      trainer.nnodes=1 \
-     trainer.n_gpus_per_node=1 \
+     trainer.n_gpus_per_node=2 \
      data.path="${DATA_PATH}" \
      data.prompt_key=prompt \
      data.batch_size=1024 \

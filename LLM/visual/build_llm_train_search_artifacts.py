@@ -9,17 +9,15 @@ import matplotlib.pyplot as plt
 METHOD_NAME_MAP = {
     "ppo_0516_1.7B": "PPO",
     "dapo_0516_1.7B": "DAPO",
-    "gpg_0516_1.7B": "GPG",
     "reinforce_pp_baseline_0516_1.7B": "REINFORCE++",
     "opts_ttpo_lam999_0515_1.7B": "OPTS-TTPO",
 }
 
-METHOD_ORDER = ["PPO", "DAPO", "GPG", "REINFORCE++", "OPTS-TTPO"]
+METHOD_ORDER = ["PPO", "DAPO", "REINFORCE++", "OPTS-TTPO"]
 
 METHOD_STYLE = {
     "PPO": {"color": "#4C78A8", "linewidth": 2.0, "alpha": 0.95},
     "DAPO": {"color": "#72B7B2", "linewidth": 2.0, "alpha": 0.95},
-    "GPG": {"color": "#54A24B", "linewidth": 2.0, "alpha": 0.95},
     "REINFORCE++": {"color": "#F58518", "linewidth": 2.0, "alpha": 0.95},
     "OPTS-TTPO": {"color": "#E45756", "linewidth": 2.6, "alpha": 1.0},
 }
@@ -27,18 +25,20 @@ METHOD_STYLE = {
 BENCHMARK_NAME_MAP = {
     "val-core/math-ai/minervamath": "MinervaMath",
     "val-core/math-ai/amc23": "AMC23",
+    "val-core/math-ai/aime24": "AIME24",
     "val-core/math-ai/aime25": "AIME25",
-    "val-core/hiyouga/math12k": "Math12k",
+    "val-core/math-ai/aime26": "AIME26",
+    "val-core/hiyouga/math12k": "MATH500",
 }
 
 BENCHMARK_ORDER = [
+    "val-core/hiyouga/math12k",
     "val-core/math-ai/minervamath",
     "val-core/math-ai/amc23",
     "val-core/math-ai/aime25",
-    "val-core/hiyouga/math12k",
 ]
 
-SUMMARY_METRICS = ["acc/avg@32", "acc/pass@32", "acc/cons@32"]
+SUMMARY_METRICS = ["acc/avg@32", "acc/pass@32"]
 
 
 def parse_args():
@@ -120,7 +120,7 @@ def write_summary_csv(summary, summary_step, output_path):
 
     with output_file.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["benchmark", "method", "avg@32", "pass@32", "cons@32"])
+        writer.writerow(["benchmark", "method", "avg@32", "pass@32"])
         for benchmark in BENCHMARK_ORDER:
             if benchmark not in summary:
                 continue
@@ -147,6 +147,7 @@ def plot_reward_curves(curves, output_path):
         axis.set_title(BENCHMARK_NAME_MAP[benchmark], fontsize=11, pad=8)
         axis.grid(True, linestyle="--", linewidth=0.6, alpha=0.35)
         axis.set_xlabel("Training step")
+        axis.tick_params(axis="x", labelbottom=True)
         if axis is axes[0]:
             axis.set_ylabel("Reward mean@32")
 
