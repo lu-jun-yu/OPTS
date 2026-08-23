@@ -14,17 +14,33 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 export NCCL_DEBUG=ERROR
 export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
-# Respect user-supplied GPU selection; default to 2 GPUs to match n_gpus_per_node.
+# Respect user-supplied GPU selection; default to 2 GPUs. GPU parallelism
+# (n_gpus_per_node) is auto-derived from CUDA_VISIBLE_DEVICES below; TP stays
+# 1, so extra GPUs simply add data-parallel replicas.
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
+IFS=',' read -ra _gpu_arr <<< "${CUDA_VISIBLE_DEVICES}"
+N_GPUS=${#_gpu_arr[@]}
+unset _gpu_arr
 
-MODEL_SIZE=1.7B
-STEP=400
-CKPT_NAME="opts_ttpo_exp8_3_0810_n8_${MODEL_SIZE}"
+# Checkpoint selection is centralized in scripts/run_eval.sh, which exports
+# MODEL_SIZE / STEP / OPTS_METHOD; the defaults below match it so this script
+# also works standalone.
+MODEL_SIZE=${MODEL_SIZE:-1.7B}
+STEP=${STEP:-400}
+OPTS_METHOD=${OPTS_METHOD:-opts_ttpo_exp8_3_0810_n8}
+CKPT_NAME="${OPTS_METHOD}_${MODEL_SIZE}"
 CKPT_ROOT="/share/lujunyu/ckpts/opts_ckpts/opts_ttpo_${MODEL_SIZE}"
 DATA_PATH=data/test.parquet
+# Method tag used in output filenames, e.g. opts_ttpo_exp8_3_0810_n8.
+METHOD_TAG="${OPTS_METHOD}"
 
 N_SAMPLES=128
 REWARD_MODE=${REWARD_MODE:-reward}
+if [ "${REWARD_MODE}" = "reward" ]; then
+    OTRC_BASELINE=zero
+else
+    OTRC_BASELINE=mean
+fi
 MAX_SEARCH_PER_TREE=${MAX_SEARCH_PER_TREE:-7}
 OPTS_GEN_TAG="${REWARD_MODE}_s${MAX_SEARCH_PER_TREE}"
 OPTS_KS="8 16 32 64 128"
@@ -40,7 +56,9 @@ src_actor="${CKPT_ROOT}/${CKPT_NAME}/global_step_${STEP}/actor"
 src_critic="${CKPT_ROOT}/${CKPT_NAME}/global_step_${STEP}/critic"
 dst_actor="${MERGED_ROOT}/opts_ttpo_actor"
 dst_critic="${MERGED_ROOT}/opts_ttpo_critic"
-output_path="${GEN_ROOT}/opts_ttpo_opts_${OPTS_GEN_TAG}_n${N_SAMPLES}.parquet"
+# e.g. opts_ttpo_exp8_3_0810_n8_opts_reward_s3_n128.parquet
+GEN_BASENAME="${METHOD_TAG}_opts_${OPTS_GEN_TAG}"
+output_path="${GEN_ROOT}/${GEN_BASENAME}_n${N_SAMPLES}.parquet"
 
 for pair in "${src_actor}:${dst_actor}" "${src_critic}:${dst_critic}"; do
     src="${pair%:*}"
@@ -61,10 +79,10 @@ fi
 s=$(date +%s.%N)
 python3 -m trainer.main_opts_generation \
  trainer.nnodes=1 \
- trainer.n_gpus_per_node=2 \
+ trainer.n_gpus_per_node=${N_GPUS} \
  data.val_files="${DATA_PATH}" \
  data.prompt_key=prompt \
- data.val_batch_size=1804 \
+ data.val_batch_size=902 \
  +data.n_samples=${N_SAMPLES} \
  +data.reward_mode=${REWARD_MODE} \
  +data.opts_snapshot_ks="${OPTS_KS_LIST}" \
@@ -77,7 +95,6 @@ python3 -m trainer.main_opts_generation \
  actor_rollout_ref.rollout.name=vllm \
  actor_rollout_ref.rollout.search=opts \
  actor_rollout_ref.rollout.load_format=auto \
- actor_rollout_ref.rollout.enforce_eager=True \
  actor_rollout_ref.rollout.max_search_per_tree=${MAX_SEARCH_PER_TREE} \
  actor_rollout_ref.rollout.temperature=1.0 \
  actor_rollout_ref.rollout.top_p=0.95 \
@@ -91,9 +108,10 @@ python3 -m trainer.main_opts_generation \
  actor_rollout_ref.rollout.max_num_batched_tokens=262144 \
  reward_model.use_reward_loop=False \
  algorithm.lam=0.999 \
- 2>&1 | tee "${LOG_ROOT}/opts_ttpo_opts_${OPTS_GEN_TAG}.log"
+ +algorithm.otrc_baseline=${OTRC_BASELINE} \
+ 2>&1 | tee "${LOG_ROOT}/${GEN_BASENAME}.log"
 e=$(date +%s.%N)
-awk -v s="${s}" -v e="${e}" -v tag="${OPTS_GEN_TAG}" \
-    'BEGIN{ printf "opts_ttpo_opts_%s elapsed_seconds=%.2f\n", tag, e-s }' | tee "${LOG_ROOT}/opts_ttpo_opts_${OPTS_GEN_TAG}.time"
+awk -v s="${s}" -v e="${e}" -v tag="${GEN_BASENAME}" \
+    'BEGIN{ printf "%s elapsed_seconds=%.2f\n", tag, e-s }' | tee "${LOG_ROOT}/${GEN_BASENAME}.time" || true
 
 echo "Done. Output: ${output_path}"

@@ -14,15 +14,23 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 export NCCL_DEBUG=ERROR
 export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
-# Respect user-supplied GPU selection; default to 2 GPUs to match n_gpus_per_node.
+# Respect user-supplied GPU selection; default to 2 GPUs. GPU parallelism
+# (n_gpus_per_node) is auto-derived from CUDA_VISIBLE_DEVICES below; TP stays
+# 1, so extra GPUs simply add data-parallel replicas.
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
+IFS=',' read -ra _gpu_arr <<< "${CUDA_VISIBLE_DEVICES}"
+N_GPUS=${#_gpu_arr[@]}
+unset _gpu_arr
 
-MODEL_SIZE=1.7B
-STEP=400
+# Checkpoint selection is centralized in scripts/run_eval.sh, which exports
+# MODEL_SIZE / STEP / METHODS; the defaults below match it so this script
+# also works standalone.
+MODEL_SIZE=${MODEL_SIZE:-1.7B}
+STEP=${STEP:-400}
 CKPT_ROOT="/share/lujunyu/ckpts/opts_ckpts/opts_ttpo_${MODEL_SIZE}"
 DATA_PATH=data/test.parquet
 N_SAMPLES=128
-METHODS="dapo_0703_n8 ppo_0704_n8 reinforce_pp_baseline_0703_n8 opts_ttpo_exp8_3_0810_n8"
+METHODS=${METHODS:-"dapo_0703_n8 ppo_0704_n8 reinforce_pp_baseline_0703_n8 opts_ttpo_exp8_3_0810_n8"}
 
 OUT_ROOT="results/step${STEP}"
 MERGED_ROOT="${OUT_ROOT}/merged"
@@ -51,7 +59,7 @@ for method in ${METHODS}; do
     s=$(date +%s.%N)
     python3 -m verl.trainer.main_generation \
      trainer.nnodes=1 \
-     trainer.n_gpus_per_node=2 \
+     trainer.n_gpus_per_node=${N_GPUS} \
      data.path="${DATA_PATH}" \
      data.prompt_key=prompt \
      data.batch_size=1024 \
@@ -70,7 +78,7 @@ for method in ${METHODS}; do
      2>&1 | tee "${LOG_ROOT}/${method}_iid.log"
     e=$(date +%s.%N)
     awk -v s="${s}" -v e="${e}" -v m="${method}" \
-        'BEGIN{ printf "%s_iid elapsed_seconds=%.2f\n", m, e-s }' | tee "${LOG_ROOT}/${method}_iid.time"
+        'BEGIN{ printf "%s_iid elapsed_seconds=%.2f\n", m, e-s }' | tee "${LOG_ROOT}/${method}_iid.time" || true
 done
 
 echo "Done. Parquets:"

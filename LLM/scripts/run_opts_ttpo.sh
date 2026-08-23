@@ -58,6 +58,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m trainer.main_opts_ttpo \
  algorithm.kl_ctrl.kl_coef=0.0 \
  algorithm.lam=0.999 \
  +algorithm.max_searched_tree_ratio=0.4 \
+ +algorithm.otrc_baseline=zero \
  trainer.logger='["console","wandb"]' \
  trainer.val_before_train=False \
  trainer.n_gpus_per_node=4 \

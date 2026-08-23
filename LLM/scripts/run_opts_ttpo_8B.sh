@@ -3,7 +3,7 @@ export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=8B
-Experiment_Name=opts_ttpo_0817_n8_${MODEL_SIZE}
+Experiment_Name=opts_ttpo_exp8_3_0810_n8_${MODEL_SIZE}
 RAY_TEMP_DIR="/tmp/ray/${Experiment_Name}"
 
 cleanup_ray_temp() {
@@ -57,8 +57,9 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python3 -m trainer.main_opts_ttpo \
  custom_reward_function.name=compute_score \
  algorithm.use_kl_in_reward=False \
  algorithm.kl_ctrl.kl_coef=0.0 \
- algorithm.lam=0.998 \
+ algorithm.lam=0.999 \
  +algorithm.max_searched_tree_ratio=0.4 \
+ +algorithm.otrc_baseline=zero \
  trainer.logger='["console","wandb"]' \
  trainer.val_before_train=False \
  trainer.n_gpus_per_node=8 \

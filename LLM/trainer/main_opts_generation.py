@@ -142,6 +142,8 @@ def main_task(config):
         assert n_samples == 1, "When temperature=0, n_samples must be 1."
 
     assert reward_mode in ("reward", "value"), f"reward_mode must be 'reward' or 'value', got {reward_mode}"
+    otrc_baseline_mode = _select_first(config, "algorithm.otrc_baseline", default="zero")
+    assert otrc_baseline_mode in ("zero", "mean"), f"otrc_baseline must be 'zero' or 'mean', got {otrc_baseline_mode}"
 
     prompt_length = rollout_config.prompt_length
     response_length = rollout_config.response_length
@@ -229,18 +231,19 @@ def main_task(config):
     )
 
     effective_batch_size = requested_batch_size
+    n_samples = n_samples // batch_ratio
+    budget_per_prompt = n_samples * batch_ratio
+    for k in opts_snapshot_ks:
+        assert k <= budget_per_prompt and k % batch_ratio == 0, (
+            f"opts_snapshot_ks entry k={k} cannot be produced with batch_ratio={batch_ratio} "
+            f"and total budget {budget_per_prompt} per prompt: k must be a multiple of "
+            "batch_ratio and no larger than the total budget."
+        )
     if batch_ratio > 1:
-        n_samples = n_samples // batch_ratio
         print(
             f"batch_size={requested_batch_size} = {batch_ratio} * len(test)={total_samples}, "
             f"adjusted rounds to n_samples={n_samples} (total budget unchanged)."
         )
-        # Snapshots are taken per round, so ks beyond the adjusted round count
-        # would never be saved; drop them up front to keep eval consistent.
-        dropped_ks = [k for k in opts_snapshot_ks if k > n_samples]
-        if dropped_ks:
-            print(f"Warning: dropping snapshot ks beyond n_samples={n_samples}: {dropped_ks}")
-            opts_snapshot_ks = [k for k in opts_snapshot_ks if k <= n_samples]
 
     from torchdata.stateful_dataloader import StatefulDataLoader
     from verl.trainer.main_ppo import create_rl_dataset
@@ -451,7 +454,7 @@ def main_task(config):
             round_idx=round_idx,
         )
 
-        snapshot_k = round_idx + 1
+        snapshot_k = (round_idx + 1) * batch_ratio
         if reward_mode == "value" and snapshot_k in value_opts_snapshots:
             snapshot_entries = defaultdict(list)
             for uid, state in tree_search_state_by_uid.items():
@@ -473,7 +476,7 @@ def main_task(config):
                 tree_search_state_by_uid=tree_search_state_by_uid,
                 max_searched_tree_ratio=1.0,
                 search_batch_size=effective_batch_size,
-                otrc_baseline=0.0,
+                otrc_baseline_mode=otrc_baseline_mode,
             )
             next_states = selected_to_branch_points(selected_states, global_batch)
 

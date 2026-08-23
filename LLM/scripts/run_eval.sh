@@ -19,8 +19,14 @@
 #   4) Summarize generation wall-clock times so pass@k-style i.i.d. sampling
 #      and OPTS tree-search can be compared directly.
 #
-# Generation knobs (checkpoint, budget, reward mode) are set inside the two
-# generation scripts; eval knobs are the variables directly below.
+# Generation knobs (budget, reward mode) are set inside the two generation
+# scripts; eval knobs are the variables directly below.
+# Checkpoint selection is centralized HERE: STEP / MODEL_SIZE / METHODS /
+# OPTS_METHOD are exported and picked up by both generation scripts, so
+# switching experiments only means editing this block.
+# CUDA_VISIBLE_DEVICES set on this script (e.g. `CUDA_VISIBLE_DEVICES=6 bash
+# scripts/run_eval.sh`) propagates to both generation scripts, which derive
+# n_gpus_per_node from it automatically.
 # Set SKIP_GEN=1 to bypass steps 1 and 2 (evaluate-only on existing parquets).
 
 set -euo pipefail
@@ -29,7 +35,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LLM_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${LLM_DIR}"
 
+# ---- checkpoint selection (the single place to edit) ----
+# METHODS: i.i.d. checkpoints; OPTS_METHOD: the OPTS-TTPO checkpoint. Both
+# must exist as ${CKPT_ROOT}/${name}_${MODEL_SIZE}/global_step_${STEP}/actor
+# where CKPT_ROOT=/share/lujunyu/ckpts/opts_ckpts/opts_ttpo_${MODEL_SIZE}.
 STEP=400
+MODEL_SIZE=1.7B
+METHODS="dapo_0703_n8 ppo_0704_n8 reinforce_pp_baseline_0703_n8 opts_ttpo_0820_n8"
+OPTS_METHOD="opts_ttpo_0820_n8"
+export STEP MODEL_SIZE METHODS OPTS_METHOD
+# ---------------------------------------------------------
+
 N_SAMPLES=128
 PASSCONS_K=32
 OPTS_KS="8 16 32 64 128"
@@ -37,7 +53,7 @@ OPTS_KS_TAG="${OPTS_KS// /-}"
 SKIP_GEN=0
 # max_search_per_tree values to generate/evaluate; results are saved with a
 # "_s${s}" filename tag so different search depths can be compared.
-OPTS_MAX_SEARCHES=${OPTS_MAX_SEARCHES:-"3 7"}
+OPTS_MAX_SEARCHES=${OPTS_MAX_SEARCHES:-"3"}
 
 OUT_ROOT="results/step${STEP}"
 GEN_ROOT="${OUT_ROOT}/gen"
@@ -45,11 +61,8 @@ EVAL_ROOT="${OUT_ROOT}/eval"
 LOG_ROOT="logs/step${STEP}"
 mkdir -p "${EVAL_ROOT}"
 
-# Match the actual filenames produced by scripts/run_parallel_generation.sh.
-METHODS=("dapo_0703_n8" "ppo_0704_n8" "reinforce_pp_baseline_0703_n8" "opts_ttpo_exp8_3_0810_n8")
-
 if [[ "${SKIP_GEN}" != "1" ]]; then
-    echo "========== Stage 1: i.i.d. generation for ${METHODS[*]} =========="
+    echo "========== Stage 1: i.i.d. generation for ${METHODS} =========="
     bash "${SCRIPT_DIR}/run_parallel_generation.sh"
 
     echo "========== Stage 2: OPTS tree-search generation for opts_ttpo =========="
@@ -60,7 +73,7 @@ if [[ "${SKIP_GEN}" != "1" ]]; then
 fi
 
 echo "========== Stage 3: Task 1 — avg@${PASSCONS_K}, pass@${PASSCONS_K}, cons@${PASSCONS_K} =========="
-for method in "${METHODS[@]}"; do
+for method in ${METHODS}; do
     parquet="${GEN_ROOT}/${method}_iid_n${N_SAMPLES}.parquet"
     if [[ ! -f "${parquet}" ]]; then
         echo "[missing] ${parquet} — re-run without SKIP_GEN=1" >&2
@@ -75,9 +88,9 @@ for method in "${METHODS[@]}"; do
 done
 
 echo "========== Stage 3: Task 2 — opts@k (reward) + pass@k (i.i.d.) for opts_ttpo =========="
-iid_parquet="${GEN_ROOT}/opts_ttpo_exp8_3_0810_n8_iid_n${N_SAMPLES}.parquet"
+iid_parquet="${GEN_ROOT}/${OPTS_METHOD}_iid_n${N_SAMPLES}.parquet"
 for s in ${OPTS_MAX_SEARCHES}; do
-    reward_opts_parquet="${GEN_ROOT}/opts_ttpo_opts_reward_s${s}_n${N_SAMPLES}.parquet"
+    reward_opts_parquet="${GEN_ROOT}/${OPTS_METHOD}_opts_reward_s${s}_n${N_SAMPLES}.parquet"
     if [[ -f "${reward_opts_parquet}" ]]; then
         echo "--- opts_ttpo OPTS parquet (reward, s=${s}) ---"
         python3 -m trainer.main_eval \
@@ -102,7 +115,7 @@ fi
 
 echo "========== Stage 3: Task 3 — opts@k (value) + cons@k (i.i.d.) for opts_ttpo =========="
 for s in ${OPTS_MAX_SEARCHES}; do
-    value_opts_parquet="${GEN_ROOT}/opts_ttpo_opts_value_s${s}_n${N_SAMPLES}.parquet"
+    value_opts_parquet="${GEN_ROOT}/${OPTS_METHOD}_opts_value_s${s}_n${N_SAMPLES}.parquet"
     if [[ -f "${value_opts_parquet}" ]]; then
         echo "--- opts_ttpo OPTS parquet (value, s=${s}) ---"
         python3 -m trainer.main_eval \
