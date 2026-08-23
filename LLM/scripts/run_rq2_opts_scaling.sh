@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# RQ2: OPTS tree-count scaling generation (single node).
-# Merges actor + critic FSDP checkpoints to HF, then runs
-# experiments/rq2_opts_scaling.py (reward mode + zero OTRC baseline,
-# terminates after trees_per_prompt * len(test) trees are opened).
+# RQ2: OPTS tree-count scaling generation + evaluation (single node).
+# Merges actor + critic FSDP checkpoints to HF, then for each SEARCH_ROUNDS
+# value runs experiments/rq2_opts_scaling.py (reward mode + zero OTRC
+# baseline): phase 1 opens trees_per_prompt * len(test) trees, phase 2 runs
+# that many pure-branching rounds over the existing trees. Finally scores each
+# parquet with trainer.main_eval opts-avg@k (per-tree greedy max-advantage
+# terminal response, averaged per prompt).
 # Idempotent: merge is skipped if the HF dir has weights, generation is
 # skipped if the parquet already exists.
 #
 # Run from anywhere:  bash scripts/run_rq2_opts_scaling.sh
 # Knobs (env-overridable): OPTS_METHOD STEP MODEL_SIZE BS TREES_PER_PROMPT
-#   MAX_SEARCH_PER_TREE CUDA_VISIBLE_DEVICES
+#   SEARCH_ROUNDS OPTS_AVG_KS CUDA_VISIBLE_DEVICES
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -33,21 +36,26 @@ DATA_PATH=data/test.parquet
 
 BS=${BS:-902}
 TREES_PER_PROMPT=${TREES_PER_PROMPT:-32}
-MAX_SEARCH_PER_TREE=${MAX_SEARCH_PER_TREE:-7}
+# Branch-round counts to generate/evaluate; results carry a "_s${s}" filename
+# tag so different search depths can be compared. Each branch round lets every
+# OTRC-qualifying tree branch once; no new trees are opened in these rounds.
+SEARCH_ROUNDS=${SEARCH_ROUNDS:-"1 3 7"}
+# opts-avg@k: each of the first k trees contributes its greedy max-advantage
+# terminal response; averaged per prompt, then across prompts.
+OPTS_AVG_KS=${OPTS_AVG_KS:-"32"}
+OPTS_AVG_KS_TAG="${OPTS_AVG_KS// /-}"
 
 OUT_ROOT="results/step${STEP}"
 MERGED_ROOT="${OUT_ROOT}/merged"
 RQ2_ROOT="${OUT_ROOT}/rq2"
+EVAL_ROOT="${RQ2_ROOT}/eval"
 LOG_ROOT="logs/step${STEP}"
-mkdir -p "${MERGED_ROOT}" "${RQ2_ROOT}" "${LOG_ROOT}"
+mkdir -p "${MERGED_ROOT}" "${RQ2_ROOT}" "${EVAL_ROOT}" "${LOG_ROOT}"
 
 src_actor="${CKPT_ROOT}/${CKPT_NAME}/global_step_${STEP}/actor"
 src_critic="${CKPT_ROOT}/${CKPT_NAME}/global_step_${STEP}/critic"
 dst_actor="${MERGED_ROOT}/opts_ttpo_actor"
 dst_critic="${MERGED_ROOT}/opts_ttpo_critic"
-# e.g. opts_ttpo_exp8_3_0810_n8_rq2_opts_s7_t32_bs902.parquet
-GEN_BASENAME="${OPTS_METHOD}_rq2_opts_s${MAX_SEARCH_PER_TREE}_t${TREES_PER_PROMPT}_bs${BS}"
-output_path="${RQ2_ROOT}/${GEN_BASENAME}.parquet"
 
 for pair in "${src_actor}:${dst_actor}" "${src_critic}:${dst_critic}"; do
     src="${pair%:*}"
@@ -60,44 +68,60 @@ for pair in "${src_actor}:${dst_actor}" "${src_critic}:${dst_critic}"; do
     python3 -m verl.model_merger merge --backend fsdp --local_dir "${src}" --target_dir "${dst}"
 done
 
-if [[ -f "${output_path}" ]]; then
-    echo "[skip gen] ${output_path}"
-    exit 0
-fi
+for s in ${SEARCH_ROUNDS}; do
+    # e.g. opts_ttpo_exp8_3_0810_n8_rq2_opts_s7_t32_bs902.parquet
+    GEN_BASENAME="${OPTS_METHOD}_rq2_opts_s${s}_t${TREES_PER_PROMPT}_bs${BS}"
+    output_path="${RQ2_ROOT}/${GEN_BASENAME}.parquet"
 
-s=$(date +%s.%N)
-python3 -m experiments.rq2_opts_scaling \
- trainer.nnodes=1 \
- trainer.n_gpus_per_node=${N_GPUS} \
- data.val_files="${DATA_PATH}" \
- data.prompt_key=prompt \
- data.val_batch_size=${BS} \
- +data.trees_per_prompt=${TREES_PER_PROMPT} \
- +data.output_path="${output_path}" \
- actor_rollout_ref.model.path="${dst_actor}" \
- critic.model.path="${dst_critic}" \
- critic.model.use_remove_padding=True \
- critic.value_head_activation=sigmoid \
- critic.forward_micro_batch_size_per_gpu=64 \
- actor_rollout_ref.rollout.name=vllm \
- actor_rollout_ref.rollout.search=opts \
- actor_rollout_ref.rollout.load_format=auto \
- actor_rollout_ref.rollout.max_search_per_tree=${MAX_SEARCH_PER_TREE} \
- actor_rollout_ref.rollout.temperature=1.0 \
- actor_rollout_ref.rollout.top_p=0.95 \
- actor_rollout_ref.rollout.val_kwargs.top_p=0.95 \
- actor_rollout_ref.rollout.prompt_length=1024 \
- actor_rollout_ref.rollout.response_length=2048 \
- actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
- actor_rollout_ref.rollout.pipeline_model_parallel_size=1 \
- actor_rollout_ref.rollout.mode=async \
- actor_rollout_ref.rollout.gpu_memory_utilization=0.85 \
- actor_rollout_ref.rollout.max_num_batched_tokens=262144 \
- reward_model.use_reward_loop=False \
- algorithm.lam=0.999 \
- 2>&1 | tee "${LOG_ROOT}/${GEN_BASENAME}.log"
-e=$(date +%s.%N)
-awk -v s="${s}" -v e="${e}" -v tag="${GEN_BASENAME}" \
-    'BEGIN{ printf "%s elapsed_seconds=%.2f\n", tag, e-s }' | tee "${LOG_ROOT}/${GEN_BASENAME}.time" || true
+    echo "========== RQ2 generation: branch_rounds=${s} =========="
+    if [[ -f "${output_path}" ]]; then
+        echo "[skip gen] ${output_path}"
+    else
+        s_time=$(date +%s.%N)
+        python3 -m experiments.rq2_opts_scaling \
+         trainer.nnodes=1 \
+         trainer.n_gpus_per_node=${N_GPUS} \
+         data.val_files="${DATA_PATH}" \
+         data.prompt_key=prompt \
+         data.val_batch_size=${BS} \
+         +data.trees_per_prompt=${TREES_PER_PROMPT} \
+         +data.n_branch_rounds=${s} \
+         +data.output_path="${output_path}" \
+         actor_rollout_ref.model.path="${dst_actor}" \
+         critic.model.path="${dst_critic}" \
+         critic.model.use_remove_padding=True \
+         critic.value_head_activation=sigmoid \
+         critic.forward_micro_batch_size_per_gpu=64 \
+         actor_rollout_ref.rollout.name=vllm \
+         actor_rollout_ref.rollout.search=opts \
+         actor_rollout_ref.rollout.load_format=auto \
+         actor_rollout_ref.rollout.max_search_per_tree=${s} \
+         actor_rollout_ref.rollout.temperature=1.0 \
+         actor_rollout_ref.rollout.top_p=0.95 \
+         actor_rollout_ref.rollout.val_kwargs.top_p=0.95 \
+         actor_rollout_ref.rollout.prompt_length=1024 \
+         actor_rollout_ref.rollout.response_length=2048 \
+         actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+         actor_rollout_ref.rollout.pipeline_model_parallel_size=1 \
+         actor_rollout_ref.rollout.mode=async \
+         actor_rollout_ref.rollout.gpu_memory_utilization=0.85 \
+         actor_rollout_ref.rollout.max_num_batched_tokens=262144 \
+         reward_model.use_reward_loop=False \
+         algorithm.lam=0.999 \
+         2>&1 | tee "${LOG_ROOT}/${GEN_BASENAME}.log"
+        e_time=$(date +%s.%N)
+        awk -v s="${s_time}" -v e="${e_time}" -v tag="${GEN_BASENAME}" \
+            'BEGIN{ printf "%s elapsed_seconds=%.2f\n", tag, e-s }' | tee "${LOG_ROOT}/${GEN_BASENAME}.time" || true
+    fi
 
-echo "Done. Output: ${output_path}"
+    echo "========== RQ2 evaluation: branch_rounds=${s}, opts-avg@k k=${OPTS_AVG_KS} =========="
+    python3 -m trainer.main_eval \
+        --pregenerated_parquet "${output_path}" \
+        --metrics opts-avg --k ${OPTS_AVG_KS} \
+        --output_tag "${GEN_BASENAME}_opts-avg_k${OPTS_AVG_KS_TAG}" \
+        --output_dir "${EVAL_ROOT}"
+done
+
+echo
+echo "Done. Parquets: ${RQ2_ROOT}"
+echo "Eval JSONs: ${EVAL_ROOT}"

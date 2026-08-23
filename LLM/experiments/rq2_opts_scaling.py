@@ -4,25 +4,22 @@
 RQ2: OPTS tree-count scaling experiment.
 
 Reward-guided OPTS (reward_mode="reward", otrc_baseline="zero") with a
-tree-count termination rule instead of the fixed-round scheme of
+two-phase schedule instead of the interleaved scheme of
 trainer/main_opts_generation.py:
 
-  - Each round runs up to bs rollouts: OTRC-selected continuations of existing
-    trees plus newly opened trees (fresh prompts; one drawn prompt = one tree,
-    uid doubles as the tree ID).
-  - Target = trees_per_prompt * dataset_size trees (default 32 * 902).
-  - Before each round, compare the tree deficit (target - opened) with this
-    round's new-tree slots (bs - #continuations):
-      * slots <  deficit: open all slots as new trees -> a full bs round;
-      * slots >= deficit: open exactly `deficit` new trees and stop after this
-        round.
-
-Because PromptBuffer draws prompts in dataset order (round-robin), a total of
-trees_per_prompt * dataset_size draws gives every prompt exactly
-trees_per_prompt trees.
+  - Phase 1 (a single call): open ALL trees up front — draw
+    trees_per_prompt * dataset_size prompts (the 902 prompts repeated
+    trees_per_prompt times; one drawn prompt = one tree, uid doubles as the
+    tree ID) and generate all root trajectories in one parallel batch.
+  - Phase 2 (n_branch_rounds calls, swept over 1/3/7 by the launcher): branch
+    only from OTRC-selected positions of the existing trees — every qualifying
+    tree may branch once per round, all selected branches are rolled out in
+    one parallel batch, and no new trees are opened.
 
 Output schema matches trainer/main_opts_generation.py reward mode (minus the
-value snapshot columns), so results can be scored with trainer/main_eval.py.
+value snapshot columns), plus a tree_uids column (uid doubles as tree ID, and
+one tree may have several roots when OTRC re-branches from the prompt root) so
+trainer/main_eval.py can compute opts-avg@k offline.
 """
 
 import os
@@ -149,6 +146,10 @@ def main_task(config):
     prompt_length = rollout_config.prompt_length
     response_length = rollout_config.response_length
     max_search_per_tree = rollout_config.get("max_search_per_tree", 1)
+    # Number of pure-branching rounds after all trees are opened; defaults to
+    # max_search_per_tree so a single rollout knob can drive both.
+    n_branch_rounds = int(_select_first(config, "data.n_branch_rounds", default=max_search_per_tree))
+    assert n_branch_rounds >= 0, f"n_branch_rounds must be >= 0, got {n_branch_rounds}"
     gamma = config.algorithm.gamma
     lam = config.algorithm.lam
 
@@ -253,8 +254,9 @@ def main_task(config):
 
     print(f"Starting RQ2 OPTS tree-count scaling: "
           f"trees_per_prompt={trees_per_prompt}, trees_target={trees_target}, "
-          f"batch_size={batch_size}, reward_mode={REWARD_MODE}, "
-          f"otrc_baseline={OTRC_BASELINE_MODE}, max_search_per_tree={max_search_per_tree}")
+          f"batch_size={batch_size}, n_branch_rounds={n_branch_rounds}, "
+          f"reward_mode={REWARD_MODE}, otrc_baseline={OTRC_BASELINE_MODE}, "
+          f"max_search_per_tree={max_search_per_tree}")
 
     global_batch = None
     next_states = {}
@@ -263,42 +265,40 @@ def main_task(config):
     tree_search_state_by_uid = {}
     uid_to_dataset_idx = {}
     prompt_cursor = 0
-    round_idx = 0
     trees_opened = 0
 
-    while True:
-        deficit = trees_target - trees_opened
-        n_continued = len(next_states)
-        new_tree_slots = batch_size - n_continued
-        n_new_trees = min(new_tree_slots, deficit)
-        final_round = deficit <= new_tree_slots
-        print(f"[round {round_idx + 1}] Start. trees_opened={trees_opened}/{trees_target} "
-              f"(deficit={deficit}), continuations={n_continued}, new_trees={n_new_trees}"
-              f"{', final round' if final_round else ''}.")
+    # Two phases:
+    #   Phase 1 (call 0): open ALL trees — one draw of trees_per_prompt *
+    #     total_samples prompts (the dataset repeated trees_per_prompt times),
+    #     so every prompt gets exactly trees_per_prompt root trajectories,
+    #     all generated in a single parallel batch.
+    #   Phase 2 (the following n_branch_rounds calls): branch only from
+    #     OTRC-selected positions of the existing trees, all selected branches
+    #     rolled out in one parallel batch per round; no new trees.
+    total_calls = 1 + n_branch_rounds
+    for call_idx in range(total_calls):
+        root_phase = call_idx == 0
+        print(f"[call {call_idx + 1}/{total_calls}] Start. "
+              f"phase={'root' if root_phase else 'branch'}, "
+              f"trees_opened={trees_opened}/{trees_target}, "
+              f"continuations={len(next_states)}.")
 
-        # === Construct this round's batch ===
-        parts = []
-        if n_continued > 0:
-            continued = prepare_next_round_input(
+        # === Construct this call's batch ===
+        if root_phase:
+            batch = prompt_buffer.draw(trees_target)
+            for uid in batch.non_tensor_batch["uid"]:
+                uid_to_dataset_idx[uid] = prompt_cursor
+                prompt_cursor = (prompt_cursor + 1) % total_samples
+            trees_opened += len(batch.non_tensor_batch["uid"])
+        else:
+            if not next_states:
+                print(f"[call {call_idx + 1}/{total_calls}] No OTRC candidates left; stopping early.")
+                break
+            batch = prepare_next_round_input(
                 global_batch=global_batch,
                 next_states=next_states,
                 pad_token_id=tokenizer.pad_token_id,
             )
-            parts.append(continued)
-        if n_new_trees > 0:
-            new_prompts = prompt_buffer.draw(n_new_trees)
-            for uid in new_prompts.non_tensor_batch["uid"]:
-                uid_to_dataset_idx[uid] = prompt_cursor
-                prompt_cursor = (prompt_cursor + 1) % total_samples
-            parts.append(new_prompts)
-            trees_opened += n_new_trees
-
-        if len(parts) == 2:
-            batch = merge_batches(parts[0], parts[1])
-        elif len(parts) == 1:
-            batch = parts[0]
-        else:
-            raise RuntimeError("Empty round: no continuations and no new trees to run.")
         batch.meta_info["temperature"] = rollout_config.temperature
 
         # === Generate sequences ===
@@ -306,7 +306,9 @@ def main_task(config):
             size_divisor = rollout_config.agent.num_workers
             batch_padded, pad_size = pad_dataproto_to_divisor(batch, size_divisor)
             output = unpad_dataproto(
-                async_rollout_manager.generate_sequences(batch_padded, sleep_after=final_round),
+                async_rollout_manager.generate_sequences(
+                    batch_padded, sleep_after=(call_idx == total_calls - 1)
+                ),
                 pad_size=pad_size,
             )
             # AgentLoopManager rebuilds non_tensor_batch; downstream tree
@@ -340,7 +342,7 @@ def main_task(config):
         output.batch["token_level_rewards"] = reward_tensor
 
         # === Tree structure bookkeeping ===
-        new_sample_indices = set_opts_ttpo_info(output, global_batch, next_states, round_idx)
+        new_sample_indices = set_opts_ttpo_info(output, global_batch, next_states, call_idx)
         output.non_tensor_batch["episodic_returns"] = compute_episodic_returns(output, global_batch)
         cur_batch_size, cur_response_len = output.batch["responses"].shape
         output.batch["state_branches"] = torch.ones(cur_batch_size, cur_response_len)
@@ -387,6 +389,7 @@ def main_task(config):
             rid_str = str(current_rids[local_idx])
             idx_responses[dataset_idx].append({
                 "response": resp,
+                "uid": str(uid),
                 "sample_index": idx_sample_counter[dataset_idx],
                 "global_index": global_sample_counter,
                 "rid": rid_str,
@@ -401,29 +404,30 @@ def main_task(config):
             gamma=gamma,
             max_prompt_length=prompt_length,
             tokenizer=tokenizer,
-            round_idx=round_idx,
+            round_idx=call_idx,
         )
 
-        print(f"[round {round_idx + 1}] Done. "
+        print(f"[call {call_idx + 1}/{total_calls}] Done. "
               f"Collected {sum(len(v) for v in idx_responses.values())} total responses, "
               f"{trees_opened}/{trees_target} trees opened.")
 
-        if final_round:
-            break
-
-        # === OTRC selection for next round ===
-        selected_states = select_next_states(
-            batch=global_batch,
-            search_count=search_count,
-            max_otrc_scores=max_otrc_scores,
-            max_search_per_tree=max_search_per_tree,
-            tree_search_state_by_uid=tree_search_state_by_uid,
-            max_searched_tree_ratio=1.0,
-            search_batch_size=batch_size,
-            otrc_baseline_mode=OTRC_BASELINE_MODE,
-        )
-        next_states = selected_to_branch_points(selected_states, global_batch)
-        round_idx += 1
+        # === OTRC selection for the next branch call ===
+        # After every call except the last, select branch positions over all
+        # existing trees. search_batch_size=trees_target: every qualifying
+        # tree may branch once per branch round (one state per uid per
+        # selection).
+        if call_idx < total_calls - 1:
+            selected_states = select_next_states(
+                batch=global_batch,
+                search_count=search_count,
+                max_otrc_scores=max_otrc_scores,
+                max_search_per_tree=max_search_per_tree,
+                tree_search_state_by_uid=tree_search_state_by_uid,
+                max_searched_tree_ratio=1.0,
+                search_batch_size=trees_target,
+                otrc_baseline_mode=OTRC_BASELINE_MODE,
+            )
+            next_states = selected_to_branch_points(selected_states, global_batch)
 
     assert trees_opened == trees_target, (
         f"Tree-count invariant violated: opened {trees_opened}, target {trees_target}."
@@ -443,6 +447,7 @@ def main_task(config):
     output_responses = [[] for _ in range(total_samples)]
     output_sample_indices = [[] for _ in range(total_samples)]
     output_global_indices = [[] for _ in range(total_samples)]
+    output_tree_uids = [[] for _ in range(total_samples)]
     output_tree_rids = [[] for _ in range(total_samples)]
     output_tree_pids = [[] for _ in range(total_samples)]
     output_tree_branch_pos = [[] for _ in range(total_samples)]
@@ -453,6 +458,7 @@ def main_task(config):
             output_responses[dataset_idx].append(record["response"])
             output_sample_indices[dataset_idx].append(record["sample_index"])
             output_global_indices[dataset_idx].append(record["global_index"])
+            output_tree_uids[dataset_idx].append(record["uid"])
             output_tree_rids[dataset_idx].append(record["rid"])
             output_tree_pids[dataset_idx].append(record["pid"])
             output_tree_branch_pos[dataset_idx].append(record["branch_pos"])
@@ -461,6 +467,7 @@ def main_task(config):
     dataset["responses"] = output_responses
     dataset["sample_indices"] = output_sample_indices
     dataset["global_indices"] = output_global_indices
+    dataset["tree_uids"] = output_tree_uids
     dataset["tree_rids"] = output_tree_rids
     dataset["tree_pids"] = output_tree_pids
     dataset["tree_branch_pos"] = output_tree_branch_pos

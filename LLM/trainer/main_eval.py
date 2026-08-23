@@ -8,11 +8,13 @@ Two modes:
      compute unbiased pass@k.
   B) Score pre-generated parquet (--pregenerated_parquet): read a parquet produced
      by verl.trainer.main_generation / main_opts_generation and compute any of
-     avg@k / pass@k / cons@k / opts@k. Correctness uses only answer match (no
-     format reward); `pass@k` here is the strict "any correct in first k";
+     avg@k / pass@k / cons@k / opts@k / opts-avg@k. Correctness uses only answer
+     match (no format reward); `pass@k` here is the strict "any correct in first k";
      `opts@k` requires a main_opts_generation parquet. reward-mode opts@k keeps
      the chronological any-correct prefix; value-mode opts@k majority-votes the
-     online value-greedy tree responses saved at each budget.
+     online value-greedy tree responses saved at each budget. `opts-avg@k`
+     requires an rq2_opts_scaling parquet: each of the first k trees contributes
+     its greedy max-advantage terminal response, averaged per prompt.
 
 Test sets (from dataset_survey.md):
   - math500      500  high-school baseline      (data/math12k/test.parquet)
@@ -229,6 +231,71 @@ def value_opts_at_k_row(value_responses: list[str], ground_truth: str) -> float:
 
 
 # ---------------------------------------------------------------------------
+# opts-avg@k (RQ2): per-tree greedy max-advantage terminal response, averaged
+# over the first k trees of each prompt, then averaged across prompts.
+# ---------------------------------------------------------------------------
+OPTS_AVG_REQUIRED_COLUMNS = (
+    "tree_uids", "tree_rids", "tree_pids", "tree_branch_pos", "tree_advantages", "global_indices",
+)
+
+
+def _greedy_terminal_idx(root: int, children_by_pos: dict, advantages: list) -> int:
+    """Walk the greedy max-advantage path from a tree root to its terminal node.
+
+    Mirrors the online walk in refresh_tree_search_states: at token position t
+    of the current trajectory, jump to the child branched at t with the highest
+    first-token advantage if it beats the continuation advantage adv[t+1].
+    """
+    node = root
+    t = 0
+    while True:
+        adv = advantages[node]
+        if len(adv) == 0 or t >= len(adv):
+            return node
+        cont = float(adv[t + 1]) if t + 1 < len(adv) else 0.0
+        kids = [c for c in children_by_pos.get((node, t), ()) if len(advantages[c]) > 0]
+        if kids:
+            best = max(kids, key=lambda c: float(advantages[c][0]))
+            if float(advantages[best][0]) > cont:
+                node, t = best, 0
+                continue
+        t += 1
+
+
+def opts_greedy_terminal_flags(
+    uids, rids, pids, branch_pos, advantages, responses, global_indices, ground_truth: str
+) -> list[bool]:
+    """One correctness flag per tree: the greedy max-advantage terminal response.
+
+    Trees are keyed by uid (one tree may have several roots when OTRC
+    re-branches from the prompt root; the root with the highest first-token
+    advantage starts the walk, matching refresh_tree_search_states). Returned
+    in chronological order (each tree's first root by global_index).
+    """
+    rid2idx = {str(r): i for i, r in enumerate(rids)}
+    roots_by_uid: dict[str, list[int]] = defaultdict(list)
+    children_by_pos: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for i, pid in enumerate(pids):
+        pid = _normalize_optional_str(pid)
+        if pid is None:
+            roots_by_uid[str(uids[i])].append(i)
+        else:
+            children_by_pos[(rid2idx[pid], int(branch_pos[i]))].append(i)
+
+    ordered_uids = sorted(
+        roots_by_uid,
+        key=lambda u: min(int(global_indices[r]) for r in roots_by_uid[u]),
+    )
+    flags = []
+    for u in ordered_uids:
+        roots = roots_by_uid[u]
+        root = max(roots, key=lambda r: float(advantages[r][0]) if len(advantages[r]) > 0 else float("-inf"))
+        terminal = _greedy_terminal_idx(root, children_by_pos, advantages)
+        flags.append(is_answer_correct(responses[terminal], ground_truth))
+    return flags
+
+
+# ---------------------------------------------------------------------------
 # Parquet-mode evaluator
 # ---------------------------------------------------------------------------
 def evaluate_pregenerated_parquet(
@@ -257,6 +324,13 @@ def evaluate_pregenerated_parquet(
                 "value-mode opts@k requires online greedy snapshot columns "
                 f"{missing}, not found in {parquet_path}. Regenerate the value OPTS parquet."
             )
+    if "opts-avg" in metrics:
+        missing = [c for c in OPTS_AVG_REQUIRED_COLUMNS if c not in df.columns]
+        if missing:
+            raise ValueError(
+                f"opts-avg@k requires tree-structure columns {missing}, not found in "
+                f"{parquet_path}. Regenerate with the updated experiments/rq2_opts_scaling.py."
+            )
 
     print(
         f"Eval parquet: {parquet_path}  rows={dataset_size}  metrics={metrics}  "
@@ -268,12 +342,31 @@ def evaluate_pregenerated_parquet(
         responses = list(row[response_key])
         gt = str(row[reward_model_key]["ground_truth"])
         ds = row[data_source_key] if data_source_key in df.columns else "default"
-        correct_flags = [is_answer_correct(r, gt) for r in responses]
+        # correct_flags over ALL responses is only needed by avg/pass and
+        # reward-mode opts; skip the full scoring pass for opts-avg-only runs.
+        need_correct_flags = (
+            "avg" in metrics or "pass" in metrics
+            or ("opts" in metrics and opts_reward_mode != "value")
+        )
+        correct_flags = [is_answer_correct(r, gt) for r in responses] if need_correct_flags else None
         global_indices = list(row[global_indices_key]) if has_global else None
         field_lengths = {response_key: len(responses)}
         if has_global:
             field_lengths[global_indices_key] = len(global_indices)
         assert len(set(field_lengths.values())) == 1, f"mismatched parquet row field lengths: {field_lengths}"
+
+        opts_avg_flags = None
+        if "opts-avg" in metrics:
+            opts_avg_flags = opts_greedy_terminal_flags(
+                uids=list(row["tree_uids"]),
+                rids=list(row["tree_rids"]),
+                pids=list(row["tree_pids"]),
+                branch_pos=list(row["tree_branch_pos"]),
+                advantages=[list(a) for a in row["tree_advantages"]],
+                responses=responses,
+                global_indices=global_indices,
+                ground_truth=gt,
+            )
 
         for k in k_values:
             if "avg" in metrics:
@@ -282,6 +375,8 @@ def evaluate_pregenerated_parquet(
                 per_source[ds][f"pass@{k}"].append(strict_pass_at_k(correct_flags, k))
             if "cons" in metrics:
                 per_source[ds][f"cons@{k}"].append(cons_at_k(responses, gt, k))
+            if "opts-avg" in metrics:
+                per_source[ds][f"opts-avg@{k}"].append(avg_at_k(opts_avg_flags, k))
             if "opts" in metrics:
                 if opts_reward_mode == "value":
                     per_source[ds][f"opts@{k}"].append(
@@ -357,7 +452,7 @@ def main():
     )
     parser.add_argument(
         "--metrics", nargs="+", default=["avg", "pass", "cons"],
-        choices=["avg", "pass", "cons", "opts"],
+        choices=["avg", "pass", "cons", "opts", "opts-avg"],
         help="Metrics to compute in parquet mode.",
     )
     parser.add_argument(
