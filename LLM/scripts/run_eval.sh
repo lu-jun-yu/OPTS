@@ -41,8 +41,8 @@ cd "${LLM_DIR}"
 # where CKPT_ROOT=/share/lujunyu/ckpts/opts_ckpts/opts_ttpo_${MODEL_SIZE}.
 STEP=400
 MODEL_SIZE=1.7B
-METHODS="dapo_0703_n8 ppo_0704_n8 reinforce_pp_baseline_0703_n8 opts_ttpo_0820_n8"
-OPTS_METHOD="opts_ttpo_0820_n8"
+METHODS="dapo_0703_n8 ppo_0704_n8 reinforce_pp_baseline_0703_n8 opts_ttpo_exp8_3_0810_n8"
+OPTS_METHOD="opts_ttpo_exp8_3_0810_n8"
 export STEP MODEL_SIZE METHODS OPTS_METHOD
 # ---------------------------------------------------------
 

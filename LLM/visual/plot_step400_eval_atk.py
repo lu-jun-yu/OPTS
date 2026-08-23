@@ -9,7 +9,7 @@ from matplotlib.ticker import FormatStrFormatter, MaxNLocator
 # ==========================================================================
 # ALGORITHMS TO PLOT — method tags in the eval JSON filenames.
 # Edit this list to switch/extend the algorithms.
-ALGORITHMS = ["opts_ttpo_0820_n8"]
+ALGORITHMS = ["opts_ttpo_exp8_3_0810_n8"]
 # ==========================================================================
 
 OPTS_METHOD = ALGORITHMS[0]
