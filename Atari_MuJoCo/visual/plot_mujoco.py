@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 from collections import defaultdict
+from matplotlib.ticker import MaxNLocator
 from scipy.ndimage import uniform_filter1d
 
 
@@ -286,7 +287,7 @@ def get_display_name(algo_name, date=None):
 
 
 def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
-                                algo_filters=None, smooth_window=5, seed_filters=None,
+                                algo_filters=None, smooth_window=15, seed_filters=None,
                                 output_path=None):
     """
     绘制所有5个任务的收敛曲线在一张图上（1行5列布局）
@@ -364,30 +365,68 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
     
     algo_colors = build_algo_colors(all_algos)
 
-    fig, axes = plt.subplots(1, 5, figsize=(20, 4))
+    # 按论文双栏通栏尺寸设计：五个任务保持单行，控制正文占用高度。
+    plt.rcParams.update(
+        {
+            "font.family": "serif",
+            "font.size": 12.5,
+            "axes.titlesize": 13.0,
+            "axes.titleweight": "semibold",
+            "text.color": "#263238",
+            "axes.labelcolor": "#263238",
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
+        }
+    )
+    fig, axes = plt.subplots(1, 5, figsize=(10.8, 3.15))
+    fig.subplots_adjust(
+        left=0.08,
+        right=0.995,
+        bottom=0.19,
+        top=0.76,
+        wspace=0.40,
+    )
 
-    # seaborn darkgrid 风格：灰蓝底色 + 白色网格线 + 去边框
+    # 与正文其他图一致：白底、轻水平网格、仅保留左/下轴线。
     for ax in axes:
-        ax.set_facecolor("#EAEAF2")
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-        ax.tick_params(colors="#262626", length=3)
-        ax.xaxis.label.set_color("#262626")
-        ax.yaxis.label.set_color("#262626")
-        ax.title.set_color("#262626")
+        ax.set_facecolor("white")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_color("#A5ADB3")
+        ax.spines["bottom"].set_color("#A5ADB3")
+        ax.spines["left"].set_linewidth(0.7)
+        ax.spines["bottom"].set_linewidth(0.7)
+        ax.tick_params(
+            axis="both",
+            colors="#5F6B73",
+            labelsize=12.2,
+            length=2.8,
+            width=0.65,
+            pad=2.5,
+        )
+        ax.yaxis.set_major_locator(
+            MaxNLocator(nbins=4, min_n_ticks=3, steps=[1, 2, 2.5, 5, 10])
+        )
+        ax.grid(
+            axis="y",
+            color="#CBD1D6",
+            linestyle=(0, (4, 3)),
+            linewidth=0.7,
+            alpha=0.78,
+        )
+        ax.set_axisbelow(True)
+
     # 绘制每个任务
     for idx, task_name in enumerate(TARGET_TASKS):
         ax = axes[idx]
         
         if task_name not in all_tasks_data:
-            ax.set_title(task_name.replace('-v4', '-v1'), fontsize=12)
-            ax.set_xlabel("Timesteps", fontsize=10)
-            if idx == 0:
-                ax.set_ylabel("Mean Episodic Return", fontsize=10)
+            ax.set_title(task_name.replace('-v4', '-v1'), pad=5.5)
             continue
         
         task_data = all_tasks_data[task_name]
         
+        tail_scores = {}
         for algo_key, data in task_data.items():
             algo_name, date = algo_key
             color = algo_colors[algo_key]
@@ -398,21 +437,44 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
             w = smooth_window_for_curve(max_step, len(data["mean"]), smooth_window)
             mean_values = smooth_data(data['mean'], w)
             std_values = smooth_data(data['std'], w)
+            tail_scores[algo_name] = float(np.mean(data["mean"][-100:]))
+            is_ppo = algo_name == "ppo_continuous_action"
+            linestyle = (0, (4, 2.4)) if is_ppo else "-"
+            linewidth = 1.5 if is_ppo else 1.7
 
             # 绘制阴影区域（mean ± sem）
             ax.fill_between(steps[:len(mean_values)],
                           mean_values - std_values,
                           mean_values + std_values,
-                          color=color, alpha=0.3)
+                          color=color, alpha=0.22, linewidth=0, zorder=1)
 
             # 绘制均值曲线
             ax.plot(steps[:len(mean_values)], mean_values,
-                   color=color, label=display_name, linewidth=2.2)
+                   color=color, label=display_name, linewidth=linewidth,
+                   linestyle=linestyle, solid_capstyle="round", zorder=3)
 
-        ax.set_title(task_name, fontsize=12)
-        ax.set_xlabel("Timesteps", fontsize=10)
-        if idx == 0:
-            ax.set_ylabel("Mean Episodic Return", fontsize=10)
+        ax.set_title(task_name, pad=4.0)
+
+        ppo_tail = tail_scores.get("ppo_continuous_action")
+        opts_tail = next(
+            (score for name, score in tail_scores.items() if name.startswith("opts_ttpo")),
+            None,
+        )
+        if ppo_tail is not None and opts_tail is not None and ppo_tail != 0:
+            relative_gain = 100.0 * (opts_tail - ppo_tail) / abs(ppo_tail)
+            ax.text(
+                0.04,
+                0.93,
+                rf"Tail $\Delta$ {relative_gain:+.1f}\%",
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=8.8,
+                fontweight="semibold",
+                color=COLOR_OPTS if "COLOR_OPTS" in globals() else OPTS_TTPO_COLORS[0],
+                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.72, "pad": 1.2},
+                zorder=5,
+            )
 
         # 设置x轴范围和刻度（只显示0和终点）
         if task_data:
@@ -429,21 +491,41 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
                 ax.set_xticks([0, max_step_rounded])
                 ax.set_xticklabels(["0", f"{max_step_rounded // 1_000_000}M"])
         
-        ax.grid(True, color="white", linewidth=1.2, which='major')
-        ax.set_axisbelow(True)
-
     handles, labels = [], []
-    for algo_key in sorted(algo_colors.keys()):
+    legend_keys = sorted(
+        algo_colors.keys(),
+        key=lambda key: (0 if key[0] == "ppo_continuous_action" else 1, key),
+    )
+    for algo_key in legend_keys:
         algo_name, date = algo_key
         display_name = get_display_name(algo_name, date)
-        handles.append(plt.Line2D([0], [0], color=algo_colors[algo_key], linewidth=2.5))
+        is_ppo = algo_name == "ppo_continuous_action"
+        handles.append(
+            plt.Line2D(
+                [0],
+                [0],
+                color=algo_colors[algo_key],
+                linewidth=1.8,
+                linestyle=(0, (4, 2.4)) if is_ppo else "-",
+            )
+        )
         labels.append(display_name)
 
     ncol = min(len(handles), 4) if handles else 1
-    fig.legend(handles, labels, loc='upper center', ncol=ncol, fontsize=11,
-               bbox_to_anchor=(0.5, 1.08), frameon=True)
-
-    plt.tight_layout()
+    fig.legend(
+        handles,
+        labels,
+        loc="upper center",
+        ncol=ncol,
+        fontsize=13.2,
+        bbox_to_anchor=(0.5, 0.985),
+        frameon=False,
+        handlelength=2.5,
+        handletextpad=0.6,
+        columnspacing=1.5,
+    )
+    fig.supxlabel("Environment steps", fontsize=14.0, y=0.025)
+    fig.supylabel("Mean return", fontsize=14.0, x=0.012)
     
     # 保存图片
     if output_path is None:
@@ -451,8 +533,15 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
         output_path = os.path.join(output_dir, "all_tasks_mujoco.png")
     else:
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-    plt.savefig(output_path, dpi=600, bbox_inches='tight')
+    fig.savefig(output_path, dpi=600, bbox_inches="tight", pad_inches=0.02)
     print(f"Combined convergence curves saved to: {output_path}")
+
+    # PDF 作为论文图，同时导出同名 PNG 用于快速目检。
+    output_path_obj = Path(output_path)
+    preview_path = output_path_obj.with_suffix(".png")
+    if preview_path != output_path_obj:
+        fig.savefig(preview_path, dpi=300, bbox_inches="tight", pad_inches=0.02)
+        print(f"PNG preview saved to: {preview_path}")
     plt.close()
 
 
@@ -577,8 +666,9 @@ def main():
 
         --short-name        OPTS_TTPO 使用简称 "OPTS-TTPO"（默认显示全称）
         --seeds 1,2,3       只可视化指定随机种子的数据（逗号分隔，默认 seed 1-10）
-        --smooth N          约 1e6 total timesteps 时的平滑窗口参照（默认 5，越大越平滑）
-        --output PATH       输出文件路径（按扩展名决定格式；默认 <repo>/paper/figures/all_tasks_mujoco.pdf）
+        --smooth N          约 1e6 total timesteps 时的平滑窗口参照（默认 15，越大越平滑）
+        --output PATH       输出文件路径（按扩展名决定格式；默认 <repo>/paper/figures/all_tasks_mujoco.pdf）。
+                            导出 PDF 时会同时生成同名 PNG 预览。
     """
     import sys
     global USE_SHORT_NAME
@@ -586,7 +676,7 @@ def main():
     seed_filters = None
     repo_root = Path(__file__).resolve().parents[2]
     output_path = str(repo_root / "paper" / "figures" / "all_tasks_mujoco.pdf")
-    smooth_window = 5
+    smooth_window = 15
     raw_args = sys.argv[1:]
     filtered_args = []
     i = 0

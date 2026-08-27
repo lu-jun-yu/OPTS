@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 from collections import defaultdict
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 from scipy.ndimage import uniform_filter1d
 
 
@@ -80,10 +81,10 @@ TARGET_TASKS = [
 NCOLS = 6
 NROWS = 10  # ceil(57/6) = 10
 
-COLOR_PPO = "#1f77b4"
+COLOR_PPO = "#4c72b0"
 COLOR_A2C = "#2ca02c"
 OPTS_TTPO_COLORS = [
-    "#d62728",  # red
+    "#c44e52",  # red
     "#ff7f0e",  # orange
     "#9467bd",  # purple
     "#8c564b",  # brown
@@ -92,7 +93,12 @@ OPTS_TTPO_COLORS = [
     "#bcbd22",  # olive
     "#7f7f7f",  # gray
 ]
-EXTRA_ALGO_COLORS = ["#1f77b4", "#2ca02c", "#17becf", "#8c564b", "#e377c2", "#bcbd22", "#7f7f7f"]
+EXTRA_ALGO_COLORS = ["#4c72b0", "#2ca02c", "#17becf", "#8c564b", "#e377c2", "#bcbd22", "#7f7f7f"]
+
+TEXT_COLOR = "#263238"
+MUTED_TEXT_COLOR = "#59636b"
+SPINE_COLOR = "#a5adb3"
+GRID_COLOR = "#d9e1e8"
 
 
 def build_algo_colors(algo_keys):
@@ -109,7 +115,7 @@ def build_algo_colors(algo_keys):
 
     for algo_key in sorted_keys:
         algo_name, _ = algo_key
-        if algo_name == "ppo_atari":
+        if algo_name.startswith("ppo_atari"):
             colors[algo_key] = COLOR_PPO
         elif algo_name == "a2c_atari":
             colors[algo_key] = COLOR_A2C
@@ -136,6 +142,53 @@ def build_algo_colors(algo_keys):
 
 def get_curve_zorder(algo_name):
     return 3 if algo_name.startswith("opts_ttpo") else 2
+
+
+def get_curve_linestyle(algo_name):
+    return "--" if algo_name.startswith("ppo_atari") else "-"
+
+
+def get_algo_sort_key(algo_key):
+    algo_name, date = algo_key
+    if algo_name.startswith("ppo_atari"):
+        return (0, algo_name, date)
+    if algo_name.startswith("opts_ttpo"):
+        return (1, algo_name, date)
+    return (2, algo_name, date)
+
+
+def format_return_tick(value, _position):
+    abs_value = abs(value)
+    if abs_value >= 1_000_000:
+        return f"{value / 1_000_000:g}M"
+    if abs_value >= 1_000:
+        scaled = value / 1_000
+        return f"{scaled:.1f}k" if abs(scaled) < 10 else f"{scaled:.0f}k"
+    if abs_value >= 10:
+        return f"{value:.0f}"
+    if abs_value >= 1:
+        return f"{value:.1f}".rstrip("0").rstrip(".")
+    return f"{value:.1f}"
+
+
+def style_axis(ax):
+    ax.set_axisbelow(True)
+    ax.grid(axis="y", color=GRID_COLOR, linewidth=0.45, alpha=0.8)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color(SPINE_COLOR)
+        ax.spines[side].set_linewidth(0.45)
+    ax.tick_params(
+        axis="both",
+        colors=MUTED_TEXT_COLOR,
+        labelsize=4.5,
+        length=1.6,
+        width=0.45,
+        pad=1.0,
+    )
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=3))
+    ax.yaxis.set_major_formatter(FuncFormatter(format_return_tick))
 
 
 def smooth_data(data, window_size=5):
@@ -193,7 +246,7 @@ USE_SHORT_NAME = False
 
 
 def get_display_name(algo_name, date=None):
-    if algo_name == "ppo_atari":
+    if algo_name.startswith("ppo_atari"):
         return "PPO"
     if algo_name == "a2c_atari":
         return "A2C"
@@ -222,7 +275,8 @@ def load_algo_filters_from_config(task_name, config_filename="algo_select_atari.
 
 
 def plot_all_tasks(results_dir="../cleanrl/results", output_dir="./visual",
-                   algo_filters=None, smooth_window=1000, seed_filters=None):
+                   algo_filters=None, smooth_window=1000, seed_filters=None,
+                   output_path=None, png_preview=False):
     """
     绘制57个 Atari 任务的收敛曲线（10行6列布局）
     每个算法的不同种子以相同颜色画出（不聚合 mean/std）
@@ -271,26 +325,45 @@ def plot_all_tasks(results_dir="../cleanrl/results", output_dir="./visual",
 
     algo_colors = build_algo_colors(all_algos)
 
-    # 创建 10行6列 子图
-    fig, axes = plt.subplots(NROWS, NCOLS, figsize=(NCOLS * 4, NROWS * 3))
+    plt.rcParams.update({
+        "font.family": "serif",
+        "font.size": 5.2,
+        "text.color": TEXT_COLOR,
+        "axes.labelcolor": TEXT_COLOR,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+    })
+
+    # 按论文整页附录图的实际尺寸绘制，避免大画布在 LaTeX 中被过度缩小。
+    fig, axes = plt.subplots(NROWS, NCOLS, figsize=(7.4, 9.5), squeeze=False)
+    fig.subplots_adjust(
+        left=0.070,
+        right=0.992,
+        bottom=0.052,
+        top=0.948,
+        wspace=0.26,
+        hspace=0.52,
+    )
 
     for idx, task_name in enumerate(TARGET_TASKS):
         row, col = divmod(idx, NCOLS)
         ax = axes[row][col]
+        style_axis(ax)
 
         # 简短标题：去掉 NoFrameskip-v4 后缀
         short_name = task_name.replace("NoFrameskip-v4", "")
-        ax.set_title(short_name, fontsize=10)
+        if task_name == "ALE_Surround-v5":
+            short_name = "Surround"
+        ax.set_title(short_name, fontsize=5.8, fontweight="semibold", pad=1.5)
 
         if task_name not in all_data:
             ax.text(0.5, 0.5, "No data", ha='center', va='center',
-                    transform=ax.transAxes, fontsize=9, color='gray')
-            ax.grid(True, alpha=0.3)
+                    transform=ax.transAxes, fontsize=5.0, color=MUTED_TEXT_COLOR)
             continue
 
         task_data = all_data[task_name]
 
-        for algo_key in sorted(task_data.keys()):
+        for algo_key in sorted(task_data.keys(), key=get_algo_sort_key):
             seed_data = task_data[algo_key]
             algo_name, date = algo_key
             color = algo_colors[algo_key]
@@ -302,7 +375,8 @@ def plot_all_tasks(results_dir="../cleanrl/results", output_dir="./visual",
                 # 只在第一条种子曲线加 label（避免图例重复）
                 label = display_name if i == 0 else None
                 ax.plot(steps_arr[:len(smoothed)], smoothed,
-                        color=color, label=label, linewidth=0.8, alpha=0.8,
+                        color=color, linestyle=get_curve_linestyle(algo_name),
+                        label=label, linewidth=0.60, alpha=0.8,
                         zorder=get_curve_zorder(algo_name))
 
         # x轴：只显示0和终点
@@ -319,48 +393,82 @@ def plot_all_tasks(results_dir="../cleanrl/results", output_dir="./visual",
             ax.set_xticks([0, max_step_rounded])
             ax.set_xticklabels(
                 ["0", f"{max_step_rounded // 1_000_000}M"],
-                fontsize=7,
+                fontsize=4.5,
             )
-
-        ax.tick_params(axis='y', labelsize=7)
-        ax.grid(True, alpha=0.3)
 
     # 隐藏多余的子图（57个任务，最后3格为空）
     for idx in range(len(TARGET_TASKS), NROWS * NCOLS):
         row, col = divmod(idx, NCOLS)
         axes[row][col].axis('off')
 
-    # 在最后一个空位放统一图例
-    legend_ax = axes[NROWS - 1][NCOLS - 1]
-    legend_ax.axis('off')
     handles, labels = [], []
-    for algo_key in sorted(algo_colors.keys()):
+    seen_labels = set()
+    for algo_key in sorted(algo_colors.keys(), key=get_algo_sort_key):
         algo_name, date = algo_key
         display_name = get_display_name(algo_name, date)
-        handles.append(plt.Line2D([0], [0], color=algo_colors[algo_key], linewidth=2))
+        if display_name in seen_labels:
+            continue
+        seen_labels.add(display_name)
+        handles.append(plt.Line2D(
+            [0], [0],
+            color=algo_colors[algo_key],
+            linestyle=get_curve_linestyle(algo_name),
+            linewidth=1.3,
+        ))
         labels.append(display_name)
-    legend_ax.legend(handles, labels, loc='center', fontsize=9, frameon=True)
+    fig.legend(
+        handles,
+        labels,
+        loc="upper center",
+        bbox_to_anchor=(0.53, 0.995),
+        ncol=max(1, len(labels)),
+        fontsize=6.2,
+        frameon=False,
+        handlelength=2.3,
+        columnspacing=1.5,
+    )
+    fig.supxlabel("Environment steps", fontsize=6.2, x=0.53, y=0.010)
+    fig.supylabel("Mean return", fontsize=6.2, x=0.018, y=0.50)
 
-    plt.tight_layout()
+    if output_path is None:
+        output_path = Path(output_dir) / "all_tasks_atari.pdf"
+    else:
+        output_path = Path(output_path)
+    if not output_path.suffix:
+        output_path = output_path.with_suffix(".pdf")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, "all_tasks_atari.png")
-    plt.savefig(output_path, dpi=200, bbox_inches='tight')
+    save_kwargs = {"bbox_inches": "tight", "pad_inches": 0.02}
+    if output_path.suffix.lower() == ".png":
+        save_kwargs["dpi"] = 300
+    fig.savefig(output_path, **save_kwargs)
     print(f"Atari convergence curves saved to: {output_path}")
+
+    if png_preview and output_path.suffix.lower() != ".png":
+        preview_path = output_path.with_suffix(".png")
+        fig.savefig(preview_path, dpi=220, bbox_inches="tight", pad_inches=0.02)
+        print(f"Atari PNG preview saved to: {preview_path}")
+
     plt.close()
 
 
 def main():
     """
     用法：
-        python plot_atari.py [--short-name] [--seeds 1,2,3] [results_dir] [algo1 algo2 ...]
+        python plot_atari.py [--short-name] [--seeds 1,2,3]
+            [--output path.pdf] [--png-preview]
+            [results_dir] [algo1 algo2 ...]
 
         --short-name        OPTS_TTPO 使用简称 "OPTS-TTPO"（默认显示全称）
         --seeds 1,2,3       只可视化指定随机种子的数据（逗号分隔，默认全部）
+        --output path.pdf   指定主输出路径（默认 visual/all_tasks_atari.pdf）
+        --png-preview       同时在主输出旁生成同名 PNG 预览
     """
     global USE_SHORT_NAME
 
     seed_filters = None
+    output_path = None
+    png_preview = False
     raw_args = sys.argv[1:]
     filtered_args = []
     i = 0
@@ -374,6 +482,15 @@ def main():
             else:
                 print("Error: --seeds requires an argument (e.g., --seeds 1,2,3)")
                 return
+        elif raw_args[i] == "--output":
+            if i + 1 < len(raw_args):
+                output_path = raw_args[i + 1]
+                i += 1
+            else:
+                print("Error: --output requires a path (e.g., figure.pdf)")
+                return
+        elif raw_args[i] == "--png-preview":
+            png_preview = True
         else:
             filtered_args.append(raw_args[i])
         i += 1
@@ -385,7 +502,14 @@ def main():
         seed_info = f" (seeds: {sorted(seed_filters)})" if seed_filters else ""
         print(f"Plotting Atari convergence curves for {len(TARGET_TASKS)} tasks{seed_info}...")
         script_dir = str(Path(__file__).resolve().parent)
-        plot_all_tasks(results_dir, output_dir=script_dir, algo_filters=algo_filters, seed_filters=seed_filters)
+        plot_all_tasks(
+            results_dir,
+            output_dir=script_dir,
+            algo_filters=algo_filters,
+            seed_filters=seed_filters,
+            output_path=output_path,
+            png_preview=png_preview,
+        )
     else:
         print(f"Results directory {results_dir} does not exist")
 

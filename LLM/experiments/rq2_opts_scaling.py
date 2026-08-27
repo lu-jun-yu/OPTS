@@ -1,32 +1,19 @@
 # Copyright 2025 Junyu Lu (Julian Lou). All rights reserved.
 
 """
-RQ2: OPTS tree-count scaling experiment.
-
-Reward-guided OPTS (reward_mode="reward", otrc_baseline="zero") with a
-two-phase schedule instead of the interleaved scheme of
-trainer/main_opts_generation.py:
-
-  - Phase 1 (a single call): open ALL trees up front — draw
-    trees_per_prompt * dataset_size prompts (the 902 prompts repeated
-    trees_per_prompt times; one drawn prompt = one tree, uid doubles as the
-    tree ID) and generate all root trajectories in one parallel batch.
-  - Phase 2 (n_branch_rounds calls, swept over 1/3/7 by the launcher): branch
-    only from OTRC-selected positions of the existing trees — every qualifying
-    tree may branch once per round, all selected branches are rolled out in
-    one parallel batch, and no new trees are opened.
-
-Output schema matches trainer/main_opts_generation.py reward mode (minus the
-value snapshot columns), plus a tree_uids column (uid doubles as tree ID, and
-one tree may have several roots when OTRC re-branches from the prompt root) so
-trainer/main_eval.py can compute opts-avg@k offline.
+RQ2: OPTS tree-count scaling. Reward mode + zero OTRC baseline, two phases:
+  - call 0: open all trees (trees_per_prompt * dataset_size prompts, one drawn
+    prompt = one tree, uid = tree ID) and generate all roots in one batch;
+  - the next n_branch_rounds calls: branch all OTRC-qualifying positions of the
+    existing trees in one batch per round; no new trees.
+After branch rounds in opts_avg_snapshot_rounds, snapshot each tree's greedy
+terminal response into column opts_avg_responses_s{round} for opts-avg@k eval.
 """
 
 import os
 import sys
 from collections import defaultdict
 
-# Add LLM directory to Python path for correct imports
 LLM_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if LLM_DIR not in sys.path:
     sys.path.insert(0, LLM_DIR)
@@ -69,7 +56,6 @@ from trainer.opts_ttpo.ray_trainer import (
 )
 from verl.trainer.ppo.reward import compute_reward
 
-# RQ2 fixes the guidance to actual rewards with a zero OTRC baseline.
 REWARD_MODE = "reward"
 OTRC_BASELINE_MODE = "zero"
 
@@ -146,14 +132,17 @@ def main_task(config):
     prompt_length = rollout_config.prompt_length
     response_length = rollout_config.response_length
     max_search_per_tree = rollout_config.get("max_search_per_tree", 1)
-    # Number of pure-branching rounds after all trees are opened; defaults to
-    # max_search_per_tree so a single rollout knob can drive both.
     n_branch_rounds = int(_select_first(config, "data.n_branch_rounds", default=max_search_per_tree))
     assert n_branch_rounds >= 0, f"n_branch_rounds must be >= 0, got {n_branch_rounds}"
+    raw_snapshot_rounds = _select_first(config, "data.opts_avg_snapshot_rounds", default=[1, 3, 7, 15])
+    if isinstance(raw_snapshot_rounds, str):
+        raw_snapshot_rounds = raw_snapshot_rounds.strip("[]").replace(",", " ").split()
+    elif isinstance(raw_snapshot_rounds, int):
+        raw_snapshot_rounds = [raw_snapshot_rounds]
+    opts_avg_snapshot_rounds = sorted({int(r) for r in raw_snapshot_rounds if int(r) >= 1})
     gamma = config.algorithm.gamma
     lam = config.algorithm.lam
 
-    # Read dataset
     dataset = pd.read_parquet(data_path)
     total_samples = len(dataset)
     trees_target = trees_per_prompt * total_samples
@@ -162,7 +151,6 @@ def main_task(config):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Reward-guided mode: reward_fn drives OTRC selection.
     from utils.reward_fn import compute_score
     from verl.workers.reward_manager.naive import NaiveRewardManager
     reward_fn = NaiveRewardManager(
@@ -171,15 +159,12 @@ def main_task(config):
         compute_score=compute_score,
     )
 
-    # Create resource pool with colocated workers
     resource_pool = RayResourcePool(
         process_on_nodes=[config.trainer.n_gpus_per_node] * config.trainer.nnodes,
         use_gpu=True,
         max_colocate_count=2,
     )
 
-    # Create actor rollout and critic workers. In async mode the OPTS continuation
-    # path runs inside the agent loop, driven by AgentLoopManager.
     async_mode = rollout_config.get("mode", "sync") == "async"
     actor_worker_impl = AsyncActorRolloutRefWorker if async_mode else ActorRolloutRefWorker
     actor_rollout_cls = RayClassWithInitArgs(
@@ -243,13 +228,8 @@ def main_task(config):
             f"prompt_buffer.total_samples={len(rl_dataset)}, total_samples={total_samples}"
         )
 
-    # Result collection: dataset_idx -> list of response records.
     idx_responses = defaultdict(list)
-    # Sample counter per dataset row (per-prompt, 1-based).
     idx_sample_counter = defaultdict(int)
-    # Global counter across the entire run (1-based). Enables reconstructing the
-    # chronological order for opts@k, where the OPTS run is truncated to budget
-    # k * dataset_size responses and then grouped by prompt.
     global_sample_counter = 0
 
     print(f"Starting RQ2 OPTS tree-count scaling: "
@@ -266,15 +246,10 @@ def main_task(config):
     uid_to_dataset_idx = {}
     prompt_cursor = 0
     trees_opened = 0
+    response_by_rid = {}
+    tree_seq = {}
+    opts_avg_snapshots = {r: [[] for _ in range(total_samples)] for r in opts_avg_snapshot_rounds}
 
-    # Two phases:
-    #   Phase 1 (call 0): open ALL trees — one draw of trees_per_prompt *
-    #     total_samples prompts (the dataset repeated trees_per_prompt times),
-    #     so every prompt gets exactly trees_per_prompt root trajectories,
-    #     all generated in a single parallel batch.
-    #   Phase 2 (the following n_branch_rounds calls): branch only from
-    #     OTRC-selected positions of the existing trees, all selected branches
-    #     rolled out in one parallel batch per round; no new trees.
     total_calls = 1 + n_branch_rounds
     for call_idx in range(total_calls):
         root_phase = call_idx == 0
@@ -283,12 +258,12 @@ def main_task(config):
               f"trees_opened={trees_opened}/{trees_target}, "
               f"continuations={len(next_states)}.")
 
-        # === Construct this call's batch ===
         if root_phase:
             batch = prompt_buffer.draw(trees_target)
             for uid in batch.non_tensor_batch["uid"]:
                 uid_to_dataset_idx[uid] = prompt_cursor
                 prompt_cursor = (prompt_cursor + 1) % total_samples
+                tree_seq[str(uid)] = len(tree_seq)
             trees_opened += len(batch.non_tensor_batch["uid"])
         else:
             if not next_states:
@@ -301,7 +276,6 @@ def main_task(config):
             )
         batch.meta_info["temperature"] = rollout_config.temperature
 
-        # === Generate sequences ===
         if async_mode:
             size_divisor = rollout_config.agent.num_workers
             batch_padded, pad_size = pad_dataproto_to_divisor(batch, size_divisor)
@@ -311,8 +285,7 @@ def main_task(config):
                 ),
                 pad_size=pad_size,
             )
-            # AgentLoopManager rebuilds non_tensor_batch; downstream tree
-            # bookkeeping uses the input metadata order.
+            # AgentLoopManager rebuilds non_tensor_batch; keep input metadata order.
             for key in ("uid", "raw_prompt_len", "data_source", "reward_model", "extra_info", "raw_prompt"):
                 if key in batch.non_tensor_batch:
                     output.non_tensor_batch[key] = batch.non_tensor_batch[key]
@@ -324,14 +297,11 @@ def main_task(config):
         if "response_mask" not in output.batch.keys():
             output.batch["response_mask"] = compute_response_mask(output)
 
-        # === Compute values ===
         values_input_padded, values_pad_size = pad_dataproto_to_divisor(output, critic_wg.world_size)
         values_output_padded = critic_wg.compute_values(values_input_padded)
         values_output = unpad_dataproto(values_output_padded, pad_size=values_pad_size)
         output = output.union(values_output)
 
-        # === Compute rewards (reward mode: actual reward_fn) ===
-        # Decode full response into extra_info, then compute reward via reward_fn
         full_response_strs = decode_response_strs(output, tokenizer, prompt_length, response_length)
         if "extra_info" not in output.non_tensor_batch:
             output.non_tensor_batch["extra_info"] = np.array(
@@ -341,7 +311,6 @@ def main_task(config):
         reward_tensor, _ = compute_reward(output, reward_fn)
         output.batch["token_level_rewards"] = reward_tensor
 
-        # === Tree structure bookkeeping ===
         new_sample_indices = set_opts_ttpo_info(output, global_batch, next_states, call_idx)
         output.non_tensor_batch["episodic_returns"] = compute_episodic_returns(output, global_batch)
         cur_batch_size, cur_response_len = output.batch["responses"].shape
@@ -354,7 +323,6 @@ def main_task(config):
         else:
             global_batch = merge_batches(global_batch, output)
 
-        # === Compute TreeGAE advantages ===
         advantages, returns = compute_treegae_advantage_return(
             token_level_rewards=global_batch.batch["token_level_rewards"],
             values=global_batch.batch["values"],
@@ -374,7 +342,6 @@ def main_task(config):
         global_batch.batch["advantages"] = advantages
         global_batch.batch["returns"] = returns
 
-        # === Collect decoded responses with sample_index + global_index ===
         response_strs = decode_response_strs(output, tokenizer, prompt_length, response_length)
         output_uids = output.non_tensor_batch["uid"]
         current_rids = output.non_tensor_batch["rid"]
@@ -387,6 +354,7 @@ def main_task(config):
             global_sample_counter += 1
             pid = current_pids[local_idx]
             rid_str = str(current_rids[local_idx])
+            response_by_rid[rid_str] = resp
             idx_responses[dataset_idx].append({
                 "response": resp,
                 "uid": str(uid),
@@ -407,15 +375,26 @@ def main_task(config):
             round_idx=call_idx,
         )
 
+        # States persist across calls, so unbranched trees keep their latest
+        # terminal — the snapshot is exactly the "as of this round" view.
+        if call_idx in opts_avg_snapshots:
+            snapshot_entries = defaultdict(list)
+            for uid, state in tree_search_state_by_uid.items():
+                dataset_idx = uid_to_dataset_idx[uid]
+                snapshot_entries[dataset_idx].append((tree_seq[uid], response_by_rid[state.terminal_rid]))
+            for dataset_idx, entries in snapshot_entries.items():
+                assert len(entries) == trees_per_prompt, (
+                    f"snapshot s{call_idx}: prompt {dataset_idx} has {len(entries)} trees, "
+                    f"expected {trees_per_prompt}."
+                )
+                entries.sort(key=lambda item: item[0])
+                opts_avg_snapshots[call_idx][dataset_idx] = [response for _, response in entries]
+
         print(f"[call {call_idx + 1}/{total_calls}] Done. "
               f"Collected {sum(len(v) for v in idx_responses.values())} total responses, "
               f"{trees_opened}/{trees_target} trees opened.")
 
-        # === OTRC selection for the next branch call ===
-        # After every call except the last, select branch positions over all
-        # existing trees. search_batch_size=trees_target: every qualifying
-        # tree may branch once per branch round (one state per uid per
-        # selection).
+        # search_batch_size=trees_target: every qualifying tree may branch once per round.
         if call_idx < total_calls - 1:
             selected_states = select_next_states(
                 batch=global_batch,
@@ -433,7 +412,6 @@ def main_task(config):
         f"Tree-count invariant violated: opened {trees_opened}, target {trees_target}."
     )
 
-    # === Assemble output ===
     final_advantages_by_rid = {}
     final_advantages = global_batch.batch["advantages"].detach().cpu()
     final_response_mask = global_batch.batch["response_mask"].detach().cpu().bool()
@@ -472,9 +450,11 @@ def main_task(config):
     dataset["tree_pids"] = output_tree_pids
     dataset["tree_branch_pos"] = output_tree_branch_pos
     dataset["tree_advantages"] = output_tree_advantages
+    for r, snapshots in opts_avg_snapshots.items():
+        if any(len(s) > 0 for s in snapshots):
+            dataset[f"opts_avg_responses_s{r}"] = snapshots
     dataset["opts_reward_mode"] = REWARD_MODE
 
-    # Write output
     output_dir = os.path.dirname(output_path)
     makedirs(output_dir, exist_ok=True)
     dataset.to_parquet(output_path)

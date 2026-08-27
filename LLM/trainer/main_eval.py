@@ -14,7 +14,9 @@ Two modes:
      the chronological any-correct prefix; value-mode opts@k majority-votes the
      online value-greedy tree responses saved at each budget. `opts-avg@k`
      requires an rq2_opts_scaling parquet: each of the first k trees contributes
-     its greedy max-advantage terminal response, averaged per prompt.
+     its greedy max-advantage terminal response, averaged per prompt. With
+     --opts_avg_slices, s0 truncates to root trajectories (exact) and sN uses
+     the online snapshot column opts_avg_responses_s{N}.
 
 Test sets (from dataset_survey.md):
   - math500      500  high-school baseline      (data/math12k/test.parquet)
@@ -231,8 +233,7 @@ def value_opts_at_k_row(value_responses: list[str], ground_truth: str) -> float:
 
 
 # ---------------------------------------------------------------------------
-# opts-avg@k (RQ2): per-tree greedy max-advantage terminal response, averaged
-# over the first k trees of each prompt, then averaged across prompts.
+# opts-avg@k (RQ2): per-tree greedy max-advantage terminal response, averaged.
 # ---------------------------------------------------------------------------
 OPTS_AVG_REQUIRED_COLUMNS = (
     "tree_uids", "tree_rids", "tree_pids", "tree_branch_pos", "tree_advantages", "global_indices",
@@ -240,12 +241,8 @@ OPTS_AVG_REQUIRED_COLUMNS = (
 
 
 def _greedy_terminal_idx(root: int, children_by_pos: dict, advantages: list) -> int:
-    """Walk the greedy max-advantage path from a tree root to its terminal node.
-
-    Mirrors the online walk in refresh_tree_search_states: at token position t
-    of the current trajectory, jump to the child branched at t with the highest
-    first-token advantage if it beats the continuation advantage adv[t+1].
-    """
+    """Greedy walk from a tree root, mirroring refresh_tree_search_states:
+    at token t, jump to the child branched at t if its adv[0] beats adv[t+1]."""
     node = root
     t = 0
     while True:
@@ -262,16 +259,29 @@ def _greedy_terminal_idx(root: int, children_by_pos: dict, advantages: list) -> 
         t += 1
 
 
-def opts_greedy_terminal_flags(
-    uids, rids, pids, branch_pos, advantages, responses, global_indices, ground_truth: str
-) -> list[bool]:
-    """One correctness flag per tree: the greedy max-advantage terminal response.
+def _rid_call_idx(rid) -> int:
+    """rid format is r{call_idx}_{i}; call_idx 0 is the root generation call."""
+    return int(str(rid).split("_")[0][1:])
 
-    Trees are keyed by uid (one tree may have several roots when OTRC
-    re-branches from the prompt root; the root with the highest first-token
-    advantage starts the walk, matching refresh_tree_search_states). Returned
-    in chronological order (each tree's first root by global_index).
-    """
+
+def opts_greedy_terminal_flags(
+    uids, rids, pids, branch_pos, advantages, responses, global_indices, ground_truth: str,
+    max_round: int | None = None,
+) -> list[bool]:
+    """One correctness flag per tree (keyed by uid; best-adv0 root starts the
+    walk), in chronological tree order. max_round truncates trajectories by
+    rid call index, but advantages are always final-run values, so only
+    max_round=0 is exact; use snapshot columns for exact round-N views."""
+    if max_round is not None:
+        keep = [i for i, r in enumerate(rids) if _rid_call_idx(r) <= max_round]
+        uids = [uids[i] for i in keep]
+        pids = [pids[i] for i in keep]
+        branch_pos = [branch_pos[i] for i in keep]
+        advantages = [advantages[i] for i in keep]
+        responses = [responses[i] for i in keep]
+        global_indices = [global_indices[i] for i in keep]
+        rids = [rids[i] for i in keep]
+
     rid2idx = {str(r): i for i, r in enumerate(rids)}
     roots_by_uid: dict[str, list[int]] = defaultdict(list)
     children_by_pos: dict[tuple[int, int], list[int]] = defaultdict(list)
@@ -306,6 +316,7 @@ def evaluate_pregenerated_parquet(
     reward_model_key: str = "reward_model",
     data_source_key: str = "data_source",
     global_indices_key: str = "global_indices",
+    opts_avg_slices: list[int] | None = None,
 ) -> dict:
     """Score a generation parquet and aggregate per data_source + global."""
     df = pd.read_parquet(parquet_path)
@@ -331,6 +342,14 @@ def evaluate_pregenerated_parquet(
                 f"opts-avg@k requires tree-structure columns {missing}, not found in "
                 f"{parquet_path}. Regenerate with the updated experiments/rq2_opts_scaling.py."
             )
+        # s0 truncates to roots offline (exact); sN>=1 needs the online snapshot column.
+        for n in opts_avg_slices or []:
+            if n >= 1 and f"opts_avg_responses_s{n}" not in df.columns:
+                raise ValueError(
+                    f"opts-avg s{n} requires online snapshot column 'opts_avg_responses_s{n}', "
+                    f"not found in {parquet_path}. Regenerate with "
+                    f"data.opts_avg_snapshot_rounds including {n}."
+                )
 
     print(
         f"Eval parquet: {parquet_path}  rows={dataset_size}  metrics={metrics}  "
@@ -355,9 +374,9 @@ def evaluate_pregenerated_parquet(
             field_lengths[global_indices_key] = len(global_indices)
         assert len(set(field_lengths.values())) == 1, f"mismatched parquet row field lengths: {field_lengths}"
 
-        opts_avg_flags = None
+        opts_avg_flags_by_slice: dict[int | None, list[bool]] = {}
         if "opts-avg" in metrics:
-            opts_avg_flags = opts_greedy_terminal_flags(
+            slice_args = dict(
                 uids=list(row["tree_uids"]),
                 rids=list(row["tree_rids"]),
                 pids=list(row["tree_pids"]),
@@ -367,6 +386,16 @@ def evaluate_pregenerated_parquet(
                 global_indices=global_indices,
                 ground_truth=gt,
             )
+            if opts_avg_slices is None:
+                # No slicing: walk the final trees (final advantages).
+                opts_avg_flags_by_slice[None] = opts_greedy_terminal_flags(**slice_args)
+            for n in opts_avg_slices or []:
+                if n == 0:
+                    opts_avg_flags_by_slice[0] = opts_greedy_terminal_flags(max_round=0, **slice_args)
+                else:
+                    opts_avg_flags_by_slice[n] = [
+                        is_answer_correct(r, gt) for r in row[f"opts_avg_responses_s{n}"]
+                    ]
 
         for k in k_values:
             if "avg" in metrics:
@@ -376,7 +405,9 @@ def evaluate_pregenerated_parquet(
             if "cons" in metrics:
                 per_source[ds][f"cons@{k}"].append(cons_at_k(responses, gt, k))
             if "opts-avg" in metrics:
-                per_source[ds][f"opts-avg@{k}"].append(avg_at_k(opts_avg_flags, k))
+                for n, flags in opts_avg_flags_by_slice.items():
+                    name = f"opts-avg@{k}" if n is None else f"opts-avg_s{n}@{k}"
+                    per_source[ds][name].append(avg_at_k(flags, k))
             if "opts" in metrics:
                 if opts_reward_mode == "value":
                     per_source[ds][f"opts@{k}"].append(
@@ -460,6 +491,12 @@ def main():
         help="k values for parquet-mode metrics.",
     )
     parser.add_argument(
+        "--opts_avg_slices", type=int, nargs="+", default=None,
+        help="Optional branch-round slices for opts-avg: s0 truncates to root "
+             "trajectories offline (exact); sN (N>=1) uses the online snapshot "
+             "column opts_avg_responses_s{N}. Omit to evaluate the final trees.",
+    )
+    parser.add_argument(
         "--output_tag", default=None,
         help="Optional suffix for parquet-mode output JSON filename to avoid overwriting repeated evaluations.",
     )
@@ -471,6 +508,7 @@ def main():
             parquet_path=args.pregenerated_parquet,
             metrics=args.metrics,
             k_values=args.k,
+            opts_avg_slices=args.opts_avg_slices,
         )
         os.makedirs(args.output_dir, exist_ok=True)
         tag = os.path.splitext(os.path.basename(args.pregenerated_parquet))[0]
@@ -482,6 +520,7 @@ def main():
                 "data_path": args.pregenerated_parquet,
                 "metrics": args.metrics,
                 "k": args.k,
+                "opts_avg_slices": args.opts_avg_slices,
                 "output_tag": args.output_tag,
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "results": summary,
