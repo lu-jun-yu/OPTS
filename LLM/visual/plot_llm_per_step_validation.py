@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot the 2x6 per-step validation grid for Qwen3-1.7B runs."""
+"""Plot the 4x3 per-step validation grid for Qwen3-1.7B runs."""
 
 import argparse
 import csv
@@ -47,36 +47,44 @@ RAW_METHODS = {
 METHODS = ("PPO", "DAPO", "REINFORCE++", "OPTS-TTPO")
 METHOD_STYLE = {
     "PPO": {
-        "color": "#4c72b0",
-        "linewidth": 1.30,
-        "linestyle": (0, (4.0, 2.4)),
-        "zorder": 3,
+        "color": "#4776A8",
+        "linewidth": 1.25,
+        "linestyle": ":",
+        "marker": "^",
+        "alpha": 0.92,
+        "zorder": 2,
     },
     "DAPO": {
-        "color": "#2ca02c",
-        "linewidth": 1.40,
-        "linestyle": "-",
-        "zorder": 3,
+        "color": "#4E9A6A",
+        "linewidth": 1.25,
+        "linestyle": "-.",
+        "marker": "s",
+        "alpha": 0.92,
+        "zorder": 2,
     },
     "REINFORCE++": {
-        "color": "#ff7f0e",
-        "linewidth": 1.40,
-        "linestyle": "-",
-        "zorder": 3,
+        "color": "#E39A32",
+        "linewidth": 1.25,
+        "linestyle": "--",
+        "marker": "D",
+        "alpha": 0.92,
+        "zorder": 2,
     },
     "OPTS-TTPO": {
-        "color": "#c44e52",
-        "linewidth": 1.85,
+        "color": "#D13F4A",
+        "linewidth": 2.05,
         "linestyle": "-",
-        "zorder": 5,
+        "marker": "o",
+        "alpha": 1.0,
+        "zorder": 6,
     },
 }
 
 EXPECTED_STEPS = tuple(range(20, 401, 20))
-TEXT_COLOR = "#263238"
-MUTED_TEXT = "#5F6B73"
-SPINE_COLOR = "#A5ADB3"
-GRID_COLOR = "#CBD1D6"
+TEXT_COLOR = "#22262A"
+MUTED_TEXT = "#525A61"
+SPINE_COLOR = "#858D94"
+GRID_COLOR = "#C9CFD4"
 
 
 def parse_args():
@@ -188,13 +196,7 @@ def finite_bounds(method_values):
 
 
 def smooth_curve(values, window=5):
-    finite_points = [
-        (step, value)
-        for step, value in zip(EXPECTED_STEPS, values)
-        if math.isfinite(value)
-    ]
-    steps, finite_values = zip(*finite_points)
-    finite_values = np.asarray(finite_values, dtype=float)
+    steps, finite_values = finite_curve(values)
     smoothed = uniform_filter1d(
         finite_values,
         size=min(window, len(finite_values)),
@@ -205,51 +207,61 @@ def smooth_curve(values, window=5):
     return steps, smoothed
 
 
-def style_axis(axis, row, column):
+def finite_curve(values):
+    finite_points = [
+        (step, value)
+        for step, value in zip(EXPECTED_STEPS, values)
+        if math.isfinite(value)
+    ]
+    steps, finite_values = zip(*finite_points)
+    return np.asarray(steps), np.asarray(finite_values, dtype=float)
+
+
+def style_axis(axis, metric_label, column, show_x_labels):
     axis.set_facecolor("white")
     axis.set_xlim(15, 405)
-    axis.set_xticks((20, 200, 400))
-    if row < len(METRICS) - 1:
+    axis.set_xticks((20, 100, 200, 300, 400))
+    if not show_x_labels:
         axis.tick_params(axis="x", labelbottom=False)
     axis.yaxis.set_major_locator(MaxNLocator(nbins=4, min_n_ticks=3))
     axis.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))
     axis.grid(
-        axis="y",
+        axis="both",
         color=GRID_COLOR,
-        linestyle=(0, (3, 3)),
-        linewidth=0.60,
-        alpha=0.72,
+        linestyle="-",
+        linewidth=0.55,
+        alpha=0.62,
     )
     axis.set_axisbelow(True)
-    axis.spines["top"].set_visible(False)
-    axis.spines["right"].set_visible(False)
-    for side in ("left", "bottom"):
+    for side in ("left", "right", "top", "bottom"):
         axis.spines[side].set_color(SPINE_COLOR)
-        axis.spines[side].set_linewidth(0.7)
+        axis.spines[side].set_linewidth(0.72)
     axis.tick_params(
         axis="both",
         colors=MUTED_TEXT,
-        labelsize=9.0,
-        length=2.5,
-        width=0.65,
-        pad=1.6,
+        labelsize=8.1,
+        length=2.8,
+        width=0.70,
+        pad=1.4,
+        direction="out",
     )
     if column == 0:
-        axis.tick_params(axis="y", labelsize=9.1)
+        axis.tick_params(axis="y", labelsize=8.4)
         axis.set_ylabel(
-            METRICS[row][1],
-            fontsize=11.3,
+            metric_label,
+            fontsize=9.4,
             fontweight="semibold",
             color=TEXT_COLOR,
-            labelpad=3.0,
+            labelpad=2.5,
         )
 
 
 def plot_grid(curves):
     plt.rcParams.update(
         {
-            "font.family": "serif",
-            "font.size": 10.0,
+            "font.family": "sans-serif",
+            "font.sans-serif": ["DejaVu Sans"],
+            "font.size": 9.5,
             "text.color": TEXT_COLOR,
             "axes.labelcolor": TEXT_COLOR,
             "pdf.fonttype": 42,
@@ -257,52 +269,96 @@ def plot_grid(curves):
         }
     )
 
-    figure, axes = plt.subplots(2, 6, figsize=(12.2, 5.9), squeeze=False)
-    figure.subplots_adjust(
-        left=0.067,
-        right=0.995,
-        bottom=0.090,
-        top=0.885,
-        wspace=0.32,
-        hspace=0.28,
+    figure = plt.figure(figsize=(7.4, 7.75), facecolor="white")
+    outer_grid = figure.add_gridspec(
+        2,
+        1,
+        left=0.105,
+        right=0.990,
+        bottom=0.073,
+        top=0.925,
+        hspace=0.255,
+    )
+    axes = np.empty((4, 3), dtype=object)
+    for block in range(2):
+        block_grid = outer_grid[block, 0].subgridspec(
+            2,
+            3,
+            wspace=0.23,
+            hspace=0.10,
+        )
+        for local_row in range(2):
+            for column in range(3):
+                axes[2 * block + local_row, column] = figure.add_subplot(
+                    block_grid[local_row, column]
+                )
+
+    metric_labels = dict(METRICS)
+    panel_rows = (
+        ("acc/avg@32", BENCHMARKS[:3]),
+        ("acc/pass@32", BENCHMARKS[:3]),
+        ("acc/avg@32", BENCHMARKS[3:]),
+        ("acc/pass@32", BENCHMARKS[3:]),
     )
 
-    for column, (_, benchmark_name) in enumerate(BENCHMARKS):
-        axes[0, column].set_title(
-            benchmark_name,
-            fontsize=12.3,
-            fontweight="semibold",
-            pad=8.0,
-        )
-
-    for row, (metric, _) in enumerate(METRICS):
-        for column, (benchmark, _) in enumerate(BENCHMARKS):
+    for row, (metric, benchmarks) in enumerate(panel_rows):
+        for column, (benchmark, benchmark_name) in enumerate(benchmarks):
             axis = axes[row, column]
-            style_axis(axis, row, column)
+            style_axis(
+                axis,
+                metric_labels[metric],
+                column,
+                show_x_labels=row in (1, 3),
+            )
+            if row in (0, 2):
+                axis.set_title(
+                    benchmark_name,
+                    fontsize=10.2,
+                    fontweight="semibold",
+                    color=TEXT_COLOR,
+                    pad=4.2,
+                )
             panel = curves[(benchmark, metric)]
             axis.set_ylim(*finite_bounds(panel))
 
             for method in METHODS:
                 style = METHOD_STYLE[method]
+                raw_steps, raw_values = finite_curve(panel[method])
                 finite_steps, smoothed_values = smooth_curve(panel[method])
+                axis.plot(
+                    raw_steps,
+                    raw_values,
+                    color=style["color"],
+                    linewidth=0.75 if method == "OPTS-TTPO" else 0.60,
+                    linestyle="-",
+                    alpha=0.24 if method == "OPTS-TTPO" else 0.16,
+                    zorder=1,
+                )
                 axis.plot(
                     finite_steps,
                     smoothed_values,
                     color=style["color"],
                     linewidth=style["linewidth"],
                     linestyle=style["linestyle"],
-                    alpha=1.0 if method == "OPTS-TTPO" else 0.90,
+                    alpha=style["alpha"],
                     solid_capstyle="round",
+                    dash_capstyle="round",
+                    marker=style["marker"],
+                    markersize=3.4 if method == "OPTS-TTPO" else 2.9,
+                    markevery=2,
+                    markerfacecolor=style["color"],
+                    markeredgecolor="white",
+                    markeredgewidth=0.45,
                     zorder=style["zorder"],
                 )
 
     figure.text(
-        0.535,
-        0.027,
-        "Training step",
+        0.545,
+        0.020,
+        "Training steps",
         ha="center",
         va="center",
-        fontsize=10.8,
+        fontsize=9.3,
         color=MUTED_TEXT,
     )
 
@@ -313,21 +369,35 @@ def plot_grid(curves):
             color=METHOD_STYLE[method]["color"],
             linewidth=METHOD_STYLE[method]["linewidth"] + 0.15,
             linestyle=METHOD_STYLE[method]["linestyle"],
+            marker=METHOD_STYLE[method]["marker"],
+            markersize=3.8,
+            markerfacecolor=METHOD_STYLE[method]["color"],
+            markeredgecolor="white",
+            markeredgewidth=0.5,
             label=method,
         )
         for method in METHODS
     ]
-    figure.legend(
+    legend = figure.legend(
         handles=legend_handles,
         loc="upper center",
-        bbox_to_anchor=(0.535, 0.975),
+        bbox_to_anchor=(0.545, 0.989),
         ncol=4,
-        frameon=False,
-        fontsize=10.6,
-        handlelength=2.6,
-        handletextpad=0.55,
-        columnspacing=1.7,
+        frameon=True,
+        fancybox=True,
+        framealpha=1.0,
+        facecolor="white",
+        edgecolor="#CDD3D8",
+        fontsize=8.8,
+        handlelength=2.4,
+        handletextpad=0.50,
+        columnspacing=1.25,
+        borderpad=0.45,
     )
+    legend.get_frame().set_linewidth(0.65)
+    for text_item in legend.get_texts():
+        if text_item.get_text() == "OPTS-TTPO":
+            text_item.set_fontweight("semibold")
     return figure
 
 

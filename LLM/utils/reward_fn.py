@@ -1,10 +1,9 @@
 # Copyright 2025 Junyu Lu (Julian Lou). All rights reserved.
 
 """
-Reward function for <think>...</think>\\boxed{answer} format.
+Reward function for \\boxed{answer} format.
 
-Note: The prompt already contains "<think>\n" in chat_template,
-so the response should be: "...thinking...</think>\n...\\boxed{answer}..."
+A response earns reward iff it contains \\boxed{...} with the correct answer.
 """
 
 import re
@@ -19,44 +18,11 @@ def _cached_parse(s: str):
     return parse(s)
 
 
-def check_format(response_str: str) -> bool:
-    """Check if the response follows the strict format: ...思考内容...</think>\n...\\boxed{答案}...
-
-    The response should:
-    1. End the thinking section with </think>
-    2. Have \\boxed{...} after </think>
-
-    Args:
-        response_str: The response string to check (without the <think> prefix).
-
-    Returns:
-        True if the format is correct, False otherwise.
-    """
-    # Strict format: must have </think> followed by \boxed{...}
-    if "</think>" not in response_str:
-        return False
-
-    think_end = response_str.rfind("</think>")
-    answer_part = response_str[think_end + len("</think>"):]
-    boxed_matches = re.findall(r'\\boxed\{', answer_part)
-    if len(boxed_matches) != 1:
-        return False
-
-    pattern = r'^.*</think>\s*.*\\boxed\{.*\}.*$'
-    return bool(re.match(pattern, response_str, re.DOTALL))
-
-
 def extract_answer(response_str: str) -> Optional[str]:
-    """Extract the answer from \\boxed{...} after </think>.
+    """Extract the answer from \\boxed{...}.
 
-    Only searches in the content after the last </think> tag to avoid
-    picking up intermediate \\boxed{} attempts inside the thinking block.
-
-    Args:
-        response_str: The response string.
-
-    Returns:
-        The answer content, or None if not found.
+    Searches the content after the last </think> tag when present (to skip
+    intermediate \\boxed{} inside thinking), otherwise the whole response.
     """
     # Strip thinking block: only look after </think>
     think_end = response_str.rfind("</think>")
@@ -106,12 +72,13 @@ def compute_score(
 ) -> dict:
     """Compute the score for a response.
 
-    The response must have valid format before answer correctness can receive reward.
+    Reward = correct_reward iff \\boxed{...} is present and the extracted
+    answer matches ground truth; otherwise 0.
 
     Args:
-        solution_str: The response string (without <think> prefix, which is in prompt).
+        solution_str: The response string.
         ground_truth: The expected answer.
-        correct_reward: Reward for a correct answer with valid format.
+        correct_reward: Reward for a correct answer.
         extra_info: Optional extra info dict, may contain 'full_response_str' for tree search.
 
     Returns:
@@ -122,17 +89,12 @@ def compute_score(
     if extra_info and "full_response_str" in extra_info:
         solution_str = extra_info["full_response_str"]
 
-    # Check format: must have </think> followed by \boxed{...}
-    format_ok = check_format(solution_str)
-
-    # Check answer correctness (using math-verify for robust matching)
     answer_content = extract_answer(solution_str)
     acc = 0.0
     total_score = 0.0
-    if format_ok and answer_content is not None:
-        if validate_answer(answer_content, ground_truth):
-            acc = 1.0
-            total_score += correct_reward
+    if answer_content is not None and validate_answer(answer_content, ground_truth):
+        acc = 1.0
+        total_score += correct_reward
 
     return {
         "score": total_score,

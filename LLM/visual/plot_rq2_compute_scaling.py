@@ -528,7 +528,7 @@ def plot_method_pair(axis, iid_values, opts_values):
         markeredgecolor="white",
         markeredgewidth=0.75,
         solid_capstyle="round",
-        label=r"OPTS ($s=3$)",
+        label=r"OPTS ($S_{\max}=3$)",
         zorder=4,
     )
     return iid_line, opts_line
@@ -630,7 +630,7 @@ def plot_performance_figure(reward_iid, reward_opts, value_iid, value_opts):
 
     figure.legend(
         handles,
-        ["IID baseline", r"OPTS ($s=3$)"],
+        ["IID baseline", r"OPTS ($S_{\max}=3$)"],
         loc="lower center",
         bbox_to_anchor=(0.5, 0.005),
         ncol=2,
@@ -703,7 +703,7 @@ def plot_dataset_method_pair(axis, iid_values, opts_values):
         markeredgecolor="white",
         markeredgewidth=0.55,
         solid_capstyle="round",
-        label=r"OPTS ($s=3$)",
+        label=r"OPTS ($S_{\max}=3$)",
         zorder=4,
     )
     return iid_line, opts_line
@@ -793,7 +793,7 @@ def plot_dataset_figure(
     )
     figure.legend(
         handles,
-        ["IID baseline", r"OPTS ($s=3$)"],
+        ["IID baseline", r"OPTS ($S_{\max}=3$)"],
         loc="lower center",
         bbox_to_anchor=(0.535, 0.006),
         ncol=2,
@@ -879,7 +879,7 @@ def plot_figure(
     )
     figure.legend(
         handles,
-        ["IID baseline", r"OPTS ($s=3$)"],
+        ["IID baseline", r"OPTS ($S_{\max}=3$)"],
         loc="lower center",
         bbox_to_anchor=(0.5, 0.002),
         ncol=2,

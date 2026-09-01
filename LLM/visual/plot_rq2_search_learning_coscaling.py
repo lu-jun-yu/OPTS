@@ -67,7 +67,7 @@ def parse_args():
         "--learning-dir",
         type=Path,
         default=DEFAULT_LEARNING_DIR,
-        help="Directory containing one fixed-s=3 JSON for each training step.",
+        help="Directory containing one fixed S_max=3 JSON for each training step.",
     )
     parser.add_argument(
         "--output",
@@ -345,7 +345,7 @@ def plot_figure(search_series, learning_series):
     figure.text(
         0.5,
         0.495,
-        r"Maximum OPTS search rounds $s$",
+        r"Maximum OPTS search rounds $S_{\max}$",
         ha="center",
         va="center",
         color=MUTED_TEXT_COLOR,
@@ -354,7 +354,7 @@ def plot_figure(search_series, learning_series):
     figure.text(
         0.5,
         0.055,
-        "Training step (fixed search budget: $s=3$)",
+        r"Training step (fixed search budget: $S_{\max}=3$)",
         ha="center",
         va="center",
         color=MUTED_TEXT_COLOR,

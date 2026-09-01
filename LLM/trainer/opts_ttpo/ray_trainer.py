@@ -599,20 +599,24 @@ def refresh_tree_search_states(
             best_child = int(child_indices[int(np.argmax(child_adv0))])
             best_child_idx[parent_idx, pos] = best_child
 
-    think_end_pos = torch.full((global_batch_size,), response_len, device=device, dtype=torch.long)
+    boxed_pos = torch.full((global_batch_size,), response_len, device=device, dtype=torch.long)
     if tokenizer is not None:
-        think_token_ids = tokenizer.encode("</think>", add_special_tokens=False)
-        think_len = len(think_token_ids)
-        think_end_pos = response_lengths.clone()
-        think_ids_tensor = torch.tensor(think_token_ids, device=device)
-        response_windows = responses.unfold(dimension=1, size=think_len, step=1)
-        think_matches = (response_windows == think_ids_tensor.view(1, 1, -1)).all(dim=-1)
-        valid_match_limit = (response_lengths - think_len + 1).clamp(min=0)
-        valid_match_mask = torch.arange(response_len - think_len + 1, device=device).unsqueeze(0) < valid_match_limit.unsqueeze(1)
-        think_matches = think_matches & valid_match_mask
-        has_think = think_matches.any(dim=1)
-        first_think_pos = think_matches.to(torch.long).argmax(dim=1)
-        think_end_pos = torch.where(has_think, first_think_pos, think_end_pos)
+        boxed_pos = response_lengths.clone()
+        matches = torch.zeros((global_batch_size, response_len), device=device, dtype=torch.bool)
+        for pat_str in ("\\boxed", " \\boxed"):
+            pat = tokenizer.encode(pat_str, add_special_tokens=False)
+            w = len(pat)
+            if w == 0 or w > response_len:
+                continue
+            pat_tensor = torch.tensor(pat, device=device)
+            windows = responses.unfold(dimension=1, size=w, step=1)
+            m = (windows == pat_tensor.view(1, 1, -1)).all(dim=-1)
+            valid_limit = (response_lengths - w + 1).clamp(min=0)
+            m = m & (torch.arange(response_len - w + 1, device=device).unsqueeze(0) < valid_limit.unsqueeze(1))
+            matches[:, : m.shape[1]] |= m
+        has_boxed = matches.any(dim=1)
+        first_boxed_pos = matches.to(torch.long).argmax(dim=1)
+        boxed_pos = torch.where(has_boxed, first_boxed_pos, boxed_pos)
 
     root_mask = np.array([parent_rid is None for parent_rid in pid], dtype=bool)
     uid_to_root_indices: Dict[Any, list] = defaultdict(list)
@@ -667,14 +671,14 @@ def refresh_tree_search_states(
         otrc_score[:, u] = last_otrc
 
     prompt_valid = prompt_lengths[path_idx] + path_t < max_prompt_length
-    think_valid = path_t <= think_end_pos[path_idx]
+    boxed_valid = path_t <= boxed_pos[path_idx]
 
     otrc_for_argmax = torch.where(path_mask, otrc_score, neg_inf)
     row_idx = torch.arange(num_trees, device=device)
     max_pos = otrc_for_argmax.argmax(dim=1)
     max_otrc_score = otrc_score[row_idx, max_pos]
 
-    last_valid = (prompt_valid & think_valid).sum(dim=1) - 1
+    last_valid = (prompt_valid & boxed_valid).sum(dim=1) - 1
     clamped_u = torch.minimum(max_pos, last_valid)
 
     terminal_u = path_mask.to(torch.long).sum(dim=1) - 1
@@ -989,54 +993,50 @@ def compute_pass_return(batch: DataProto) -> float:
     return float(np.mean(prompt_max_returns))
 
 
-def compute_search_count_rate_metrics(
+def compute_tree_search_metrics(
     batch: DataProto,
     search_count: dict,
     max_search_per_tree: int,
 ) -> dict[str, float]:
-    """Compute prompt-level search-count distribution for monitoring."""
-    unique_uids = np.unique(batch.non_tensor_batch["uid"])
-    total_prompts = len(unique_uids)
-    if total_prompts == 0:
+    """Search-count distribution + branch-position stats (mean/max/min).
+
+    Branch position = valid prompt-region length - raw_prompt_len (a row's
+    prompt region holds prompt + accumulated context, left-padded). Branching
+    from a tree's root counts as position 0; a newly opened tree's first root
+    is not a branch event.
+    """
+    uids = [str(u) for u in batch.non_tensor_batch["uid"]]
+    n_trees = len(set(uids))
+    if n_trees == 0:
         return {}
 
-    metrics = {}
-    for i in range(max_search_per_tree + 1):
-        matched = sum(1 for u in unique_uids if search_count.get(u, 0) == i)
-        metrics[f"opts_ttpo/step_search_count_{i}_rate"] = matched / total_prompts
-    searched_tree_count = sum(1 for u in unique_uids if search_count.get(u, 0) > 0)
-    metrics["opts_ttpo/step_searched_tree_count"] = searched_tree_count
-    metrics["opts_ttpo/step_total_tree_count"] = total_prompts
-    metrics["opts_ttpo/step_searched_tree_rate"] = searched_tree_count / total_prompts
+    metrics = {
+        f"opts_ttpo/step_search_count_{i}_rate": sum(u in search_count and search_count[u] == i for u in set(uids)) / n_trees
+        for i in range(max_search_per_tree + 1)
+    }
+
+    # rid format: f"r{round}_{i}" (set_opts_ttpo_info)
+    rids = [str(r) for r in batch.non_tensor_batch["rid"]]
+    pids = [str(p) for p in batch.non_tensor_batch["pid"]]
+    round_of = [int(r.split("_")[0][1:]) for r in rids]
+    first_round = defaultdict(lambda: 2**30)
+    for u, rd in zip(uids, round_of):
+        first_round[u] = min(first_round[u], rd)
+
+    pw = batch.batch["input_ids"].shape[1] - batch.batch["responses"].shape[1]
+    ctx_lens = batch.batch["attention_mask"][:, :pw].sum(dim=1).cpu().numpy() - np.asarray(
+        batch.non_tensor_batch["raw_prompt_len"], dtype=np.int64
+    )
+    branch_pos = [
+        int(ctx_lens[i]) if pids[i] != "None" else 0
+        for i in range(len(rids))
+        if pids[i] != "None" or round_of[i] > first_round[uids[i]]
+    ]
+    if branch_pos:
+        metrics["opts_ttpo/step_branch_pos_mean"] = float(np.mean(branch_pos))
+        metrics["opts_ttpo/step_branch_pos_max"] = int(max(branch_pos))
+        metrics["opts_ttpo/step_branch_pos_min"] = int(min(branch_pos))
     return metrics
-
-
-def normalize_branch_weight_per_tree(
-    branch_weight: torch.Tensor,
-    response_mask: torch.Tensor,
-    uid: np.ndarray,
-) -> tuple[torch.Tensor, int]:
-    """Normalize valid-token branch weights independently within each uid tree."""
-    masked_weight = branch_weight * response_mask.to(dtype=branch_weight.dtype)
-    unique_uids = list(dict.fromkeys(uid))
-    uid2idx = {tree_uid: idx for idx, tree_uid in enumerate(unique_uids)}
-    uid_indices = torch.tensor(
-        [uid2idx[tree_uid] for tree_uid in uid],
-        device=branch_weight.device,
-        dtype=torch.long,
-    )
-
-    trajectory_weight_sums = masked_weight.sum(dim=-1)
-    tree_weight_sums = torch.zeros(
-        len(unique_uids),
-        device=branch_weight.device,
-        dtype=branch_weight.dtype,
-    )
-    tree_weight_sums.scatter_add_(0, uid_indices, trajectory_weight_sums)
-    assert torch.all(tree_weight_sums > 0), "Every uid tree must contain positive valid-token branch weight."
-
-    loss_branch_weight = masked_weight / tree_weight_sums[uid_indices].unsqueeze(-1)
-    return loss_branch_weight, len(unique_uids)
 
 
 def weighted_masked_whiten(
@@ -2154,8 +2154,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                     self.actor_rollout_wg.async_calls_finalize_fn_exec(blocking=False)
                 metrics = {}
                 timing_raw = {}
-                metrics["opts_ttpo/max_searched_tree_ratio"] = max_searched_tree_ratio
-                metrics["opts_ttpo/search_batch_size"] = batch_size
 
                 with marked_timer("start_profile", timing_raw):
                     self._start_profiling(
@@ -2460,17 +2458,14 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                             uid=batch.non_tensor_batch["uid"],
                             branch_pos=batch.non_tensor_batch["branch_pos"],
                         )
-                        loss_branch_weight, num_trees = normalize_branch_weight_per_tree(
-                            branch_weight=branch_weight,
-                            response_mask=batch.batch["response_mask"],
-                            uid=batch.non_tensor_batch["uid"],
-                        )
-                        batch.batch["branch_weight"] = loss_branch_weight
+                        batch.batch["branch_weight"] = branch_weight
                         # Monitoring keeps the original equal-branch weighting.
                         batch.batch["return_branch_weight"] = branch_weight
-                        # Each tree's loss weights sum to one; averaging over the global tree count
-                        # remains correct after data-parallel and micro-batch splitting.
-                        batch.meta_info["weighted_weight_sum"] = float(num_trees)
+                        # Global weighted-token-mean: pre-compute the global
+                        # denominator sum_t(mask_t * w_t) so every micro-batch and
+                        # DP rank divides by the same value (no all_reduce).
+                        weighted_mask = batch.batch["response_mask"].float() * branch_weight
+                        batch.meta_info["weighted_weight_sum"] = float(weighted_mask.sum().item())
                         batch.batch["advantages"] = weighted_masked_whiten(
                             advantages=batch.batch["advantages"],
                             response_mask=batch.batch["response_mask"],
@@ -2483,7 +2478,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                         metrics["opts_ttpo/step_mean_return"] = step_mean_return
                         metrics["opts_ttpo/step_pass_return"] = compute_pass_return(batch)
                         metrics.update(
-                            compute_search_count_rate_metrics(
+                            compute_tree_search_metrics(
                                 batch=batch,
                                 search_count=search_count,
                                 max_search_per_tree=max_search_per_tree,
