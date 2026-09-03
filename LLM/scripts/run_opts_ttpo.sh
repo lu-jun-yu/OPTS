@@ -2,8 +2,8 @@ export NCCL_DEBUG=ERROR
 export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
-MODEL_SIZE=1.7B
-Experiment_Name=opts_ttpo_0820_n8_${MODEL_SIZE}
+MODEL_SIZE=1.7B-Base
+Experiment_Name=opts_ttpo_0903_n8_s7_${MODEL_SIZE}
 RAY_TEMP_DIR="/tmp/ray/${Experiment_Name}"
 
 cleanup_ray_temp() {
@@ -20,11 +20,11 @@ trap cleanup_ray_temp EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m trainer.main_opts_ttpo \
+CUDA_VISIBLE_DEVICES=4,5,6,7 python3 -m trainer.main_opts_ttpo \
  algorithm.adv_estimator=treegae \
  data.train_files=data/train.parquet \
  data.val_files=data/test.parquet \
- data.train_batch_size=1024 \
+ data.train_batch_size=512 \
  data.max_prompt_length=1024 \
  data.max_response_length=2048 \
  data.filter_overlong_prompts=True \
@@ -32,7 +32,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m trainer.main_opts_ttpo \
  actor_rollout_ref.actor.optim.lr=1e-6 \
  actor_rollout_ref.actor.optim.weight_decay=0.1 \
  actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
- actor_rollout_ref.actor.ppo_mini_batch_size=1024 \
+ actor_rollout_ref.actor.ppo_mini_batch_size=512 \
  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=32 \
  actor_rollout_ref.actor.use_kl_loss=False \
  actor_rollout_ref.rollout.name=vllm \
@@ -40,12 +40,12 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m trainer.main_opts_ttpo \
  actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
  actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
  actor_rollout_ref.rollout.search=opts \
- actor_rollout_ref.rollout.n=4 \
+ actor_rollout_ref.rollout.n=8 \
  actor_rollout_ref.rollout.val_kwargs.n=32 \
  actor_rollout_ref.rollout.val_kwargs.do_sample=True \
  actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
  actor_rollout_ref.rollout.val_kwargs.top_p=0.95 \
- actor_rollout_ref.rollout.max_search_per_tree=3 \
+ actor_rollout_ref.rollout.max_search_per_tree=7 \
  critic.enable=True \
  critic.optim.lr=1e-5 \
  critic.model.path=models/Qwen3-${MODEL_SIZE} \
@@ -57,10 +57,12 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m trainer.main_opts_ttpo \
  algorithm.use_kl_in_reward=False \
  algorithm.kl_ctrl.kl_coef=0.0 \
  algorithm.lam=0.999 \
- +algorithm.max_searched_tree_ratio=0.4 \
+ +algorithm.max_searched_tree_ratio=0.3 \
  +algorithm.otrc_baseline=zero \
  trainer.logger='["console","wandb"]' \
  trainer.val_before_train=False \
+ +trainer.train_eval_enabled=true \
+ +trainer.train_eval_freq=80 \
  trainer.n_gpus_per_node=4 \
  trainer.nnodes=1 \
  trainer.project_name=opts_ttpo_${MODEL_SIZE} \
@@ -70,5 +72,5 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m trainer.main_opts_ttpo \
  trainer.test_freq=20 \
  trainer.total_epochs=400 \
  trainer.total_training_steps=400 \
- ray_kwargs.ray_init.num_cpus=32 \
+ ray_kwargs.ray_init.num_cpus=64 \
  +ray_kwargs.ray_init._temp_dir="${RAY_TEMP_DIR}" 2>&1 | tee logs/${Experiment_Name}.log

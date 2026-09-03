@@ -1216,13 +1216,41 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
             collate_fn=collate_fn,
         )
 
+        self.train_eval_enabled = bool(self.config.trainer.get("train_eval_enabled", False))
+        self.train_eval_freq = int(self.config.trainer.get("train_eval_freq", -1))
+        self.train_eval_dataloader = None
+        if self.train_eval_enabled:
+            if self.train_eval_freq <= 0:
+                raise ValueError(
+                    "trainer.train_eval_freq must be positive when "
+                    f"trainer.train_eval_enabled=True, got {self.train_eval_freq}"
+                )
+            # Use the effective training dataset after the same prompt-length
+            # filtering as training. Keep a separate iterator so evaluation never
+            # consumes or reorders the training sampler / PromptBuffer. The full
+            # dataset is deliberately sent to the rollout engine in one call.
+            self.train_eval_dataloader = StatefulDataLoader(
+                dataset=self.train_dataset,
+                batch_size=len(self.train_dataset),
+                # Avoid transferring one very large collated batch through
+                # multiprocessing shared memory before the single vLLM call.
+                num_workers=0,
+                shuffle=False,
+                drop_last=False,
+                collate_fn=collate_fn,
+            )
+
         assert len(self.train_dataloader) >= 1, "Train dataloader is empty!"
         assert len(self.val_dataloader) >= 1, "Validation dataloader is empty!"
+        if self.train_eval_dataloader is not None:
+            assert len(self.train_eval_dataloader) == 1, "Train-eval dataloader must contain exactly one full batch!"
 
         print(
             f"Size of train dataloader: {len(self.train_dataloader)}, Size of val dataloader: "
             f"{len(self.val_dataloader)}"
         )
+        if self.train_eval_dataloader is not None:
+            print(f"Size of train-eval dataset: {len(self.train_dataset)} (one full batch)")
 
         total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
 
@@ -1563,6 +1591,83 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                     metric_dict[f"val-core/{data_source}/reward/{metric_name}"] = reward_metric2val[metric_name]
 
         return metric_dict
+
+    def _validate_train(self):
+        """Evaluate the current learned policy once on every effective training prompt."""
+        if self.train_eval_dataloader is None:
+            raise RuntimeError("Train-distribution evaluation is not enabled.")
+
+        acc_sum = 0.0
+        acc_count = 0
+
+        for train_data in self.train_eval_dataloader:
+            train_batch = DataProto.from_single_dict(train_data)
+
+            if self.config.reward_model.enable and train_batch[0].non_tensor_batch["reward_model"]["style"] == "model":
+                raise RuntimeError("Train-distribution evaluation only supports rule-based reward functions.")
+
+            if "uid" not in train_batch.non_tensor_batch:
+                train_batch.non_tensor_batch["uid"] = np.array(
+                    [str(uuid.uuid4()) for _ in range(len(train_batch.batch))], dtype=object
+                )
+            train_batch.non_tensor_batch["raw_prompt_len"] = (
+                train_batch.batch["attention_mask"].sum(dim=1).cpu().numpy()
+            )
+
+            train_gen_batch = self._get_gen_batch(train_batch)
+            train_gen_batch.meta_info = {
+                "eos_token_id": self.tokenizer.eos_token_id,
+                "pad_token_id": self.tokenizer.pad_token_id,
+                "recompute_log_prob": False,
+                "do_sample": True,
+                # False intentionally selects the same temperature/top-p and
+                # input-id generation path as a training rollout. With an original
+                # prompt and one call, this is a root rollout and never enters the
+                # trainer's OPTS selection/search loop.
+                "validate": False,
+                "global_steps": self.global_steps,
+            }
+
+            size_divisor = (
+                self.actor_rollout_wg.world_size
+                if not self.async_rollout_mode
+                else self.config.actor_rollout_ref.rollout.agent.num_workers
+            )
+            train_gen_batch_padded, pad_size = pad_dataproto_to_divisor(train_gen_batch, size_divisor)
+            if not self.async_rollout_mode:
+                train_output_padded = self.actor_rollout_wg.generate_sequences(train_gen_batch_padded)
+            else:
+                train_output_padded = self.async_rollout_manager.generate_sequences(train_gen_batch_padded)
+            train_output = unpad_dataproto(train_output_padded, pad_size=pad_size)
+
+            train_batch = train_batch.union(train_output)
+            train_batch.meta_info["validate"] = True
+            result = self._compute_or_extract_reward(
+                train_batch,
+                reward_fn=self.val_reward_fn,
+                return_dict=True,
+            )
+            acc_values = result.get("reward_extra_info", {}).get("acc")
+            if acc_values is None:
+                raise RuntimeError("Train-distribution evaluation requires reward_extra_info['acc'].")
+
+            acc_array = np.asarray(acc_values, dtype=np.float64).reshape(-1)
+            if len(acc_array) != len(train_batch.batch):
+                raise RuntimeError(
+                    "Train-distribution accuracy count does not match generated responses: "
+                    f"{len(acc_array)} != {len(train_batch.batch)}"
+                )
+            acc_sum += float(acc_array.sum())
+            acc_count += int(acc_array.size)
+
+        expected_count = len(self.train_dataset)
+        if acc_count != expected_count:
+            raise RuntimeError(
+                "Train-distribution evaluation did not cover the effective training dataset: "
+                f"{acc_count} != {expected_count}"
+            )
+
+        return {"train-eval/acc/avg@1": acc_sum / acc_count}
 
     def init_workers(self):
         """Initialize distributed training workers using Ray backend.
@@ -2527,6 +2632,20 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                             if is_last_step:
                                 last_val_metrics = val_metrics
                     metrics.update(val_metrics)
+
+                # Evaluate the learned policy itself on the effective training
+                # distribution. Step 0 is intentionally excluded here.
+                if (
+                    self.val_reward_fn is not None
+                    and self.train_eval_dataloader is not None
+                    and (
+                        is_last_step
+                        or self.global_steps % self.train_eval_freq == 0
+                    )
+                ):
+                    with timed_block("train_distribution_validation", step=self.global_steps):
+                        train_eval_metrics = self._validate_train()
+                    metrics.update(train_eval_metrics)
 
                 # Check if the ESI (Elastic Server Instance)/training plan is close to expiration.
                 esi_close_to_expiration = should_save_ckpt_esi(

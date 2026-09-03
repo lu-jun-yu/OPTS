@@ -13,27 +13,16 @@ from matplotlib.ticker import FormatStrFormatter, FuncFormatter, LogLocator, Max
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RQ1_DIR = REPO_ROOT / "LLM/results/step400/rq1"
-TRAIN16K_INDEP_INPUT = RQ1_DIR / "rq1_train16k_indep_metrics.json"
-TRAIN16K_INPUT = RQ1_DIR / "rq1_train16k_metrics.json"
-REAL_INPUT = RQ1_DIR / "rq1_128_metrics.json"
-PROVISIONAL_INPUT = RQ1_DIR / "rq1_64_metrics.json"
+TRAIN16K_GLOBAL32_INPUT = RQ1_DIR / "rq1_train16k_global32_metrics.json"
 DEFAULT_OUTPUT = REPO_ROOT / "paper/figures/rq1_gradient_aggregation.pdf"
 DEFAULT_PNG_OUTPUT = REPO_ROOT / "paper/figures/rq1_gradient_aggregation.png"
-DEFAULT_TRAJECTORY_OUTPUT = (
-    REPO_ROOT / "paper/figures/rq1_trajectory_level_aggregation.pdf"
-)
-DEFAULT_TRAJECTORY_PNG_OUTPUT = (
-    REPO_ROOT / "paper/figures/rq1_trajectory_level_aggregation.png"
-)
 
 K_VALUES = (0, 1, 3, 7, 15)
-TRAJECTORY_M_VALUES = (2, 4, 8)
 METHODS = ("ttpg", "naive")
 
 METHOD_LABELS = {"ttpg": "TTPG", "naive": "NaivePG"}
 METHOD_COLORS = {"ttpg": "#B5475D", "naive": "#6F7F8C"}
 METHOD_LINESTYLES = {"ttpg": "-", "naive": (0, (4, 2.2))}
-TRAJECTORY_M_MARKERS = {2: "o", 4: "s", 8: "^"}
 
 TEXT_COLOR = "#263238"
 MUTED_TEXT_COLOR = "#59636B"
@@ -45,15 +34,14 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description=(
             "Plot RQ1 gradient bias, variance, MSE, and cosine similarity. "
-            "The default uses the completed independent 8+8-group metrics on "
-            "16k training prompts, then falls back to earlier metrics."
+            "The default uses the global token-level metrics on 16k training prompts."
         )
     )
     parser.add_argument(
         "--metrics",
         type=Path,
         default=None,
-        help="Metrics JSON. Default: rq1_train16k_indep_metrics.json if present.",
+        help="Metrics JSON. Default: rq1_train16k_global32_metrics.json if present.",
     )
     parser.add_argument(
         "--metric-key",
@@ -62,40 +50,17 @@ def parse_args():
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--png-output", type=Path, default=DEFAULT_PNG_OUTPUT)
-    parser.add_argument(
-        "--trajectory-metrics",
-        type=Path,
-        default=PROVISIONAL_INPUT,
-        help="64-group JSON containing the measured trajectory-level 'sum' metrics.",
-    )
-    parser.add_argument(
-        "--trajectory-output", type=Path, default=DEFAULT_TRAJECTORY_OUTPUT
-    )
-    parser.add_argument(
-        "--trajectory-png-output", type=Path, default=DEFAULT_TRAJECTORY_PNG_OUTPUT
-    )
-    parser.add_argument(
-        "--skip-trajectory",
-        action="store_true",
-        help="Generate only the token-level main figure and leave appendix outputs unchanged.",
-    )
     return parser.parse_args()
 
 
 def discover_input(explicit_path):
     if explicit_path is not None:
         return explicit_path
-    if TRAIN16K_INDEP_INPUT.exists():
-        return TRAIN16K_INDEP_INPUT
-    if TRAIN16K_INPUT.exists():
-        return TRAIN16K_INPUT
-    if REAL_INPUT.exists():
-        return REAL_INPUT
-    if PROVISIONAL_INPUT.exists():
-        return PROVISIONAL_INPUT
+    if TRAIN16K_GLOBAL32_INPUT.exists():
+        return TRAIN16K_GLOBAL32_INPUT
     raise FileNotFoundError(
-        f"None of {TRAIN16K_INDEP_INPUT}, {TRAIN16K_INPUT}, {REAL_INPUT}, "
-        f"or {PROVISIONAL_INPUT} exists"
+        f"Global token-level metrics not found: {TRAIN16K_GLOBAL32_INPUT}. "
+        "Pass --metrics explicitly to inspect another compatible payload."
     )
 
 
@@ -151,20 +116,16 @@ def load_series(path, metric_key=None):
     first_per_m = per_k[str(K_VALUES[0])]["ttpg"].get("per_m", {})
     source_m_values = tuple(sorted(int(value) for value in first_per_m))
     if source_m_values in ((1, 2, 4), (4, 8, 16)):
-        provisional = False
         target_m_values = source_m_values
-    elif source_m_values == (2, 4, 8):
-        provisional = True
-        target_m_values = (4, 8, 16)
     else:
         raise ValueError(
-            f"Expected M={{1,2,4}}, M={{4,8,16}}, or provisional M={{2,4,8}} in {path}; "
+            f"Expected M={{1,2,4}} or M={{4,8,16}} in {path}; "
             f"found {source_m_values}"
         )
 
     series = {
         method: {
-            "bias": [],
+            "bias": {m: [] for m in target_m_values},
             "var": {m: [] for m in target_m_values},
             "mse": {m: [] for m in target_m_values},
             "cos": {m: [] for m in target_m_values},
@@ -180,150 +141,40 @@ def load_series(path, metric_key=None):
             )
         for method in METHODS:
             method_entry = entry[method]
-            bias = require_finite(
-                method_entry["bias"],
-                f"{method}/bias/K={k}",
-                nonnegative=True,
-            )
-            series[method]["bias"].append(bias)
             per_m = method_entry.get("per_m", {})
-
-            if not provisional:
-                for target_m in target_m_values:
-                    source_entry = per_m.get(str(target_m))
-                    if not isinstance(source_entry, dict):
-                        raise KeyError(
-                            f"Missing {method}/K={k}/M={target_m} in {path}"
-                        )
-                    for metric in ("var", "mse", "cos"):
-                        series[method][metric][target_m].append(
-                            require_finite(
-                                source_entry[metric],
-                                f"{method}/{metric}/K={k}/M={target_m}",
-                                nonnegative=metric in ("var", "mse"),
-                                cosine=metric == "cos",
-                            )
-                        )
-                continue
-
-            # Provisional 64 -> 128 extrapolation. M=4 and M=8 reuse the
-            # measured statistics at the same aggregation size. For M=16,
-            # gradient variance follows the observed 1/M scaling, and cosine
-            # is linearly extrapolated in 1/M from M=4 and M=8. MSE is then
-            # reconstructed from the exact finite-R decomposition
-            # MSE = ((R - 1) / R) Var + Bias^2 with R = 128 / M.
-            old_entries = {}
-            for source_m in (2, 4, 8):
-                source_entry = per_m.get(str(source_m))
+            for target_m in target_m_values:
+                source_entry = per_m.get(str(target_m))
                 if not isinstance(source_entry, dict):
                     raise KeyError(
-                        f"Missing {method}/K={k}/M={source_m} in {path}"
+                        f"Missing {method}/K={k}/M={target_m} in {path}"
                     )
-                old_entries[source_m] = {
-                    "var": require_finite(
-                        source_entry["var"],
-                        f"{method}/var/K={k}/M={source_m}",
-                        nonnegative=True,
-                    ),
-                    "cos": require_finite(
-                        source_entry["cos"],
-                        f"{method}/cos/K={k}/M={source_m}",
-                        cosine=True,
-                    ),
-                }
-
-            extrapolated_var = {
-                4: old_entries[4]["var"],
-                8: old_entries[8]["var"],
-                16: old_entries[8]["var"] / 2.0,
-            }
-            extrapolated_cos = {
-                4: old_entries[4]["cos"],
-                8: old_entries[8]["cos"],
-                16: min(
-                    1.0,
-                    max(
-                        -1.0,
-                        1.5 * old_entries[8]["cos"]
-                        - 0.5 * old_entries[4]["cos"],
-                    ),
-                ),
-            }
-            for target_m in target_m_values:
-                repeats = 128 // target_m
-                variance = extrapolated_var[target_m]
-                mse = (repeats - 1) / repeats * variance + bias**2
-                series[method]["var"][target_m].append(variance)
-                series[method]["mse"][target_m].append(mse)
-                series[method]["cos"][target_m].append(
-                    extrapolated_cos[target_m]
-                )
-
-    return series, selected_key, provisional, target_m_values
-
-
-def load_measured_series(path, metric_key, m_values):
-    payload = read_payload(path)
-    if metric_key not in payload:
-        raise KeyError(f"Missing top-level key {metric_key!r} in {path}")
-    metrics = payload[metric_key]
-    if not isinstance(metrics, dict) or not isinstance(metrics.get("per_k"), dict):
-        raise ValueError(f"Missing per_k metrics under {metric_key!r} in {path}")
-
-    per_k = metrics["per_k"]
-    if set(per_k) != {str(k) for k in K_VALUES}:
-        raise ValueError(
-            f"Expected K={list(K_VALUES)} in {path}, found {sorted(per_k)}"
-        )
-
-    series = {
-        method: {
-            "bias": [],
-            "var": {m: [] for m in m_values},
-            "mse": {m: [] for m in m_values},
-            "cos": {m: [] for m in m_values},
-        }
-        for method in METHODS
-    }
-    for k in K_VALUES:
-        entry = per_k[str(k)]
-        if set(entry) != set(METHODS):
-            raise ValueError(
-                f"Expected methods {sorted(METHODS)} at K={k}, found {sorted(entry)}"
-            )
-        for method in METHODS:
-            method_entry = entry[method]
-            series[method]["bias"].append(
-                require_finite(
-                    method_entry["bias"],
-                    f"{metric_key}/{method}/bias/K={k}",
-                    nonnegative=True,
-                )
-            )
-            per_m = method_entry.get("per_m", {})
-            for m in m_values:
-                measured = per_m.get(str(m))
-                if not isinstance(measured, dict):
+                # Under global token normalization, block ratios do not commute
+                # with averaging, so bias is M-dependent. Older payloads store
+                # one M-invariant bias at method level; replicate it only when
+                # reading those legacy results.
+                bias_value = source_entry.get("bias", method_entry.get("bias"))
+                if bias_value is None:
                     raise KeyError(
-                        f"Missing {metric_key}/{method}/K={k}/M={m} in {path}"
+                        f"Missing {method}/bias/K={k}/M={target_m} in {path}"
                     )
+                series[method]["bias"][target_m].append(
+                    require_finite(
+                        bias_value,
+                        f"{method}/bias/K={k}/M={target_m}",
+                        nonnegative=True,
+                    )
+                )
                 for metric in ("var", "mse", "cos"):
-                    series[method][metric][m].append(
+                    series[method][metric][target_m].append(
                         require_finite(
-                            measured[metric],
-                            f"{metric_key}/{method}/{metric}/K={k}/M={m}",
+                            source_entry[metric],
+                            f"{method}/{metric}/K={k}/M={target_m}",
                             nonnegative=metric in ("var", "mse"),
                             cosine=metric == "cos",
                         )
                     )
-                bias = series[method]["bias"][-1]
-                mse = series[method]["mse"][m][-1]
-                if mse + 1e-10 < bias**2:
-                    raise ValueError(
-                        f"Inconsistent {metric_key}/{method}/K={k}/M={m}: "
-                        f"MSE={mse} is smaller than Bias^2={bias**2}"
-                    )
-    return series
+
+    return series, selected_key, target_m_values
 
 
 def style_axis(axis):
@@ -455,19 +306,7 @@ def plot_figure(
         style_axis(axis)
         axis.set_title(title, pad=6.0)
 
-    # The mean across all non-overlapping blocks is invariant to M, so the
-    # bias panel contains one curve per aggregation rule rather than three
-    # perfectly overlapping copies of each curve.
-    for method in METHODS:
-        plot_method_curve(
-            axes[0],
-            series[method]["bias"],
-            method,
-            marker=None,
-            zorder=5 if method == "ttpg" else 3,
-        )
-
-    for axis, metric in zip(axes[1:], ("var", "mse", "cos")):
+    for axis, metric in zip(axes, ("bias", "var", "mse", "cos")):
         for target_m in m_values:
             for method in METHODS:
                 plot_method_curve(
@@ -504,43 +343,27 @@ def plot_figure(
     return figure
 
 
-def print_summary(series, path, selected_key, provisional, m_values):
-    if provisional:
-        source = "provisional 64-group extrapolation"
-    elif selected_key is None:
+def print_summary(series, path, selected_key, m_values):
+    if selected_key is None:
         source = "direct metrics"
     else:
         source = f"metrics key {selected_key}"
     print(f"Loaded {source}: {path}", flush=True)
-    print(
-        "Bias K=0->15: "
-        f"NaivePG {series['naive']['bias'][0]:.4f}->{series['naive']['bias'][-1]:.4f}; "
-        f"TTPG {series['ttpg']['bias'][0]:.4f}->{series['ttpg']['bias'][-1]:.4f}",
-        flush=True,
-    )
     for target_m in m_values:
+        print(
+            f"Bias M={target_m}, K=0->15: "
+            f"NaivePG {series['naive']['bias'][target_m][0]:.4f}->"
+            f"{series['naive']['bias'][target_m][-1]:.4f}; "
+            f"TTPG {series['ttpg']['bias'][target_m][0]:.4f}->"
+            f"{series['ttpg']['bias'][target_m][-1]:.4f}",
+            flush=True,
+        )
         naive = series["naive"]["mse"][target_m][-1]
         ttpg = series["ttpg"]["mse"][target_m][-1]
         print(
             f"K=15, M={target_m}: MSE NaivePG={naive:.4f}, TTPG={ttpg:.4f}",
             flush=True,
         )
-
-
-def print_trajectory_summary(series, path):
-    print(f"Loaded measured trajectory-level metrics: {path} [sum]", flush=True)
-    print(
-        "Trajectory-level bias K=0->15: "
-        f"NaivePG {series['naive']['bias'][0]:.4f}->{series['naive']['bias'][-1]:.4f}; "
-        f"TTPG {series['ttpg']['bias'][0]:.4f}->{series['ttpg']['bias'][-1]:.4f}",
-        flush=True,
-    )
-    print(
-        "Trajectory-level K=15, M=8 MSE: "
-        f"NaivePG={series['naive']['mse'][8][-1]:.4f}, "
-        f"TTPG={series['ttpg']['mse'][8][-1]:.4f}",
-        flush=True,
-    )
 
 
 def save_figure(figure, pdf_path, png_path, label):
@@ -562,11 +385,9 @@ def save_figure(figure, pdf_path, png_path, label):
 def main():
     args = parse_args()
     metrics_path = discover_input(args.metrics)
-    series, selected_key, provisional, main_m_values = load_series(
-        metrics_path, args.metric_key
-    )
+    series, selected_key, main_m_values = load_series(metrics_path, args.metric_key)
     main_m_markers = dict(zip(main_m_values, ("o", "s", "^")))
-    print_summary(series, metrics_path, selected_key, provisional, main_m_values)
+    print_summary(series, metrics_path, selected_key, main_m_values)
 
     figure = plot_figure(
         series,
@@ -575,27 +396,6 @@ def main():
     )
     save_figure(figure, args.output, args.png_output, "RQ1 token-level")
 
-    if args.skip_trajectory:
-        return
-
-    trajectory_series = load_measured_series(
-        args.trajectory_metrics,
-        metric_key="sum",
-        m_values=TRAJECTORY_M_VALUES,
-    )
-    print_trajectory_summary(trajectory_series, args.trajectory_metrics)
-    trajectory_figure = plot_figure(
-        trajectory_series,
-        m_values=TRAJECTORY_M_VALUES,
-        m_markers=TRAJECTORY_M_MARKERS,
-        log_metrics=("bias", "var", "mse"),
-    )
-    save_figure(
-        trajectory_figure,
-        args.trajectory_output,
-        args.trajectory_png_output,
-        "RQ1 trajectory-level",
-    )
 
 
 if __name__ == "__main__":

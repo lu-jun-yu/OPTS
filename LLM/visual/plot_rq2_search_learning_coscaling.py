@@ -16,6 +16,8 @@ DEFAULT_SEARCH_DIR = REPO_ROOT / "LLM/results/step400/rq2/eval"
 DEFAULT_LEARNING_DIR = REPO_ROOT / "LLM/results/rq2_learn_scaling/eval"
 DEFAULT_OUTPUT = REPO_ROOT / "paper/figures/rq2_search_learning_coscaling.pdf"
 DEFAULT_PNG_OUTPUT = REPO_ROOT / "paper/figures/rq2_search_learning_coscaling.png"
+DEFAULT_LEARNING_OUTPUT = REPO_ROOT / "paper/figures/rq2_base_policy_scaling.pdf"
+DEFAULT_LEARNING_PNG_OUTPUT = REPO_ROOT / "paper/figures/rq2_base_policy_scaling.png"
 
 DATASET_ORDER = [
     "hiyouga/math12k",
@@ -50,8 +52,8 @@ MUTED_TEXT_COLOR = "#59636B"
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Plot the 2x6 RQ2 search-learning co-scaling small multiples "
-            "from evaluation JSON files."
+            "Plot separate 1x6 figures for search-budget scaling and "
+            "base-policy scaling from evaluation JSON files."
         )
     )
     parser.add_argument(
@@ -80,6 +82,18 @@ def parse_args():
         type=Path,
         default=DEFAULT_PNG_OUTPUT,
         help="PNG preview path.",
+    )
+    parser.add_argument(
+        "--learning-output",
+        type=Path,
+        default=DEFAULT_LEARNING_OUTPUT,
+        help="Output PDF path for base-policy scaling.",
+    )
+    parser.add_argument(
+        "--learning-png-output",
+        type=Path,
+        default=DEFAULT_LEARNING_PNG_OUTPUT,
+        help="PNG preview path for base-policy scaling.",
     )
     return parser.parse_args()
 
@@ -282,7 +296,7 @@ def plot_series(axis, values, color):
     )
 
 
-def plot_figure(search_series, learning_series):
+def plot_row(series, x_values, color, title, xlabel, ylims):
     plt.rcParams.update(
         {
             "font.family": "serif",
@@ -296,65 +310,35 @@ def plot_figure(search_series, learning_series):
         }
     )
 
-    figure, axes = plt.subplots(2, 6, figsize=(12.2, 5.2), squeeze=False)
+    figure, axes = plt.subplots(1, 6, figsize=(12.2, 2.85), squeeze=False)
     figure.subplots_adjust(
         left=0.065,
         right=0.992,
-        bottom=0.125,
-        top=0.825,
+        bottom=0.235,
+        top=0.735,
         wspace=0.34,
-        hspace=0.72,
     )
 
     for column, dataset in enumerate(DATASET_ORDER):
-        top_axis = axes[0, column]
-        bottom_axis = axes[1, column]
-        ylim = shared_column_ylim(search_series[dataset], learning_series[dataset])
-
-        style_axis(top_axis, SEARCH_ROUNDS, ylim)
-        style_axis(bottom_axis, TRAINING_STEPS, ylim)
-        plot_series(top_axis, search_series[dataset], SEARCH_COLOR)
-        plot_series(bottom_axis, learning_series[dataset], LEARNING_COLOR)
-
-        top_axis.set_title(DATASET_NAMES[dataset], color=TEXT_COLOR, pad=8.0)
-
-    monotonic_count = sum(
-        is_monotonic(search_series[dataset]) for dataset in DATASET_ORDER
-    )
+        axis = axes[0, column]
+        style_axis(axis, x_values, ylims[dataset])
+        plot_series(axis, series[dataset], color)
+        axis.set_title(DATASET_NAMES[dataset], color=TEXT_COLOR, pad=8.0)
 
     figure.text(
         0.5,
-        0.905,
-        r"More Search $\rightarrow$ Stronger Policy",
+        0.90,
+        title,
         ha="center",
         va="center",
-        color=SEARCH_COLOR,
+        color=color,
         fontsize=15.0,
         fontweight="bold",
     )
     figure.text(
         0.5,
-        0.418,
-        r"Stronger Policy $\rightarrow$ Stronger Search",
-        ha="center",
-        va="center",
-        color=LEARNING_COLOR,
-        fontsize=15.0,
-        fontweight="bold",
-    )
-    figure.text(
-        0.5,
-        0.495,
-        r"Maximum OPTS search rounds $S_{\max}$",
-        ha="center",
-        va="center",
-        color=MUTED_TEXT_COLOR,
-        fontsize=11.8,
-    )
-    figure.text(
-        0.5,
-        0.055,
-        r"Training step (fixed search budget: $S_{\max}=3$)",
+        0.075,
+        xlabel,
         ha="center",
         va="center",
         color=MUTED_TEXT_COLOR,
@@ -362,18 +346,7 @@ def plot_figure(search_series, learning_series):
     )
     figure.text(
         0.018,
-        0.700,
-        "Avg@32",
-        ha="center",
-        va="center",
-        rotation=90,
-        color=MUTED_TEXT_COLOR,
-        fontsize=11.8,
-        fontweight="semibold",
-    )
-    figure.text(
-        0.018,
-        0.255,
+        0.45,
         "Avg@32",
         ha="center",
         va="center",
@@ -383,7 +356,7 @@ def plot_figure(search_series, learning_series):
         fontweight="semibold",
     )
 
-    return figure, monotonic_count
+    return figure
 
 
 def main():
@@ -392,31 +365,74 @@ def main():
     search_series = load_search_scaling(search_path)
     learning_series = load_learning_scaling(args.learning_dir)
 
-    figure, monotonic_count = plot_figure(search_series, learning_series)
+    ylims = {
+        dataset: shared_column_ylim(search_series[dataset], learning_series[dataset])
+        for dataset in DATASET_ORDER
+    }
+    search_figure = plot_row(
+        search_series,
+        SEARCH_ROUNDS,
+        SEARCH_COLOR,
+        r"More Search $\rightarrow$ Stronger Search Policy",
+        r"Maximum OPTS search rounds $S_{\max}$",
+        ylims,
+    )
+    learning_figure = plot_row(
+        learning_series,
+        TRAINING_STEPS,
+        LEARNING_COLOR,
+        r"Stronger Policy $\rightarrow$ Stronger Search",
+        r"Training step (fixed search budget: $S_{\max}=3$)",
+        ylims,
+    )
+    monotonic_count = sum(
+        is_monotonic(search_series[dataset]) for dataset in DATASET_ORDER
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(
+    search_figure.savefig(
         args.output,
         bbox_inches="tight",
         pad_inches=0.035,
-        metadata={"Title": "Search-Learning Co-Scaling of OPTS"},
+        metadata={"Title": "Search-Budget Scaling of OPTS"},
     )
 
     if args.png_output:
         args.png_output.parent.mkdir(parents=True, exist_ok=True)
-        figure.savefig(
+        search_figure.savefig(
             args.png_output,
             dpi=300,
             bbox_inches="tight",
             pad_inches=0.035,
         )
 
-    plt.close(figure)
+    args.learning_output.parent.mkdir(parents=True, exist_ok=True)
+    learning_figure.savefig(
+        args.learning_output,
+        bbox_inches="tight",
+        pad_inches=0.035,
+        metadata={"Title": "Base-Policy Scaling of OPTS"},
+    )
+
+    if args.learning_png_output:
+        args.learning_png_output.parent.mkdir(parents=True, exist_ok=True)
+        learning_figure.savefig(
+            args.learning_png_output,
+            dpi=300,
+            bbox_inches="tight",
+            pad_inches=0.035,
+        )
+
+    plt.close(search_figure)
+    plt.close(learning_figure)
     print(f"Search scaling: {search_path}")
     print(f"Learning scaling: {args.learning_dir}")
     print(f"Top-row monotonic datasets: {monotonic_count}/{len(DATASET_ORDER)}")
     print(f"Wrote {args.output}")
     if args.png_output:
         print(f"Wrote {args.png_output}")
+    print(f"Wrote {args.learning_output}")
+    if args.learning_png_output:
+        print(f"Wrote {args.learning_png_output}")
 
 
 if __name__ == "__main__":
