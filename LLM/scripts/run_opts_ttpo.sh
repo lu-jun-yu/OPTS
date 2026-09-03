@@ -3,7 +3,8 @@ export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=1.7B-Base
-Experiment_Name=opts_ttpo_0903_n8_s7_${MODEL_SIZE}
+Max_Search=7
+Experiment_Name=opts_ttpo_0903_n8_s${Max_Search}_${MODEL_SIZE}
 RAY_TEMP_DIR="/tmp/ray/${Experiment_Name}"
 
 cleanup_ray_temp() {
@@ -45,7 +46,7 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 python3 -m trainer.main_opts_ttpo \
  actor_rollout_ref.rollout.val_kwargs.do_sample=True \
  actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
  actor_rollout_ref.rollout.val_kwargs.top_p=0.95 \
- actor_rollout_ref.rollout.max_search_per_tree=7 \
+ actor_rollout_ref.rollout.max_search_per_tree=${Max_Search} \
  critic.enable=True \
  critic.optim.lr=1e-5 \
  critic.model.path=models/Qwen3-${MODEL_SIZE} \
