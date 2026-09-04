@@ -2252,6 +2252,14 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
         otrc_baseline_mode = self.config.algorithm.get("otrc_baseline", "zero")
         if otrc_baseline_mode not in ("zero", "mean"):
             raise ValueError(f"algorithm.otrc_baseline must be 'zero' or 'mean', got {otrc_baseline_mode}")
+        ttpo_loss_denominator = str(
+            self.config.algorithm.get("ttpo_loss_denominator", "weights")
+        ).lower()
+        if ttpo_loss_denominator not in ("tokens", "weights"):
+            raise ValueError(
+                "algorithm.ttpo_loss_denominator must be 'tokens' or 'weights', "
+                f"got {ttpo_loss_denominator}"
+            )
 
         for epoch in range(current_epoch, self.config.trainer.total_epochs):
             for batch_idx in range(len(self.train_dataloader)):
@@ -2566,11 +2574,19 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                         batch.batch["branch_weight"] = branch_weight
                         # Monitoring keeps the original equal-branch weighting.
                         batch.batch["return_branch_weight"] = branch_weight
-                        # Global weighted-token-mean: pre-compute the global
-                        # denominator sum_t(mask_t * w_t) so every micro-batch and
-                        # DP rank divides by the same value (no all_reduce).
-                        weighted_mask = batch.batch["response_mask"].float() * branch_weight
-                        batch.meta_info["weighted_weight_sum"] = float(weighted_mask.sum().item())
+                        # Pre-compute one global denominator so every micro-batch
+                        # and DP rank uses the same TTPO loss scale (no all_reduce).
+                        response_mask = batch.batch["response_mask"].float()
+                        weighted_mask = response_mask * branch_weight
+                        if ttpo_loss_denominator == "tokens":
+                            loss_denominator = response_mask.sum()
+                        else:
+                            loss_denominator = weighted_mask.sum()
+                        if loss_denominator.item() <= 0:
+                            raise ValueError("TTPO loss denominator must be positive")
+                        # The legacy meta-info key is consumed by actor and critic
+                        # workers as the global denominator for weighted losses.
+                        batch.meta_info["weighted_weight_sum"] = float(loss_denominator.item())
                         batch.batch["advantages"] = weighted_masked_whiten(
                             advantages=batch.batch["advantages"],
                             response_mask=batch.batch["response_mask"],

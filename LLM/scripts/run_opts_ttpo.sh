@@ -4,6 +4,7 @@ export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=1.7B-Base
 Max_Search=7
+TTPO_LOSS_DENOMINATOR="${TTPO_LOSS_DENOMINATOR:-tokens}"  # tokens | weights
 Experiment_Name=opts_ttpo_0903_n8_s${Max_Search}_${MODEL_SIZE}
 RAY_TEMP_DIR="/tmp/ray/${Experiment_Name}"
 
@@ -58,6 +59,7 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 python3 -m trainer.main_opts_ttpo \
  algorithm.use_kl_in_reward=False \
  algorithm.kl_ctrl.kl_coef=0.0 \
  algorithm.lam=0.999 \
+ +algorithm.ttpo_loss_denominator=${TTPO_LOSS_DENOMINATOR} \
  +algorithm.max_searched_tree_ratio=0.3 \
  +algorithm.otrc_baseline=zero \
  trainer.logger='["console","wandb"]' \
