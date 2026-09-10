@@ -17,6 +17,7 @@ online greedy-path response snapshots such as value_opts_responses_k32.
 """
 
 import os
+import random
 import sys
 from collections import defaultdict
 
@@ -53,7 +54,6 @@ from trainer.opts_ttpo.ray_trainer import (
     PromptBuffer,
     compute_episodic_returns,
     compute_response_mask,
-    decode_response_strs,
     merge_batches,
     prepare_next_round_input,
     refresh_tree_search_states,
@@ -62,6 +62,7 @@ from trainer.opts_ttpo.ray_trainer import (
     selected_to_branch_points,
 )
 from verl.trainer.ppo.reward import compute_reward
+from utils.response_boundary import decode_response_strs
 
 
 def _select_first(config, *paths, default=None):
@@ -110,6 +111,13 @@ def run_generation(config) -> None:
 def main_task(config):
     pprint(OmegaConf.to_container(config, resolve=True))
     OmegaConf.resolve(config)
+
+    # Optional for fixed-seed inference sweeps; leave existing runs unchanged.
+    seed = OmegaConf.select(config, "data.seed")
+    if seed is not None:
+        random.seed(int(seed))
+        np.random.seed(int(seed))
+        torch.manual_seed(int(seed))
 
     actor_worker_config = _get_actor_worker_config(config)
     rollout_config = _get_rollout_config(config)

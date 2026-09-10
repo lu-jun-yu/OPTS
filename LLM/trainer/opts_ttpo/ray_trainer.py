@@ -68,6 +68,7 @@ from .core_algos import (
     compute_branch_weight,
 )
 from utils.logger_batch import *
+from utils.response_boundary import decode_response_strs
 
 
 @dataclass
@@ -215,20 +216,6 @@ def compute_response_mask(data: DataProto):
     response_length = responses.size(1)
     attention_mask = data.batch["attention_mask"]
     return attention_mask[:, -response_length:]
-
-
-def decode_response_strs(batch, tokenizer, max_prompt_length, response_length, skip_special_tokens=True):
-    """Decode each sample's full response (raw_prompt_len -> +response_length) into strings."""
-    input_ids = batch.batch["input_ids"]
-    attention_mask = batch.batch["attention_mask"]
-    raw_prompt_lens = batch.non_tensor_batch["raw_prompt_len"]
-    responses = []
-    for i in range(input_ids.shape[0]):
-        valid_prompt_len = int(attention_mask[i, :max_prompt_length].sum().item())
-        start_pos = (max_prompt_length - valid_prompt_len) + int(raw_prompt_lens[i])
-        response_ids = input_ids[i, start_pos:start_pos + response_length]
-        responses.append(tokenizer.decode(response_ids, skip_special_tokens=skip_special_tokens))
-    return responses
 
 
 def compute_advantage(
@@ -593,7 +580,6 @@ def refresh_tree_search_states(
     else:
         advantages = batch.batch["advantages"]
     response_mask = batch.batch["response_mask"]
-    responses = batch.batch["responses"]
 
     uid = batch.non_tensor_batch["uid"]
     rid = batch.non_tensor_batch["rid"]
@@ -623,24 +609,8 @@ def refresh_tree_search_states(
             best_child = int(child_indices[int(np.argmax(child_adv0))])
             best_child_idx[parent_idx, pos] = best_child
 
-    boxed_pos = torch.full((global_batch_size,), response_len, device=device, dtype=torch.long)
-    if tokenizer is not None:
-        boxed_pos = response_lengths.clone()
-        matches = torch.zeros((global_batch_size, response_len), device=device, dtype=torch.bool)
-        for pat_str in ("\\boxed", " \\boxed"):
-            pat = tokenizer.encode(pat_str, add_special_tokens=False)
-            w = len(pat)
-            if w == 0 or w > response_len:
-                continue
-            pat_tensor = torch.tensor(pat, device=device)
-            windows = responses.unfold(dimension=1, size=w, step=1)
-            m = (windows == pat_tensor.view(1, 1, -1)).all(dim=-1)
-            valid_limit = (response_lengths - w + 1).clamp(min=0)
-            m = m & (torch.arange(response_len - w + 1, device=device).unsqueeze(0) < valid_limit.unsqueeze(1))
-            matches[:, : m.shape[1]] |= m
-        has_boxed = matches.any(dim=1)
-        first_boxed_pos = matches.to(torch.long).argmax(dim=1)
-        boxed_pos = torch.where(has_boxed, first_boxed_pos, boxed_pos)
+    if "first_boxed_token_pos" not in batch.non_tensor_batch and tokenizer is not None:
+        decode_response_strs(batch, tokenizer, prompt_len, response_len)
 
     root_mask = np.array([parent_rid is None for parent_rid in pid], dtype=bool)
     uid_to_root_indices: Dict[Any, list] = defaultdict(list)
@@ -694,25 +664,32 @@ def refresh_tree_search_states(
         last_otrc = last_otrc_ * mask_u + (1 - mask_u) * last_otrc
         otrc_score[:, u] = last_otrc
 
-    prompt_valid = prompt_lengths[path_idx] + path_t < max_prompt_length
-    boxed_valid = path_t <= boxed_pos[path_idx]
-
     otrc_for_argmax = torch.where(path_mask, otrc_score, neg_inf)
     row_idx = torch.arange(num_trees, device=device)
     max_pos = otrc_for_argmax.argmax(dim=1)
     max_otrc_score = otrc_score[row_idx, max_pos]
 
-    last_valid = (prompt_valid & boxed_valid).sum(dim=1) - 1
-    clamped_u = torch.minimum(max_pos, last_valid)
-
     terminal_u = path_mask.to(torch.long).sum(dim=1) - 1
+    terminal_traj = path_idx[row_idx, terminal_u]
+    # The terminal trajectory contains this greedy path's complete answer.
+    # Its absolute boxed position also handles markers spanning ancestor/suffix
+    # boundaries. An ancestor's discarded continuation must not constrain it.
+    boxed_limit = terminal_u
+    if "first_boxed_token_pos" in batch.non_tensor_batch:
+        boxed_positions = torch.as_tensor(
+            batch.non_tensor_batch["first_boxed_token_pos"], device=device, dtype=torch.long
+        )[terminal_traj]
+        boxed_limit = torch.where(boxed_positions >= 0, boxed_positions, terminal_u)
+    prompt_valid = prompt_lengths[path_idx] + path_t < max_prompt_length
+    boxed_valid = torch.arange(path_len, device=device).unsqueeze(0) <= boxed_limit.unsqueeze(1)
+    last_valid = (path_mask & prompt_valid & boxed_valid).sum(dim=1) - 1
+    clamped_u = torch.minimum(max_pos, last_valid)
 
     raw_traj = path_idx[row_idx, max_pos]
     raw_pos = path_t[row_idx, max_pos]
     clamped_traj = path_idx[row_idx, clamped_u]
     clamped_pos = path_t[row_idx, clamped_u]
     clamped_otrc_score = otrc_score[row_idx, clamped_u]
-    terminal_traj = path_idx[row_idx, terminal_u]
     terminal_pos = path_t[row_idx, terminal_u]
 
     for i, u in enumerate(active_uids):
