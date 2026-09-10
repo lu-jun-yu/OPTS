@@ -217,11 +217,16 @@ def compute_treegae_advantage_return(
     raw_prompt_len: Optional[np.ndarray] = None,
     max_prompt_len: Optional[int] = None,
     advantages: Optional[torch.Tensor] = None,
+    backup: str = "max",
+    reward_min: float = 0.0,
+    reward_max: float = 1.0,
 ):
     """Compute TreeGAE advantage for tree-structured trajectories.
 
     TreeGAE extends standard GAE to handle tree structures where trajectories can branch.
-    At branch nodes, the maximum successor advantage is propagated backward.
+    At branch nodes, the max (backup="max") or mean (backup="mean") successor advantage
+    is propagated backward. Call once per backup mode with a separate pre-allocated
+    advantages tensor to keep search and learning advantages in sync.
 
     Note: For existing trajectories, advantages are already computed. This function only
     recomputes the affected subgraph. Unlike the previous ancestor-by-ancestor propagation,
@@ -261,6 +266,12 @@ def compute_treegae_advantage_return(
         advantages: `(torch.Tensor)`
             shape is (bs, response_length). Pre-allocated advantages tensor to update in-place.
             For existing trajectories, this already contains computed advantages.
+        backup: `(str)`
+            "max" or "mean" successor-advantage backup at branch nodes.
+        reward_min, reward_max: `(float)`
+            Bounds for old values used in TreeGAE and the return target. The
+            caller's raw values are preserved for critic regression and PPO
+            value-loss clipping. Rewards and return targets are not clipped.
 
     Returns:
         advantages: `(torch.Tensor)`
@@ -270,6 +281,11 @@ def compute_treegae_advantage_return(
 
     """
     with torch.no_grad():
+        if backup not in ("max", "mean"):
+            raise ValueError(f"backup must be 'max' or 'mean', got {backup}")
+        if reward_min > reward_max:
+            raise ValueError(f"reward_min ({reward_min}) must not exceed reward_max ({reward_max})")
+        values = values.clamp(min=reward_min, max=reward_max)
         rid2idx = {r: i for i, r in enumerate(rid)}
         batch_size, gen_len = token_level_rewards.shape
         device = token_level_rewards.device
@@ -291,10 +307,12 @@ def compute_treegae_advantage_return(
 
         history_len = valid_prompt_len - raw_prompt_len
 
-        def _segmented_child_max(entries, out_max, out_present):
-            """Segment-max of children's first-token advantages per (parent, pos) branch point.
+        def _segmented_child_agg(entries, out_max, out_sum, out_count):
+            """Segment-aggregate children's first-token advantages per (parent, pos) branch point.
 
             entries: list of (parent_idx, branch_position, child_idx) triples.
+            Writes the segment max into out_max, the segment sum into out_sum, and the
+            segment child count into out_count (count > 0 marks branch points present).
             """
             if not entries:
                 return
@@ -304,17 +322,23 @@ def compute_treegae_advantage_return(
             uniq_keys, inv = torch.unique(flat_keys, return_inverse=True)
             seg_max = torch.full((uniq_keys.shape[0],), float("-inf"), device=device, dtype=dtype)
             seg_max.scatter_reduce_(0, inv, child_vals, reduce="amax", include_self=True)
+            seg_sum = torch.zeros((uniq_keys.shape[0],), device=device, dtype=dtype)
+            seg_sum.scatter_add_(0, inv, child_vals)
+            seg_count = torch.zeros((uniq_keys.shape[0],), device=device, dtype=dtype)
+            seg_count.scatter_add_(0, inv, torch.ones_like(child_vals))
             out_max.view(-1)[uniq_keys] = seg_max
-            out_present.view(-1)[uniq_keys] = True
+            out_sum.view(-1)[uniq_keys] = seg_sum
+            out_count.view(-1)[uniq_keys] = seg_count
 
         child_first_adv_max = torch.zeros((batch_size, gen_len), device=device, dtype=dtype)
-        child_first_adv_present = torch.zeros((batch_size, gen_len), device=device, dtype=torch.bool)
+        child_first_adv_sum = torch.zeros((batch_size, gen_len), device=device, dtype=dtype)
+        child_first_adv_count = torch.zeros((batch_size, gen_len), device=device, dtype=dtype)
         pre_scan_entries = []
         for parent_idx, children_by_pos in enumerate(cid):
             for pos, child_rids in children_by_pos.items():
                 pos = int(pos)
                 pre_scan_entries.extend((parent_idx, pos, rid2idx[c_rid]) for c_rid in child_rids)
-        _segmented_child_max(pre_scan_entries, child_first_adv_max, child_first_adv_present)
+        _segmented_child_agg(pre_scan_entries, child_first_adv_max, child_first_adv_sum, child_first_adv_count)
 
         current_idx = torch.as_tensor(new_sample_indices, device=device, dtype=torch.long).clone()
         current_p_idx = parent_indices[current_idx]
@@ -334,16 +358,29 @@ def compute_treegae_advantage_return(
             idx = current_idx
             local_t = u - history_len[idx]
 
-            child_adv_present = child_first_adv_present[idx, local_t]
-            child_adv = child_first_adv_max[idx, local_t]
-            tree_lastgaelam = torch.where(
-                child_adv_present | last_adv_present,
-                torch.maximum(
-                    torch.where(child_adv_present, child_adv, neg_inf),
-                    torch.where(last_adv_present, lastgaelam, neg_inf),
-                ),
-                zeros_like_lastgaelam,
-            )
+            child_adv_present = child_first_adv_count[idx, local_t] > 0
+            if backup == "max":
+                child_adv = child_first_adv_max[idx, local_t]
+                tree_lastgaelam = torch.where(
+                    child_adv_present | last_adv_present,
+                    torch.maximum(
+                        torch.where(child_adv_present, child_adv, neg_inf),
+                        torch.where(last_adv_present, lastgaelam, neg_inf),
+                    ),
+                    zeros_like_lastgaelam,
+                )
+            else:
+                # mean backup: average over all successors — the continuation along the
+                # current trajectory (lastgaelam) plus every branch-off child.
+                succ_count = child_first_adv_count[idx, local_t] + last_adv_present.to(dtype)
+                succ_sum = child_first_adv_sum[idx, local_t] + torch.where(
+                    last_adv_present, lastgaelam, zeros_like_lastgaelam
+                )
+                tree_lastgaelam = torch.where(
+                    succ_count > 0,
+                    succ_sum / succ_count.clamp(min=1),
+                    zeros_like_lastgaelam,
+                )
             delta = token_level_rewards[idx, local_t] + gamma * nextvalues - values[idx, local_t]
             lastgaelam_ = delta + gamma * lam * tree_lastgaelam
 
@@ -365,7 +402,7 @@ def compute_treegae_advantage_return(
                     refresh_entries.extend(
                         (parent_idx, parent_pos, rid2idx[c_rid]) for c_rid in cid[parent_idx][parent_pos]
                     )
-                _segmented_child_max(refresh_entries, child_first_adv_max, child_first_adv_present)
+                _segmented_child_agg(refresh_entries, child_first_adv_max, child_first_adv_sum, child_first_adv_count)
 
                 next_pos = parent_cols + 1
                 next_mask = response_mask[first_parent, next_pos].to(dtype)

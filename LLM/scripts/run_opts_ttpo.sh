@@ -2,11 +2,12 @@ export NCCL_DEBUG=ERROR
 export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
-MODEL_SIZE=1.7B-Base
-Max_Search=7
-TTPO_LOSS_DENOMINATOR="${TTPO_LOSS_DENOMINATOR:-tokens}"  # tokens | weights
-Experiment_Name=opts_ttpo_0903_n8_s${Max_Search}_${MODEL_SIZE}
-RAY_TEMP_DIR="/tmp/ray/${Experiment_Name}"
+MODEL_SIZE=1.7B
+Max_Search=3
+TTPO_LOSS_DENOMINATOR="${TTPO_LOSS_DENOMINATOR:-weights}"  # tokens | weights
+LAM_SEARCH="${LAM_SEARCH:-0.99}"  # search (max-backup) TreeGAE lambda; default = algorithm.lam
+Experiment_Name=opts_ttpo_0908_n8_s${Max_Search}_slam${LAM_SEARCH}_${MODEL_SIZE}
+RAY_TEMP_DIR="/tmp/ray/s${Max_Search}_slam${LAM_SEARCH}/"
 
 cleanup_ray_temp() {
     local status=$?
@@ -53,12 +54,15 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 python3 -m trainer.main_opts_ttpo \
  critic.model.path=models/Qwen3-${MODEL_SIZE} \
  critic.model.use_remove_padding=True \
  critic.ppo_micro_batch_size_per_gpu=128 \
- critic.value_head_activation=sigmoid \
+ critic.value_head_activation=none \
  custom_reward_function.path=utils/reward_fn.py \
  custom_reward_function.name=compute_score \
  algorithm.use_kl_in_reward=False \
  algorithm.kl_ctrl.kl_coef=0.0 \
- algorithm.lam=0.999 \
+ algorithm.lam=1.0 \
+ +algorithm.reward_min=0.0 \
+ +algorithm.reward_max=1.0 \
+ +algorithm.lam_search=${LAM_SEARCH} \
  +algorithm.ttpo_loss_denominator=${TTPO_LOSS_DENOMINATOR} \
  +algorithm.max_searched_tree_ratio=0.3 \
  +algorithm.otrc_baseline=zero \
@@ -71,7 +75,7 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 python3 -m trainer.main_opts_ttpo \
  trainer.project_name=opts_ttpo_${MODEL_SIZE} \
  trainer.experiment_name=${Experiment_Name} \
  trainer.default_local_dir=/share/lujunyu/ckpts/opts_ckpts/opts_ttpo_${MODEL_SIZE}/${Experiment_Name} \
- trainer.save_freq=20 \
+ trainer.save_freq=80 \
  trainer.test_freq=20 \
  trainer.total_epochs=400 \
  trainer.total_training_steps=400 \

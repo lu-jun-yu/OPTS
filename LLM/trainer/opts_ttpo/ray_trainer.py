@@ -293,14 +293,23 @@ def compute_advantage(
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
     elif adv_estimator == AdvantageEstimator.TreeGAE:
-        # TreeGAE for OPTS_TTPO: recompute affected trajectories from new leaves upward
+        # TreeGAE for OPTS_TTPO: recompute affected trajectories from new leaves upward.
+        # Dual-lambda max-backup: batch["advantages"] (lam) drives learning,
+        # batch["advantages_search"] (lam_search) drives tree search.
+        # The search backup can use its own lambda via algorithm.lam_search
+        # (defaults to algorithm.lam).
+        lam_search = config.get("lam_search", None) if config is not None else None
+        if lam_search is None:
+            lam_search = lam
         from .core_algos import compute_treegae_advantage_return
 
         assert new_sample_indices is not None, "TreeGAE requires round-local new_sample_indices."
 
-        advantages, returns = compute_treegae_advantage_return(
+        treegae_kwargs = dict(
             token_level_rewards=data.batch["token_level_rewards"],
             values=data.batch["values"],
+            reward_min=config.get("reward_min", 0.0) if config is not None else 0.0,
+            reward_max=config.get("reward_max", 1.0) if config is not None else 1.0,
             response_mask=data.batch["response_mask"],
             attention_mask=data.batch["attention_mask"],
             gamma=gamma,
@@ -312,10 +321,20 @@ def compute_advantage(
             new_sample_indices=new_sample_indices,
             raw_prompt_len=data.non_tensor_batch["raw_prompt_len"],
             max_prompt_len=data.batch["attention_mask"].shape[1] - data.batch["response_mask"].shape[1],
+        )
+        advantages, returns = compute_treegae_advantage_return(
+            **treegae_kwargs,
             advantages=data.batch["advantages"],
+            backup="max",
         )
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
+        advantages_search, _ = compute_treegae_advantage_return(
+            **{**treegae_kwargs, "lam": lam_search},
+            advantages=data.batch["advantages_search"],
+            backup="max",
+        )
+        data.batch["advantages_search"] = advantages_search
     else:
         # handle all other adv estimator type other than GAE and GRPO
         adv_estimator_fn = core_algos.get_adv_estimator_fn(adv_estimator)
@@ -567,7 +586,12 @@ def refresh_tree_search_states(
     if not affected_uid_set:
         return tree_search_state_by_uid
 
-    advantages = batch.batch["advantages"]
+    # Search consumes the search-side (lam_search) advantages when available;
+    # falls back to batch["advantages"] for single-backup estimators.
+    if "advantages_search" in batch.batch.keys():
+        advantages = batch.batch["advantages_search"]
+    else:
+        advantages = batch.batch["advantages"]
     response_mask = batch.batch["response_mask"]
     responses = batch.batch["responses"]
 
@@ -2473,6 +2497,8 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                             batch_size, response_len = batch.batch["responses"].shape
                             batch.batch["state_branches"] = torch.ones(batch_size, response_len)
                             batch.batch["advantages"] = torch.zeros(batch_size, response_len)
+                            # max-backup advantages for tree search (dual-backup TreeGAE)
+                            batch.batch["advantages_search"] = torch.zeros(batch_size, response_len)
                             batch.batch["returns"] = torch.zeros(batch_size, response_len)
 
                             # Merge to global_batch
