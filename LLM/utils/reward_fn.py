@@ -3,7 +3,7 @@
 """
 Reward function for \\boxed{answer} format.
 
-A response earns reward iff it contains \\boxed{...} with the correct answer.
+A response earns reward iff its first \\boxed{...} contains the correct answer.
 """
 
 import re
@@ -19,20 +19,9 @@ def _cached_parse(s: str):
 
 
 def extract_answer(response_str: str) -> Optional[str]:
-    """Extract the answer from \\boxed{...}.
-
-    Searches the content after the last </think> tag when present (to skip
-    intermediate \\boxed{} inside thinking), otherwise the whole response.
-    """
-    # Strip thinking block: only look after </think>
-    think_end = response_str.rfind("</think>")
-    if think_end != -1:
-        answer_part = response_str[think_end + len("</think>"):]
-    else:
-        answer_part = response_str
-
+    """Extract the first \\boxed{...} in the full response, ignoring think tags."""
     # Match \boxed{...}, handling nested braces
-    matches = re.findall(r'\\boxed\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', answer_part, re.DOTALL)
+    matches = re.findall(r'\\boxed\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', response_str, re.DOTALL)
     if matches:
         return matches[0].strip()
     return None
@@ -72,7 +61,7 @@ def compute_score(
 ) -> dict:
     """Compute the score for a response.
 
-    Reward = correct_reward iff \\boxed{...} is present and the extracted
+    Reward = correct_reward iff the first \\boxed{...} is present and its
     answer matches ground truth; otherwise 0.
 
     Args:
