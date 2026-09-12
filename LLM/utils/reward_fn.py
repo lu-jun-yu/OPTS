@@ -3,35 +3,61 @@
 """
 Reward function for \\boxed{answer} format.
 
-A response earns reward iff its first \\boxed{...} contains the correct answer.
+A response earns reward iff its last complete \\boxed{...} contains the correct answer.
 """
 
 import re
 from functools import lru_cache
 from typing import Optional
 
-from math_verify import parse, verify
+from math_verify import LatexExtractionConfig, parse, verify
 
 
 @lru_cache(maxsize=65536)
 def _cached_parse(s: str):
-    return parse(s)
+    # The box was already extracted: parse the whole answer, not numbers inside it.
+    s = s.strip()
+    for left, right in (("$$", "$$"), ("$", "$"), (r"\(", r"\)"), (r"\[", r"\]")):
+        if s.startswith(left) and s.endswith(right):
+            s = s[len(left):-len(right)].strip()
+            break
+    # Use division: math-verify's percentage comparison also accepts 10% == 10.
+    percent = re.search(r"(\\?%|(?i:percentage|percent|pct))\s*$", s)
+    if percent:
+        s = rf"({s[:percent.start()]})/100"
+    return parse(
+        rf"\[{s}\]",
+        extraction_config=[LatexExtractionConfig()],
+        extraction_mode="first_match",
+        fallback_mode="no_fallback",
+    )
 
 
 def extract_answer(response_str: str) -> Optional[str]:
-    """Extract the first \\boxed{...} in the full response, ignoring think tags."""
-    # Match \boxed{...}, handling nested braces
-    matches = re.findall(r'\\boxed\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', response_str, re.DOTALL)
-    if matches:
-        return matches[0].strip()
+    """Extract the last complete \\boxed{...}, regardless of think tags."""
+    for match in reversed(list(re.finditer(r'\\boxed\{', response_str))):
+        start = match.end()
+        depth, escaped = 1, False
+        for pos in range(start, len(response_str)):
+            char = response_str[pos]
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return response_str[start:pos].strip()
     return None
 
 
 def validate_answer(answer: str, ground_truth: str) -> bool:
     """Validate if the extracted answer matches the ground truth.
 
-    Uses math-verify for robust mathematical equivalence checking,
-    with a fallback to simple string comparison.
+    Uses math-verify on the complete answer. If parsing fails, only identical
+    nonempty strings (ignoring surrounding whitespace) are accepted.
 
     Supported match types (via math-verify):
     - Plain numbers: 42 == 42.0
@@ -41,14 +67,17 @@ def validate_answer(answer: str, ground_truth: str) -> bool:
     - Percentages: 10\\% == 0.1
     - Text/multiple choice: A, B, C, D
     """
+    answer, ground_truth = answer.strip(), ground_truth.strip()
+    if not answer or not ground_truth:
+        return False
     try:
         parsed_answer = _cached_parse(answer)
         parsed_gt = _cached_parse(ground_truth)
-        return verify(parsed_gt, parsed_answer)
+        if parsed_answer and parsed_gt:
+            return verify(parsed_gt, parsed_answer)
     except Exception:
-        # Fallback: simple string comparison
-        norm = lambda s: re.sub(r'[\$,\s]', '', s.strip())
-        return norm(answer) == norm(ground_truth)
+        pass
+    return answer == ground_truth
 
 
 def compute_score(
@@ -61,7 +90,7 @@ def compute_score(
 ) -> dict:
     """Compute the score for a response.
 
-    Reward = correct_reward iff the first \\boxed{...} is present and its
+    Reward = correct_reward iff the last complete \\boxed{...} is present and its
     answer matches ground truth; otherwise 0.
 
     Args:

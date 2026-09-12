@@ -609,7 +609,7 @@ def refresh_tree_search_states(
             best_child = int(child_indices[int(np.argmax(child_adv0))])
             best_child_idx[parent_idx, pos] = best_child
 
-    if "first_boxed_token_pos" not in batch.non_tensor_batch and tokenizer is not None:
+    if "last_boxed_token_pos" not in batch.non_tensor_batch and tokenizer is not None:
         decode_response_strs(batch, tokenizer, prompt_len, response_len)
 
     root_mask = np.array([parent_rid is None for parent_rid in pid], dtype=bool)
@@ -672,15 +672,17 @@ def refresh_tree_search_states(
     terminal_u = path_mask.to(torch.long).sum(dim=1) - 1
     terminal_traj = path_idx[row_idx, terminal_u]
     # The terminal trajectory contains this greedy path's complete answer.
-    # Its absolute boxed position also handles markers spanning ancestor/suffix
+    # Its last complete boxed position also handles markers spanning ancestor/suffix
     # boundaries. An ancestor's discarded continuation must not constrain it.
     boxed_limit = terminal_u
-    if "first_boxed_token_pos" in batch.non_tensor_batch:
+    if "last_boxed_token_pos" in batch.non_tensor_batch:
         boxed_positions = torch.as_tensor(
-            batch.non_tensor_batch["first_boxed_token_pos"], device=device, dtype=torch.long
+            batch.non_tensor_batch["last_boxed_token_pos"], device=device, dtype=torch.long
         )[terminal_traj]
         boxed_limit = torch.where(boxed_positions >= 0, boxed_positions, terminal_u)
     prompt_valid = prompt_lengths[path_idx] + path_t < max_prompt_length
+    # The selected token is regenerated (branch point is its parent), so <=
+    # excludes the boxed opening token itself from the next round's prompt.
     boxed_valid = torch.arange(path_len, device=device).unsqueeze(0) <= boxed_limit.unsqueeze(1)
     last_valid = (path_mask & prompt_valid & boxed_valid).sum(dim=1) - 1
     clamped_u = torch.minimum(max_pos, last_valid)

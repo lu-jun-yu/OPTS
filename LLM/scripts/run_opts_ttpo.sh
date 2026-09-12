@@ -3,10 +3,10 @@ export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=1.7B
-Max_Search=3
+Max_Search=1
 TTPO_LOSS_DENOMINATOR="${TTPO_LOSS_DENOMINATOR:-weights}"  # tokens | weights
-LAM_SEARCH="${LAM_SEARCH:-0.99}"  # search (max-backup) TreeGAE lambda; default = algorithm.lam
-Experiment_Name=opts_ttpo_0908_n8_s${Max_Search}_slam${LAM_SEARCH}_${MODEL_SIZE}
+LAM_SEARCH="${LAM_SEARCH:-0.998}"  # search (max-backup) TreeGAE lambda; default = algorithm.lam
+Experiment_Name=opts_ttpo_0912_n8_s${Max_Search}_slam${LAM_SEARCH}_${MODEL_SIZE}
 RAY_TEMP_DIR="/tmp/ray/s${Max_Search}_slam${LAM_SEARCH}/"
 
 cleanup_ray_temp() {
@@ -23,7 +23,7 @@ trap cleanup_ray_temp EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-CUDA_VISIBLE_DEVICES=4,5,6,7 python3 -m trainer.main_opts_ttpo \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m trainer.main_opts_ttpo \
  algorithm.adv_estimator=treegae \
  data.train_files=data/train.parquet \
  data.val_files=data/test.parquet \

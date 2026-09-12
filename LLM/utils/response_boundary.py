@@ -1,4 +1,4 @@
-"""Reuse OPTS answer text and locate its first boxed marker in original tokens."""
+"""Reuse OPTS answer text and locate boxed boundaries in original tokens."""
 
 import json
 from bisect import bisect_right
@@ -57,14 +57,43 @@ def find_first_boxed_token(tokenizer, response_ids):
     return -1 if byte_pos < 0 else bisect_right(list(accumulate(map(len, pieces))), byte_pos)
 
 
+def find_last_boxed_token(tokenizer, response_ids):
+    """Return the token containing the last complete box's opening marker.
+
+    Match original token bytes, including inherited answer prefixes. No text
+    decoding or re-encoding is needed, even when a marker spans several tokens.
+    """
+    if hasattr(response_ids, "tolist"):
+        response_ids = response_ids.tolist()
+    token_bytes = _token_bytes(tokenizer)
+    pieces = [token_bytes[token_id] for token_id in response_ids]
+    text = b"".join(pieces)
+    byte_pos = text.rfind(b"\\boxed{")
+    while byte_pos >= 0:
+        depth, escaped = 1, False
+        for char in text[byte_pos + len(b"\\boxed{"):]:
+            if escaped:
+                escaped = False
+            elif char == ord("\\"):
+                escaped = True
+            elif char == ord("{"):
+                depth += 1
+            elif char == ord("}"):
+                depth -= 1
+                if depth == 0:
+                    return bisect_right(list(accumulate(map(len, pieces))), byte_pos)
+        byte_pos = text.rfind(b"\\boxed{", 0, byte_pos)
+    return -1
+
+
 def decode_response_strs(batch, tokenizer, max_prompt_length, response_length, skip_special_tokens=True):
-    """Cache each full answer and its first boxed token, excluding the raw prompt.
+    """Cache each full answer and its last complete boxed token, excluding the raw prompt.
 
     The boxed position is relative to the full generated answer, not the child
     suffix. These per-trajectory fields survive batch merging/reordering, but
     prepare_next_round_input does not copy them into a newly generated child.
     """
-    if skip_special_tokens and "first_boxed_token_pos" in batch.non_tensor_batch:
+    if skip_special_tokens and "last_boxed_token_pos" in batch.non_tensor_batch:
         return batch.non_tensor_batch["full_response_str"].tolist()
 
     input_ids = batch.batch["input_ids"]
@@ -84,10 +113,10 @@ def decode_response_strs(batch, tokenizer, max_prompt_length, response_length, s
             if text is None:  # Legacy/offline rollout without a decoded reward text.
                 text = tokenizer.decode(response_ids, skip_special_tokens=True)
             responses.append(text)
-            boxed_positions.append(find_first_boxed_token(tokenizer, response_ids) if "\\boxed" in text else -1)
+            boxed_positions.append(find_last_boxed_token(tokenizer, response_ids) if "\\boxed" in text else -1)
         else:
             responses.append(tokenizer.decode(response_ids, skip_special_tokens=False))
     if skip_special_tokens:
         batch.non_tensor_batch["full_response_str"] = np.array(responses, dtype=object)
-        batch.non_tensor_batch["first_boxed_token_pos"] = np.array(boxed_positions, dtype=np.int64)
+        batch.non_tensor_batch["last_boxed_token_pos"] = np.array(boxed_positions, dtype=np.int64)
     return responses

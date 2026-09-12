@@ -4,7 +4,7 @@
 Offline evaluation for math reasoning benchmarks.
 
 Two modes:
-  A) Generate + score (default): run vLLM on test sets, score with math_verify,
+  A) Generate + score (default): run vLLM on test sets, score with the project reward rules,
      compute unbiased pass@k.
   B) Score pre-generated parquet (--pregenerated_parquet): read a parquet produced
      by verl.trainer.main_generation / main_opts_generation and compute any of
@@ -62,8 +62,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from math_verify.metric import math_metric
-from math_verify.parser import ExprExtractionConfig, LatexExtractionConfig
 
 # Project extractor/validator (reused so scoring semantics match training).
 # We only use answer correctness here — format reward is intentionally excluded.
@@ -87,30 +85,8 @@ DATASET_PATHS = {
 # Scoring (consistent with verl training reward)
 # ---------------------------------------------------------------------------
 def compute_score(model_output: str, ground_truth: str) -> float:
-    """Score a single response against ground truth."""
-    return _score_math_verify(model_output, ground_truth)
-
-
-def _score_math_verify(model_output: str, ground_truth: str) -> float:
-    verify_func = math_metric(
-        gold_extraction_target=(LatexExtractionConfig(),),
-        pred_extraction_target=(ExprExtractionConfig(), LatexExtractionConfig()),
-    )
-    ground_truth_boxed = "\\boxed{" + ground_truth + "}"
-    score, _ = verify_func([ground_truth_boxed], [model_output])
-    return float(score)
-
-
-def strip_thinking(text: str) -> str:
-    """Strip <think>...</think> block, return only the final answer part.
-
-    The model outputs: <think>reasoning...</think>\n\nThe answer is \\boxed{...}
-    We only score the part after </think> to avoid intermediate \\boxed{} inside thinking.
-    """
-    idx = text.rfind("</think>")
-    if idx != -1:
-        return text[idx + len("</think>"):].strip()
-    return text
+    """Score the full response with the same correctness rule as parquet mode."""
+    return float(is_answer_correct(model_output, ground_truth))
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +103,7 @@ def pass_at_k(n: int, c: int, k: int) -> float:
 # Answer-only correctness (parquet-mode metrics — format reward is excluded)
 # ---------------------------------------------------------------------------
 def is_answer_correct(response: str, ground_truth: str) -> bool:
-    """True iff the \\boxed{...} after </think> matches ground truth."""
+    """Check the last complete \\boxed{...} in the full response, ignoring think tags."""
     answer = project_extract_answer(response)
     if answer is None:
         return False
@@ -591,7 +567,7 @@ def main():
         details = []
         for i, output in enumerate(tqdm(outputs, desc="Scoring")):
             gt = ground_truths[i]
-            scores = [compute_score(strip_thinking(c.text), gt) for c in output.outputs]
+            scores = [compute_score(c.text, gt) for c in output.outputs]
             details.append({
                 "index": i,
                 "ground_truth": gt,
