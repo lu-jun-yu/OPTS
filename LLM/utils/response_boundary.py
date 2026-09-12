@@ -7,6 +7,8 @@ from itertools import accumulate
 
 import numpy as np
 
+from utils.boxed import find_last_boxed_span
+
 
 @lru_cache(maxsize=8)
 def _token_bytes(tokenizer):
@@ -68,22 +70,8 @@ def find_last_boxed_token(tokenizer, response_ids):
     token_bytes = _token_bytes(tokenizer)
     pieces = [token_bytes[token_id] for token_id in response_ids]
     text = b"".join(pieces)
-    byte_pos = text.rfind(b"\\boxed{")
-    while byte_pos >= 0:
-        depth, escaped = 1, False
-        for char in text[byte_pos + len(b"\\boxed{"):]:
-            if escaped:
-                escaped = False
-            elif char == ord("\\"):
-                escaped = True
-            elif char == ord("{"):
-                depth += 1
-            elif char == ord("}"):
-                depth -= 1
-                if depth == 0:
-                    return bisect_right(list(accumulate(map(len, pieces))), byte_pos)
-        byte_pos = text.rfind(b"\\boxed{", 0, byte_pos)
-    return -1
+    span = find_last_boxed_span(text)
+    return -1 if span is None else bisect_right(list(accumulate(map(len, pieces))), span[0])
 
 
 def decode_response_strs(batch, tokenizer, max_prompt_length, response_length, skip_special_tokens=True):

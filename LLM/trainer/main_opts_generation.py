@@ -170,12 +170,12 @@ def main_task(config):
     # Setup reward_fn for reward-guided mode
     reward_fn = None
     if reward_mode == "reward":
-        from utils.reward_fn import compute_score
+        from utils.reward_fn import compute_score_sync
         from verl.workers.reward_manager.naive import NaiveRewardManager
         reward_fn = NaiveRewardManager(
             tokenizer=tokenizer,
             num_examine=0,
-            compute_score=compute_score,
+            compute_score=compute_score_sync,
         )
 
     # Create resource pool with colocated workers
