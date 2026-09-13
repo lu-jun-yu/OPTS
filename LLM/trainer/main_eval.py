@@ -66,7 +66,7 @@ from tqdm import tqdm
 # Project extractor/validator (reused so scoring semantics match training).
 # We only use answer correctness here — format reward is intentionally excluded.
 from utils.reward_fn import extract_answer as project_extract_answer
-from utils.reward_fn import validate_answer as project_validate_answer
+from utils.bounded_math import validate_answer as project_validate_answer
 
 # ---------------------------------------------------------------------------
 # Dataset registry

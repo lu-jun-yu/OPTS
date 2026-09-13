@@ -609,7 +609,7 @@ def refresh_tree_search_states(
             best_child = int(child_indices[int(np.argmax(child_adv0))])
             best_child_idx[parent_idx, pos] = best_child
 
-    if "last_boxed_token_pos" not in batch.non_tensor_batch and tokenizer is not None:
+    if "first_boxed_token_pos" not in batch.non_tensor_batch and tokenizer is not None:
         decode_response_strs(batch, tokenizer, prompt_len, response_len)
 
     root_mask = np.array([parent_rid is None for parent_rid in pid], dtype=bool)
@@ -672,12 +672,12 @@ def refresh_tree_search_states(
     terminal_u = path_mask.to(torch.long).sum(dim=1) - 1
     terminal_traj = path_idx[row_idx, terminal_u]
     # The terminal trajectory contains this greedy path's complete answer.
-    # Its last complete boxed position also handles markers spanning ancestor/suffix
+    # Its first boxed position also handles markers spanning ancestor/suffix
     # boundaries. An ancestor's discarded continuation must not constrain it.
     boxed_limit = terminal_u
-    if "last_boxed_token_pos" in batch.non_tensor_batch:
+    if "first_boxed_token_pos" in batch.non_tensor_batch:
         boxed_positions = torch.as_tensor(
-            batch.non_tensor_batch["last_boxed_token_pos"], device=device, dtype=torch.long
+            batch.non_tensor_batch["first_boxed_token_pos"], device=device, dtype=torch.long
         )[terminal_traj]
         boxed_limit = torch.where(boxed_positions >= 0, boxed_positions, terminal_u)
     prompt_valid = prompt_lengths[path_idx] + path_t < max_prompt_length
@@ -1054,17 +1054,20 @@ def weighted_masked_whiten(
     Similar to masked_whiten in verl.utils.torch_functional, but uses
     TTPO branch-weight correction over valid response tokens:
       mean = sum(adv * w) / sum(w)
-      var  = sum((adv - mean)^2 * w) / sum(w)
+      var  = sum((adv - mean)^2 * w) / (sum(w) - sum(w^2) / sum(w))
       adv' = (adv - mean) / sqrt(var + eps)
 
-    Statistics are computed on valid response tokens only.
+    Statistics are computed on valid response tokens only, with the same
+    weighted degrees-of-freedom correction as CleanRL. When the corrected
+    denominator is nonpositive, fall back to the total weight.
     """
     valid = response_mask.to(dtype=advantages.dtype)
     weight = valid * branch_weight.to(dtype=advantages.dtype)
     weight_sum = weight.sum()
 
     adv_mean = (advantages * weight).sum() / weight_sum
-    denom = weight_sum - 1 if weight_sum - 1 > 0 else weight_sum
+    denom = weight_sum - weight.square().sum() / weight_sum
+    denom = denom if denom > 0 else weight_sum
     adv_var = ((advantages - adv_mean) ** 2 * weight).sum() / denom
     normalized = (advantages - adv_mean) * torch.rsqrt(adv_var + eps)
     if not shift_mean:
@@ -1577,11 +1580,13 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
         data_sources = np.concatenate(data_source_lst, axis=0)
 
         data_src2var2metric2val = process_validation_metrics(
-            data_sources, sample_uids, reward_extra_infos_dict, compute_bootstrap=False
+            data_sources, sample_uids,
+            {key: values for key, values in reward_extra_infos_dict.items() if key != "pred"},
+            compute_bootstrap=False,
         )
         metric_dict = {}
         target_n = int(self.config.actor_rollout_ref.rollout.val_kwargs.n)
-        target_acc_metric_names = (f"avg@{target_n}", f"pass@{target_n}", f"cons@{target_n}")
+        target_acc_metric_names = (f"avg@{target_n}", f"pass@{target_n}")
         target_reward_metric_names = (f"mean@{target_n}",)
         for data_source, var2metric2val in data_src2var2metric2val.items():
             acc_metric2val = var2metric2val.get("acc", {})
