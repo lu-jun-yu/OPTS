@@ -146,6 +146,7 @@ Each sample follows the verl-compatible chat format:
 **Training data filters:**
 - Source filter: only competition-level problems (olympiads, amc_aime)
 - Length filter: problem <= 2000 chars, solution <= 3000 chars
+- Prompt length filter: <= 1024 tokens after chat templating (Qwen3 tokenizer)
 - Test set deduplication: removed overlapping problems with all test benchmarks
 - Stratified sampling by source category
 - Answer parsability: verified via [math-verify](https://github.com/huggingface/Math-Verify) to ensure reliable reward signals

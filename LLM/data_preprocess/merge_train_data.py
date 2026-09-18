@@ -1,7 +1,14 @@
 import argparse
 import os
+import re
 
 import datasets
+from transformers import AutoTokenizer
+
+
+def norm_problem(row):
+    problem = next(m["content"] for m in row["prompt"] if m["role"] == "user")
+    return re.sub(r"\s+", "", problem).lower()
 
 
 if __name__ == "__main__":
@@ -20,6 +27,22 @@ if __name__ == "__main__":
         "--output_path",
         default="data/train.parquet",
         help="Output path for the merged dataset.",
+    )
+    parser.add_argument(
+        "--test_path",
+        default="data/test.parquet",
+        help="Path to the test set used for leak removal.",
+    )
+    parser.add_argument(
+        "--model_path",
+        default="models/Qwen3-1.7B",
+        help="Tokenizer path for the prompt length filter.",
+    )
+    parser.add_argument(
+        "--max_prompt_length",
+        type=int,
+        default=1024,
+        help="Drop prompts longer than this after chat templating.",
     )
     parser.add_argument(
         "--shuffle",
@@ -53,6 +76,25 @@ if __name__ == "__main__":
     # Merge datasets
     merged_ds = datasets.concatenate_datasets([math12k_ds, numinamath_ds])
     print(f"Merged samples: {len(merged_ds)}")
+
+    test_keys = {norm_problem(row) for row in datasets.Dataset.from_parquet(os.path.expanduser(args.test_path))}
+    tokenizer = AutoTokenizer.from_pretrained(os.path.expanduser(args.model_path))
+    seen = set()
+    keep = []
+    n_dup, n_leak, n_long = 0, 0, 0
+    for i, row in enumerate(merged_ds):
+        key = norm_problem(row)
+        if key in test_keys:
+            n_leak += 1
+        elif key in seen:
+            n_dup += 1
+        elif len(tokenizer.apply_chat_template(row["prompt"], add_generation_prompt=True, tokenize=True)) > args.max_prompt_length:
+            n_long += 1
+        else:
+            seen.add(key)
+            keep.append(i)
+    merged_ds = merged_ds.select(keep)
+    print(f"Removed {n_dup} internal duplicates, {n_leak} test-overlap and {n_long} over-length samples -> {len(merged_ds)}")
 
     # Shuffle if requested
     if args.shuffle:
