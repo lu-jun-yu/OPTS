@@ -6,7 +6,7 @@
 
 ## 1 目标
 
-在推理阶段复用 OPTS 训练的树搜索算法，通过多轮 OTRC 引导的树结构采样生成高质量响应。与 pass@k 保持相同的推理成本，但利用树搜索的优势引导来分配计算资源，从而在同等预算下获得更好的结果。
+在推理阶段复用 OPTS 训练的树搜索算法，通过多轮 performance-difference 引导的树结构采样生成高质量响应。与 pass@k 保持相同的推理成本，但利用树搜索的优势引导来分配计算资源，从而在同等预算下获得更好的结果。
 
 支持两种奖励引导模式：
 - **reward-guided**（`reward_mode="reward"`）：使用实际奖励函数（如数学正确性评分）作为搜索引导信号，流程与训练完全一致。
@@ -61,7 +61,7 @@
 
 ```
 global_batch = None                                      # 全测试集树结构
-next_states = {}                                         # OTRC 选中的续写分支点
+next_states = {}                                         # performance-difference 选中的续写分支点
 
 for round in range(n_samples):                           # n_samples 轮采样
     ┌─ 构建本轮输入 ──────────────────────────────┐
@@ -91,7 +91,7 @@ for round in range(n_samples):                           # n_samples 轮采样
     │  解码响应文本，按数据集行号记录 sample_index     │
     └─────────────────────────────────────────────────┘
                         ↓
-    ┌─ OTRC 搜索选择（非最后一轮） ──────────────────┐
+    ┌─ performance-difference 搜索选择（非最后一轮） ───────┐
     │  select_next_states → selected_to_branch_points │
     │  确定下一轮的续写分支点                          │
     └─────────────────────────────────────────────────┘
@@ -101,12 +101,12 @@ for round in range(n_samples):                           # n_samples 轮采样
 
 自定义的数据缓冲区，按顺序循环遍历数据集中的所有 prompt。每次 `draw(n)` 取出 n 条 prompt 并为每条分配一个全新的 UUID（同一 prompt 在不同 draw 中获得不同的 uid）。通过 `uid_to_idx` 字典记录每个 uid 对应的原始数据集行号，用于最终的结果汇聚。
 
-当前推理实现每次评测运行只初始化一次 `global_batch`、`next_states`、`search_count` 和 `max_otrc_scores`，搜索门控只依赖 OTRC 自身的 otrc_score 与 `max_otrc_scores` 均值筛选。
+当前推理实现每次评测运行只初始化一次 `global_batch`、`next_states`、`search_count` 和 `max_perf_diffs`，搜索门控只依赖 performance-difference 自身的 perf_diff 与 `max_perf_diffs` 均值筛选。
 
 ### 4.4 搜索门控
 
-1. 每次评测运行内维护 `max_otrc_scores`
-2. `select_next_states` 只保留 otrc_score 高于当前正值均值的候选树
+1. 每次评测运行内维护 `max_perf_diffs`
+2. `select_next_states` 只保留 perf_diff 高于当前正值均值的候选树
 3. 所有搜索状态都在评测运行开始时重置
 
 ### 4.5 奖励计算
@@ -199,7 +199,7 @@ opts_ttpo/core_algos.py
 opts_ttpo/ray_trainer.py
   ├── set_opts_ttpo_info                  树结构信息初始化（uid/rid/pid/cid/branch_pos）
   ├── compute_episodic_returns            计算 episode 回报
-  ├── select_next_states                  OTRC 搜索选择
+  ├── select_next_states                  performance-difference 搜索选择
   ├── selected_to_branch_points           将选中状态转为分支点
   ├── prepare_next_round_input            构建续写输入
   ├── merge_batches                       DataProto 批次合并

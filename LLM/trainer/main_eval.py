@@ -135,17 +135,35 @@ def _answers_equivalent(lhs: str, rhs: str) -> bool:
     return bool(project_validate_answer(lhs, rhs))
 
 
+def _answers_equivalent_status(lhs: str, rhs: str) -> tuple[bool, str]:
+    from utils.bounded_math import _default_verifier
+
+    return _default_verifier().compare(lhs, rhs)
+
+
 def _majority_equivalence_answer(answers: list[str | None]) -> str | None:
     answer_groups: list[dict[str, Any]] = []
     for answer in answers:
         if not _is_valid_answer(answer):
             continue
 
+        # An answer whose symbolic comparison keeps hitting the verifier deadline
+        # (e.g. long differential equations) forms its own group after two timeouts;
+        # every further comparison would time out to False anyway.
+        timeouts = 0
         for group in answer_groups:
-            if _answers_equivalent(answer, group["answer"]):
+            equivalent, status = _answers_equivalent_status(answer, group["answer"])
+            if equivalent:
                 group["answers"].append(answer)
                 break
+            if status.endswith("timeout"):
+                timeouts += 1
+                if timeouts >= 2:
+                    break
         else:
+            answer_groups.append({"answer": answer, "answers": [answer]})
+            continue
+        if timeouts >= 2 and answer not in group["answers"]:
             answer_groups.append({"answer": answer, "answers": [answer]})
 
     if not answer_groups:
@@ -311,6 +329,8 @@ def evaluate_pregenerated_parquet(
                 "value-mode opts@k requires online greedy snapshot columns "
                 f"{missing}, not found in {parquet_path}. Regenerate the value OPTS parquet."
             )
+    if "opts-pass" in metrics and "opts-avg" not in metrics:
+        metrics = list(metrics) + ["opts-avg"]  # opts-pass shares opts-avg's per-tree flags
     if "opts-avg" in metrics:
         missing = [c for c in OPTS_AVG_REQUIRED_COLUMNS if c not in df.columns]
         if missing:
@@ -384,6 +404,9 @@ def evaluate_pregenerated_parquet(
                 for n, flags in opts_avg_flags_by_slice.items():
                     name = f"opts-avg@{k}" if n is None else f"opts-avg_s{n}@{k}"
                     per_source[ds][name].append(avg_at_k(flags, k))
+                    if "opts-pass" in metrics:
+                        name = f"opts-pass@{k}" if n is None else f"opts-pass_s{n}@{k}"
+                        per_source[ds][name].append(strict_pass_at_k(flags, k))
             if "opts" in metrics:
                 if opts_reward_mode == "value":
                     per_source[ds][f"opts@{k}"].append(
@@ -459,7 +482,7 @@ def main():
     )
     parser.add_argument(
         "--metrics", nargs="+", default=["avg", "pass", "cons"],
-        choices=["avg", "pass", "cons", "opts", "opts-avg"],
+        choices=["avg", "pass", "cons", "opts", "opts-avg", "opts-pass"],
         help="Metrics to compute in parquet mode.",
     )
     parser.add_argument(

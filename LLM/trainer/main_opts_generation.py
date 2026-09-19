@@ -4,12 +4,12 @@
 Inference-time scaling/search experiment for OPTS.
 
 Two modes:
-  - reward-guided (reward_mode="reward"): uses actual reward_fn for OTRC guidance
+  - reward-guided (reward_mode="reward"): uses actual reward_fn for performance-difference guidance
   - value-guided  (reward_mode="value"):  uses critic's last-position value as reward (bounded if critic.value_head_activation=sigmoid)
 
 Total inference budget = dataset_size * n_samples responses, matching pass@k
 cost. Each run performs n_samples rounds of tree-structured sampling with
-OTRC-based search over the full evaluation set.
+performance-difference-based search over the full evaluation set.
 
 Results include sample_indices and global_indices. reward-mode opts@k should
 truncate by global_indices <= k * dataset_size. value-mode opts@k uses saved
@@ -150,8 +150,8 @@ def main_task(config):
         assert n_samples == 1, "When temperature=0, n_samples must be 1."
 
     assert reward_mode in ("reward", "value"), f"reward_mode must be 'reward' or 'value', got {reward_mode}"
-    otrc_baseline_mode = _select_first(config, "algorithm.otrc_baseline", default="zero")
-    assert otrc_baseline_mode in ("zero", "mean"), f"otrc_baseline must be 'zero' or 'mean', got {otrc_baseline_mode}"
+    perf_diff_baseline_mode = _select_first(config, "algorithm.perf_diff_baseline", default="zero")
+    assert perf_diff_baseline_mode in ("zero", "mean"), f"perf_diff_baseline must be 'zero' or 'mean', got {perf_diff_baseline_mode}"
 
     prompt_length = rollout_config.prompt_length
     response_length = rollout_config.response_length
@@ -304,7 +304,7 @@ def main_task(config):
     global_batch = None
     next_states = {}
     search_count = {}
-    max_otrc_scores = {}
+    max_perf_diffs = {}
     tree_search_state_by_uid = {}
     uid_to_dataset_idx = {}
     prompt_cursor = 0
@@ -474,17 +474,17 @@ def main_task(config):
                 entries.sort(key=lambda item: item[0])
                 value_opts_snapshots[snapshot_k][dataset_idx] = [response for _, response, _ in entries]
 
-        # === OTRC selection for next round ===
+        # === performance-difference selection for next round ===
         if round_idx < n_samples - 1:
             selected_states = select_next_states(
                 batch=global_batch,
                 search_count=search_count,
-                max_otrc_scores=max_otrc_scores,
+                max_perf_diffs=max_perf_diffs,
                 max_search_per_tree=max_search_per_tree,
                 tree_search_state_by_uid=tree_search_state_by_uid,
                 max_searched_tree_ratio=1.0,
                 search_batch_size=effective_batch_size,
-                otrc_baseline_mode=otrc_baseline_mode,
+                perf_diff_baseline_mode=perf_diff_baseline_mode,
             )
             next_states = selected_to_branch_points(selected_states, global_batch)
 

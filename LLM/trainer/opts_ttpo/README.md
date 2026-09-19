@@ -15,7 +15,7 @@ OPTS_TTPO（On-policy Parallel Tree Search + Tree Trajectory Policy Optimization
 **1. OPTS（同策略并行树搜索）**
 - 不同于传统 MCTS 的完全扩展方式，OPTS 采用采样实例树的形式
 - 每步（step）进行 `n_rounds` 轮循环采样，每轮生成一个 batch 的轨迹，逐步构建树结构
-- 使用 OTRC（On-policy Trajectory Rebranching Criterion）选择下一轮扩展的最优状态
+- 使用 performance-difference（性能差异估计）选择下一轮扩展的最优状态
 - 支持回溯到早期状态进行重新扩展，这在语言场景中是有益的
 
 **2. TTPO（树轨迹策略优化）**
@@ -49,7 +49,7 @@ algorithm:
 
 **参数说明：**
 - `n`（n_rounds）：总共进行的采样轮数，决定树的深度和广度
-- `max_search_per_tree`：每棵树（uid）在一个训练 step 内允许的最大搜索次数，达到上限后该树不再被 OTRC 选中
+- `max_search_per_tree`：每棵树（uid）在一个训练 step 内允许的最大搜索次数，达到上限后该树不再被 performance-difference 选中
 - `max_searched_tree_ratio`：一个训练 step 内允许产生搜索（search_count > 0）的树占总树数的比例上限，超出预算的新树候选被跳过（已搜索过的树继续搜索不占预算）
 
 
@@ -109,7 +109,7 @@ uid (Unique ID / Tree ID)
 ├── 标识原始 prompt，同时作为树标识符
 ├── 同一 uid 下的所有轨迹共享同一个树结构
 ├── 第一轮采样时由 uuid.uuid4() 生成
-└── 用于按 prompt 分组进行 OTRC 状态选择
+└── 用于按 prompt 分组进行 performance-difference 状态选择
 
 rid (Response ID)
 ├── 每条 response 轨迹的唯一标识
@@ -144,7 +144,7 @@ next_states（函数参数，不存储在 non_tensor_batch 中）
 ├── value: (parent_index, branch_pos)
 │   ├── parent_index: 父轨迹在全局 batch 中的索引
 │   └── branch_pos: 父轨迹中被选中状态的 token 位置索引
-├── 由 selected_to_branch_points 从 OTRC 选择结果转换得到
+├── 由 selected_to_branch_points 从 performance-difference 选择结果转换得到
 └── 用于 set_opts_ttpo_info 和 prepare_next_round_input
 ```
 
@@ -171,7 +171,7 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 
 **state_branches[i, t]**：轨迹 i 的状态 t 处的分支数
 - 初始化：全部为 1
-- 当 OTRC 选择从状态 (i, t) 分支时：`state_branches[i, t] += 1`
+- 当 performance-difference 选择从状态 (i, t) 分支时：`state_branches[i, t] += 1`
 - 更新在 `selected_to_branch_points` 中完成
 - 用于计算 branch_weight
 
@@ -202,7 +202,7 @@ traj_3 traj_4        (第3轮，从 traj_2 的位置 8 出发)
 │  │  │     b. 前向：生成轨迹，计算各种值                  │ │  │
 │  │  │     c. 设置树结构信息，合并到全局 batch             │ │  │
 │  │  │     d. 反向：TreeGAE 计算优势                     │ │  │
-│  │  │     e. 选择：OTRC 选择下一轮扩展状态（非最后一轮）  │ │  │
+│  │  │     e. 选择：performance-difference（非最后一轮）  │ │  │
 │  │  └──────────────────────────────────────────────────┘ │  │
 │  │                          ↓                             │  │
 │  │  ┌──────────────────────────────────────────────────┐ │  │
@@ -269,11 +269,11 @@ for epoch in ...:
             -------- e. 选择（非最后一轮） --------
 
             if 非最后一轮:
-                select_next_states：用 OTRC 选择下一轮扩展状态
+                select_next_states：用 performance-difference 选择下一轮扩展状态
                   - 跳过搜索次数已达上限的树
-                  - 沿最优路径计算 otrc_score，选择 argmax
-                  - 记录各树的 max_otrc_scores[uid] = otrc_score[k]
-                  - 用 max_otrc_scores 的跨树均值做门控（仅保留 otrc_score[k] 超过均值的候选）
+                  - 沿最优路径计算 perf_diff，选择 argmax
+                  - 记录各树的 max_perf_diffs[uid] = perf_diff[k]
+                  - 用 max_perf_diffs 的跨树均值做门控（仅保留 perf_diff[k] 超过均值的候选）
                   - 应用 prompt 长度约束和 </think> 位置掩码
                   - 在 max_searched_tree_ratio 新树预算约束下全局排序，取 top batch_size 个候选
 
@@ -330,7 +330,7 @@ $$
 4. 使用 child_first_adv_max 缓存子分支首 token 的 advantage 最大值
 5. 在统一 response 坐标上做全局逆序扫描，对受影响子图做增量更新
 
-### 5.2 OTRC
+### 5.2 performance-difference
 
 #### 5.2.1 最优路径追踪
 
@@ -339,15 +339,15 @@ $$
 - 若有子分支，比较子分支首 token 的 advantage 与当前轨迹下一个 token 的 advantage
 - 选择 advantage 更大的方向继续
 
-#### 5.2.2 otrc_score（期望改善量）
+#### 5.2.2 perf_diff（期望改善量）
 
 沿最优路径从后向前累积：
 
 $$
-\text{otrc\_score}[k] = -\hat{A}_k + \gamma \cdot \text{otrc\_score}[k+1]
+\text{perf\_diff}[k] = -\hat{A}_k + \gamma \cdot \text{perf\_diff}[k+1]
 $$
 
-即 $\text{otrc\_score}[k] = -\sum_{t=k}^{T} \gamma^{t-k} \hat{A}_t$。正值表示从节点 k 分支有改善空间。
+即 $\text{perf\_diff}[k] = -\sum_{t=k}^{T} \gamma^{t-k} \hat{A}_t$。正值表示从节点 k 分支有改善空间。
 
 **数学推导**：
 
@@ -363,24 +363,24 @@ $$
 V^{\pi}(s_k) - G_k \approx -\sum_{t=k}^{T} \gamma^{t-k} \hat{A}_t^{GAE}
 $$
 
-otrc_score 为正值表示原轨迹的实际回报低于策略期望，有改善空间。
+perf_diff 为正值表示原轨迹的实际回报低于策略期望，有改善空间。
 
 **注意**：与 Atari/MuJoCo 版本不同，LLM 版本不除以路径长度 $(n-k)$。
 
 #### 5.2.3 选择
 
-otrc_score 即为节点的选择评分。选择流程：
+perf_diff 即为节点的选择评分。选择流程：
 1. 跳过 `search_count >= max_search_per_tree` 的树
-2. 对每棵树沿最优路径计算 otrc_score，取 argmax
-3. 记录 `max_otrc_scores[uid] = otrc_score[argmax]`（LLM 中使用原始 otrc_score，不做长度归一化）
-4. 用 `max_otrc_scores` 的跨树均值做门控（baseline），仅保留 `raw_otrc_score` 超过均值的候选
+2. 对每棵树沿最优路径计算 perf_diff，取 argmax
+3. 记录 `max_perf_diffs[uid] = perf_diff[argmax]`（LLM 中使用原始 perf_diff，不做长度归一化）
+4. 用 `max_perf_diffs` 的跨树均值做门控（baseline），仅保留 `raw_perf_diff` 超过均值的候选
 5. 应用掩码：prompt 长度约束 + `</think>` 位置约束（确保分支在思考阶段内）
 6. 跨所有树全局排序，在 `max_searched_tree_ratio` 的新树预算约束下取 top batch_size 个候选（已搜索过的树不占用新树预算）
 7. 通过 `selected_to_branch_points` 将选中节点转换为其父节点作为分支点
 
 **step_mean_return 更新机制**：
 - 每个 step 结束时，step_mean_return 更新为该 step 内所有 uid 的 aggregated_return 的均值
-- 该值仅作为 `opts_ttpo/step_mean_return` 监控指标，不参与 OTRC 选择或 checkpoint 恢复
+- 该值仅作为 `opts_ttpo/step_mean_return` 监控指标，不参与 performance-difference 选择或 checkpoint 恢复
 
 ### 5.3 TTPO 策略梯度
 
@@ -396,11 +396,11 @@ $$
 
 其中 $\text{init\_weight}_i$ 通过沿祖先链追溯计算：从当前轨迹开始，依次找到父轨迹、祖父轨迹直到根轨迹，将每段祖先轨迹上从位置 0 到 branch_pos 的所有 state_branches 值相乘累积到 weight 中，最后再乘以同 uid 下根轨迹的数量。
 
-**Loss 聚合**：当 branch_weight 存在时，自动切换为 "weighted-token-mean" 模式。训练用的 branch_weight 先经 `normalize_branch_weight_per_tree` 在每棵 uid 树内归一化（每棵树的有效 token 权重和为 1），policy loss 和 value loss 再加权求和并除以全局树数：
+**Loss 聚合**：当 branch_weight 存在时，自动切换为 "weighted-token-mean" 模式：policy loss 和 value loss 按等分分支权重 $w_t$ 加权求和，分母为全局 batch 的 response token 总数 $N_{\text{tok}}$（`batch.meta_info["batch_num_tokens"]`，与 DAPO 的 token-mean 分母相同）：
 
 $$
-\text{loss} = \frac{\sum_t \text{loss}_t \cdot w_t \cdot \text{mask}_t}{\text{num\_trees}} \cdot \text{dp\_size},
-\quad w_t = \frac{(1/W_t)\cdot m_t}{\sum_{t' \in \text{tree}} (1/W_{t'})\cdot m_{t'}}
+\text{loss} = \frac{\sum_t \text{loss}_t \cdot w_t \cdot \text{mask}_t}{N_{\text{tok}}} \cdot \text{dp\_size},
+\quad N_{\text{tok}} = \sum_t \text{mask}_t
 $$
 
 监控口径保留原始未归一化的 $1/W$ 权重，存于 `return_branch_weight`。
@@ -461,8 +461,8 @@ LLM/trainer/opts_ttpo/
 |--------|----------|------|
 | `set_opts_ttpo_info` | ray_trainer.py | 设置树结构信息：rid, pid, branch_pos, cid；在父轨迹 cid 中注册子节点 |
 | `compute_episodic_returns` | ray_trainer.py | 沿祖先链累加奖励，计算完整 episodic return |
-| `select_next_states` | ray_trainer.py | OTRC 状态选择：最优路径追踪、otrc_score 计算、全局排序 |
-| `selected_to_branch_points` | ray_trainer.py | 将 OTRC 选中节点转换为父节点作为分支点，更新 state_branches |
+| `select_next_states` | ray_trainer.py | performance-difference 状态选择：最优路径追踪、perf_diff 计算、全局排序 |
+| `selected_to_branch_points` | ray_trainer.py | 将 performance-difference 选中节点转换为父节点作为分支点，更新 state_branches |
 | `prepare_next_round_input` | ray_trainer.py | 构建下一轮采样的输入：提取 prompt + 部分响应，重新 left-pad |
 | `merge_batches` | ray_trainer.py | 合并两个 DataProto batch |
 | `compute_aggregated_returns` | ray_trainer.py | 按 uid 分组计算 weight 加权平均 episodic return |
@@ -534,5 +534,5 @@ OPTS_TTPO 需要从已有的 `input_ids` 续写生成，而不是从 `raw_prompt
    - `cid` 存储为 `np.array([OrderedDict() for ...], dtype=object)`
    - `next_states` 是 `Dict[str, Tuple[int, int]]`，不能存入 `non_tensor_batch`，应作为函数参数传递
 3. **step_mean_return 更新粒度**：在 step 级别更新，每个 step 结束时将各 uid 的 aggregated_return 取均值，仅用于监控
-4. **OTRC 分支点转换**：`select_next_states` 返回的是 OTRC 选中的节点本身，需要通过 `selected_to_branch_points` 转换为其父节点，因为分支是从父节点重新采样新动作
-5. **`</think>` 掩码**：OTRC 选择时掩盖 `</think>` 之后的位置，确保分支发生在思考阶段内
+4. **performance-difference 分支点转换**：`select_next_states` 返回的是 performance-difference 选中的节点本身，需要通过 `selected_to_branch_points` 转换为其父节点，因为分支是从父节点重新采样新动作
+5. **`</think>` 掩码**：performance-difference 选择时掩盖 `</think>` 之后的位置，确保分支发生在思考阶段内

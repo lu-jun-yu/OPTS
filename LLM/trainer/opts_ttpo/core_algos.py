@@ -986,7 +986,6 @@ def agg_loss(
     global_batch_size: Optional[int] = None,
     loss_scale_factor: Optional[int] = None,
     branch_weight: Optional[torch.Tensor] = None,
-    weighted_weight_sum: Optional[float] = None,
 ):
     """
     Aggregate the loss across global batch to ensure the loss is invariant to fsdp/megatron parallelism.
@@ -1010,10 +1009,8 @@ def agg_loss(
         global_batch_size: global batch size
         loss_scale_factor: scale factor for "seq-mean-token-sum-norm" mode. If None, uses loss_mask.shape[-1].
             Set this to a constant value to ensure consistent normalization throughout training.
-        branch_weight: per-tree normalized token weight, shape (bs, response_length).
+        branch_weight: per-token branch weight, shape (bs, response_length).
             Required when loss_agg_mode is "weighted-token-mean".
-        weighted_weight_sum: global number of uid trees for the two-level weighted loss.
-            The legacy parameter name is retained for worker compatibility.
 
     Returns:
         loss: `a scalar torch.Tensor`
@@ -1027,11 +1024,9 @@ def agg_loss(
             batch_num_tokens = loss_mask.sum()
         loss = verl_F.masked_sum(loss_mat, loss_mask) / batch_num_tokens * dp_size
     elif loss_agg_mode == "weighted-token-mean":
-        assert weighted_weight_sum is not None, (
-            "weighted-token-mean requires its denominator (passed as weighted_weight_sum)."
-        )
-        local_numerator = verl_F.masked_sum(loss_mat * branch_weight, loss_mask)
-        loss = local_numerator / max(weighted_weight_sum, 1e-8) * dp_size
+        if batch_num_tokens is None:
+            batch_num_tokens = loss_mask.sum()
+        loss = verl_F.masked_sum(loss_mat * branch_weight, loss_mask) / batch_num_tokens * dp_size
     elif loss_agg_mode.startswith("seq-mean"):
         # TODO: Correct and unify the denominator logic.
         if global_batch_size is not None:
@@ -1150,7 +1145,7 @@ def compute_policy_loss_vanilla(
     config: Optional[ActorConfig] = None,
     rollout_is_weights: torch.Tensor | None = None,
     branch_weight: torch.Tensor | None = None,
-    weighted_weight_sum: float | None = None,
+    batch_num_tokens: float | None = None,
     dp_size: int = 1,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """
@@ -1175,11 +1170,10 @@ def compute_policy_loss_vanilla(
         rollout_log_probs: `(torch.Tensor)`:
             log probabilities of actions under the rollout policy, shape (batch_size, response_length).
         branch_weight: `(torch.Tensor)`:
-            Direct TTPO sample weight, shape (batch_size, response_length).
+            TTPO branch weight per token, shape (batch_size, response_length).
             When provided, uses "weighted-token-mean" aggregation mode.
-        weighted_weight_sum: `(float)`:
-            Global number of uid trees pre-computed on the driver. The legacy
-            parameter name is retained for worker compatibility.
+        batch_num_tokens: `(float)`:
+            Number of valid response tokens in the global batch, pre-computed on the driver.
         dp_size: `(int)`:
             Data-parallel world size for TTPO weighted aggregation.
     """
@@ -1240,9 +1234,8 @@ def compute_policy_loss_vanilla(
             loss_mask=response_mask,
             loss_agg_mode="weighted-token-mean",
             branch_weight=branch_weight,
-            weighted_weight_sum=weighted_weight_sum,
+            batch_num_tokens=batch_num_tokens,
             dp_size=dp_size,
-            **config.global_batch_info,
         )
     else:
         pg_loss = agg_loss(
@@ -1665,7 +1658,7 @@ def compute_value_loss(
     cliprange_value: float,
     loss_agg_mode: str = "token-mean",
     branch_weight: torch.Tensor | None = None,
-    weighted_weight_sum: float | None = None,
+    batch_num_tokens: float | None = None,
     dp_size: int = 1,
 ):
     """
@@ -1687,11 +1680,10 @@ def compute_value_loss(
         loss_agg_mode (str, optional):
             Aggregation mode for `agg_loss`. Defaults to "token-mean".
         branch_weight (torch.Tensor, optional):
-            Direct TTPO sample weight, shape (batch_size, response_length).
+            TTPO branch weight per token, shape (batch_size, response_length).
             When provided, uses "weighted-token-mean" aggregation mode.
-        weighted_weight_sum (float, optional):
-            Global number of uid trees pre-computed on the driver. The legacy
-            parameter name is retained for worker compatibility.
+        batch_num_tokens (float, optional):
+            Number of valid response tokens in the global batch, pre-computed on the driver.
         dp_size (int, optional):
             Data-parallel world size for TTPO weighted aggregation.
 
@@ -1711,7 +1703,7 @@ def compute_value_loss(
             loss_mask=response_mask,
             loss_agg_mode="weighted-token-mean",
             branch_weight=branch_weight,
-            weighted_weight_sum=weighted_weight_sum,
+            batch_num_tokens=batch_num_tokens,
             dp_size=dp_size,
         )
     else:

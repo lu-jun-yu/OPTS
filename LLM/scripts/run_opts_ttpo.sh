@@ -2,12 +2,10 @@ export NCCL_DEBUG=ERROR
 export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
-MODEL_SIZE=1.7B
+MODEL_SIZE=1.7B-Base
 Max_Search=1
-TTPO_LOSS_DENOMINATOR="${TTPO_LOSS_DENOMINATOR:-weights}"  # tokens | weights
-LAM_SEARCH="${LAM_SEARCH:-0.998}"  # search (max-backup) TreeGAE lambda; default = algorithm.lam
-Experiment_Name=opts_ttpo_0912_n8_s${Max_Search}_slam${LAM_SEARCH}_${MODEL_SIZE}
-RAY_TEMP_DIR="/tmp/ray/s${Max_Search}_slam${LAM_SEARCH}/"
+Experiment_Name=opts_ttpo_0916_n8_s${Max_Search}_${MODEL_SIZE}
+RAY_TEMP_DIR="/tmp/ray/s${Max_Search}_${MODEL_SIZE}/"
 
 cleanup_ray_temp() {
     local status=$?
@@ -23,7 +21,7 @@ trap cleanup_ray_temp EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m trainer.main_opts_ttpo \
+CUDA_VISIBLE_DEVICES=2,3,4,5 python3 -m trainer.main_opts_ttpo \
  algorithm.adv_estimator=treegae \
  data.train_files=data/train.parquet \
  data.val_files=data/test.parquet \
@@ -59,23 +57,19 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m trainer.main_opts_ttpo \
  custom_reward_function.name=compute_score \
  algorithm.use_kl_in_reward=False \
  algorithm.kl_ctrl.kl_coef=0.0 \
- algorithm.lam=1.0 \
- +algorithm.reward_min=0.0 \
- +algorithm.reward_max=1.0 \
- +algorithm.lam_search=${LAM_SEARCH} \
- +algorithm.ttpo_loss_denominator=${TTPO_LOSS_DENOMINATOR} \
+ algorithm.lam=0.999 \
+ +algorithm.reward_min=0.01 \
+ +algorithm.reward_max=0.99 \
  +algorithm.max_searched_tree_ratio=0.3 \
- +algorithm.otrc_baseline=zero \
+ +algorithm.baseline=zero \
  trainer.logger='["console","wandb"]' \
  trainer.val_before_train=False \
- +trainer.train_eval_enabled=true \
- +trainer.train_eval_freq=80 \
  trainer.n_gpus_per_node=4 \
  trainer.nnodes=1 \
  trainer.project_name=opts_ttpo_${MODEL_SIZE} \
  trainer.experiment_name=${Experiment_Name} \
  trainer.default_local_dir=/share/lujunyu/ckpts/opts_ckpts/opts_ttpo_${MODEL_SIZE}/${Experiment_Name} \
- trainer.save_freq=80 \
+ trainer.save_freq=20 \
  trainer.test_freq=20 \
  trainer.total_epochs=400 \
  trainer.total_training_steps=400 \

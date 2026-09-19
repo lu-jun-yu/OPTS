@@ -77,10 +77,10 @@ class TreeSearchState:
     terminal_pos: int
     raw_candidate_rid: str
     raw_candidate_pos: int
-    raw_otrc_score: float
+    raw_perf_diff: float
     candidate_rid: str
     candidate_pos: int
-    candidate_otrc_score: float
+    candidate_perf_diff: float
     updated_round: int
 
 
@@ -281,13 +281,6 @@ def compute_advantage(
         data.batch["returns"] = returns
     elif adv_estimator == AdvantageEstimator.TreeGAE:
         # TreeGAE for OPTS_TTPO: recompute affected trajectories from new leaves upward.
-        # Dual-lambda max-backup: batch["advantages"] (lam) drives learning,
-        # batch["advantages_search"] (lam_search) drives tree search.
-        # The search backup can use its own lambda via algorithm.lam_search
-        # (defaults to algorithm.lam).
-        lam_search = config.get("lam_search", None) if config is not None else None
-        if lam_search is None:
-            lam_search = lam
         from .core_algos import compute_treegae_advantage_return
 
         assert new_sample_indices is not None, "TreeGAE requires round-local new_sample_indices."
@@ -316,12 +309,6 @@ def compute_advantage(
         )
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
-        advantages_search, _ = compute_treegae_advantage_return(
-            **{**treegae_kwargs, "lam": lam_search},
-            advantages=data.batch["advantages_search"],
-            backup="max",
-        )
-        data.batch["advantages_search"] = advantages_search
     else:
         # handle all other adv estimator type other than GAE and GRPO
         adv_estimator_fn = core_algos.get_adv_estimator_fn(adv_estimator)
@@ -568,17 +555,12 @@ def refresh_tree_search_states(
     tokenizer=None,
     round_idx: int = -1,
 ) -> Dict[Any, TreeSearchState]:
-    """Refresh cached greedy terminals and OTRC candidates for selected trees."""
+    """Refresh cached greedy terminals and performance-difference candidates for selected trees."""
     affected_uid_set = set(affected_uids)
     if not affected_uid_set:
         return tree_search_state_by_uid
 
-    # Search consumes the search-side (lam_search) advantages when available;
-    # falls back to batch["advantages"] for single-backup estimators.
-    if "advantages_search" in batch.batch.keys():
-        advantages = batch.batch["advantages_search"]
-    else:
-        advantages = batch.batch["advantages"]
+    advantages = batch.batch["advantages"]
     response_mask = batch.batch["response_mask"]
 
     uid = batch.non_tensor_batch["uid"]
@@ -653,21 +635,21 @@ def refresh_tree_search_states(
         current_idx = torch.where(take_child, bci, current_idx)
         active_mask = valid_u
 
-    otrc_score = torch.zeros((num_trees, path_len), device=device, dtype=dtype)
-    last_otrc = torch.zeros(num_trees, device=device, dtype=dtype)
+    perf_diff = torch.zeros((num_trees, path_len), device=device, dtype=dtype)
+    last_perf_diff = torch.zeros(num_trees, device=device, dtype=dtype)
     for u in reversed(range(path_len)):
         idx = path_idx[:, u]
         local_t = path_t[:, u]
         path_adv = torch.where(local_t < response_len, advantages[idx, local_t.clamp(max=response_len - 1)], 0.0)
-        last_otrc_ = -path_adv + gamma * last_otrc
+        last_perf_diff_ = -path_adv + gamma * last_perf_diff
         mask_u = path_mask[:, u].to(dtype)
-        last_otrc = last_otrc_ * mask_u + (1 - mask_u) * last_otrc
-        otrc_score[:, u] = last_otrc
+        last_perf_diff = last_perf_diff_ * mask_u + (1 - mask_u) * last_perf_diff
+        perf_diff[:, u] = last_perf_diff
 
-    otrc_for_argmax = torch.where(path_mask, otrc_score, neg_inf)
+    perf_diff_for_argmax = torch.where(path_mask, perf_diff, neg_inf)
     row_idx = torch.arange(num_trees, device=device)
-    max_pos = otrc_for_argmax.argmax(dim=1)
-    max_otrc_score = otrc_score[row_idx, max_pos]
+    max_pos = perf_diff_for_argmax.argmax(dim=1)
+    max_perf_diff = perf_diff[row_idx, max_pos]
 
     terminal_u = path_mask.to(torch.long).sum(dim=1) - 1
     terminal_traj = path_idx[row_idx, terminal_u]
@@ -691,7 +673,7 @@ def refresh_tree_search_states(
     raw_pos = path_t[row_idx, max_pos]
     clamped_traj = path_idx[row_idx, clamped_u]
     clamped_pos = path_t[row_idx, clamped_u]
-    clamped_otrc_score = otrc_score[row_idx, clamped_u]
+    clamped_perf_diff = perf_diff[row_idx, clamped_u]
     terminal_pos = path_t[row_idx, terminal_u]
 
     for i, u in enumerate(active_uids):
@@ -700,10 +682,10 @@ def refresh_tree_search_states(
             terminal_pos=int(terminal_pos[i].item()),
             raw_candidate_rid=str(rid[int(raw_traj[i].item())]),
             raw_candidate_pos=int(raw_pos[i].item()),
-            raw_otrc_score=float(max_otrc_score[i].item()),
+            raw_perf_diff=float(max_perf_diff[i].item()),
             candidate_rid=str(rid[int(clamped_traj[i].item())]),
             candidate_pos=int(clamped_pos[i].item()),
-            candidate_otrc_score=float(clamped_otrc_score[i].item()),
+            candidate_perf_diff=float(clamped_perf_diff[i].item()),
             updated_round=round_idx,
         )
 
@@ -713,35 +695,35 @@ def refresh_tree_search_states(
 def select_next_states(
     batch: DataProto,
     search_count: dict,
-    max_otrc_scores: dict,
+    max_perf_diffs: dict,
     max_search_per_tree: int,
     tree_search_state_by_uid: Dict[Any, TreeSearchState],
     max_searched_tree_ratio: float,
     search_batch_size: int,
-    otrc_baseline_mode: str = "zero",
+    perf_diff_baseline_mode: str = "zero",
 ) -> Dict[str, Tuple[int, int]]:
-    """Select above-baseline OTRC states under a global searched-tree ratio.
+    """Select above-baseline performance-difference states under a global searched-tree ratio.
 
-    Returns the OTRC-selected nodes (not the branch points). The caller must
+    Returns the performance-difference-selected nodes (not the branch points). The caller must
     convert to parent nodes via selected_to_branch_points() before using as
     branch points for prepare_next_round_input / set_opts_ttpo_info.
 
     Args:
         batch: DataProto containing all required tensors and non-tensor data.
         search_count: {uid: count}, cumulative within training iteration.
-        max_otrc_scores: {uid: raw otrc_score at first qualification}, used for
+        max_perf_diffs: {uid: raw perf_diff at first qualification}, used for
             the cross-tree mean baseline gate.
         max_search_per_tree: Max searches per tree per iteration.
-        tree_search_state_by_uid: Cached greedy terminal / OTRC state keyed by uid.
+        tree_search_state_by_uid: Cached greedy terminal / performance-difference state keyed by uid.
         max_searched_tree_ratio: Maximum fraction of unique trees that may
             have search_count > 0.
         search_batch_size: Maximum number of searches generated this round.
-        otrc_baseline_mode: "mean" gates by the cross-tree mean of
-            max_otrc_scores; "zero" gates by 0.
+        perf_diff_baseline_mode: "mean" gates by the cross-tree mean of
+            max_perf_diffs; "zero" gates by 0.
 
     Returns:
         next_states: Dict mapping uid to (traj_idx_in_global, token_pos) of the
-            OTRC-selected node. Must be converted to parent via
+            performance-difference-selected node. Must be converted to parent via
             selected_to_branch_points() before use as branch points.
     """
     uid = batch.non_tensor_batch["uid"]
@@ -765,19 +747,19 @@ def select_next_states(
 
     active_uids = [u for u in root_uids if search_count.get(u, 0) < max_search_per_tree]
     for u in active_uids:
-        max_otrc_scores.setdefault(u, tree_search_state_by_uid[u].raw_otrc_score)
+        max_perf_diffs.setdefault(u, tree_search_state_by_uid[u].raw_perf_diff)
 
     candidates = []
-    if otrc_baseline_mode == "mean":
-        baseline = np.mean(list(max_otrc_scores.values()))
-    elif otrc_baseline_mode == "zero":
+    if perf_diff_baseline_mode == "mean":
+        baseline = np.mean(list(max_perf_diffs.values()))
+    elif perf_diff_baseline_mode == "zero":
         baseline = 0.0
     for u in active_uids:
         state = tree_search_state_by_uid[u]
-        if state.raw_otrc_score <= baseline:
+        if state.raw_perf_diff <= baseline:
             continue
         traj_idx = rid2idx[state.candidate_rid]
-        candidates.append((state.candidate_otrc_score, u, traj_idx, state.candidate_pos))
+        candidates.append((state.candidate_perf_diff, u, traj_idx, state.candidate_pos))
 
     candidates.sort(key=lambda x: x[0], reverse=True)
     selected = []
@@ -807,7 +789,7 @@ def select_next_states(
             f"selected_new={selected_new_tree_count}, selected_repeat={len(selected) - selected_new_tree_count}, "
             f"searched_trees={searched_tree_count_after}/{len(root_uids)}, "
             f"searched_tree_limit={max_searched_tree_count}, "
-            f"otrc_score_range=[{candidates[0][0]:.4f}, {candidates[-1][0]:.4f}]"
+            f"perf_diff_range=[{candidates[0][0]:.4f}, {candidates[-1][0]:.4f}]"
         )
     else:
         logger_batch.info("[select_next_states] no candidates")
@@ -819,17 +801,17 @@ def selected_to_branch_points(
     selected_states: Dict[str, Tuple[int, int]],
     batch: DataProto,
 ) -> Dict[str, Tuple[int, int]]:
-    """Convert OTRC-selected nodes to their parent nodes as branch points.
+    """Convert performance-difference-selected nodes to their parent nodes as branch points.
 
-    In the OTRC framework, otrc_score[k] evaluates from token k onwards
-    (including k itself). When OTRC selects node (ti, tp) as the worst node,
+    In the performance-difference framework, perf_diff[k] evaluates from token k onwards
+    (including k itself). When the performance-difference rule selects node (ti, tp) as the worst node,
     we should branch from its PARENT to replace token tp and everything after,
     matching the reference implementation: parent = parent_indices[selected[i]].
 
     Also updates batch's state_branches in-place at the parent positions.
 
     Args:
-        selected_states: Dict {uid: (traj_idx, token_pos)} of OTRC-selected nodes.
+        selected_states: Dict {uid: (traj_idx, token_pos)} of performance-difference-selected nodes.
         batch: DataProto containing tree structure (pid, rid, branch_pos, state_branches).
 
     Returns:
@@ -1222,41 +1204,13 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
             collate_fn=collate_fn,
         )
 
-        self.train_eval_enabled = bool(self.config.trainer.get("train_eval_enabled", False))
-        self.train_eval_freq = int(self.config.trainer.get("train_eval_freq", -1))
-        self.train_eval_dataloader = None
-        if self.train_eval_enabled:
-            if self.train_eval_freq <= 0:
-                raise ValueError(
-                    "trainer.train_eval_freq must be positive when "
-                    f"trainer.train_eval_enabled=True, got {self.train_eval_freq}"
-                )
-            # Use the effective training dataset after the same prompt-length
-            # filtering as training. Keep a separate iterator so evaluation never
-            # consumes or reorders the training sampler / PromptBuffer. The full
-            # dataset is deliberately sent to the rollout engine in one call.
-            self.train_eval_dataloader = StatefulDataLoader(
-                dataset=self.train_dataset,
-                batch_size=len(self.train_dataset),
-                # Avoid transferring one very large collated batch through
-                # multiprocessing shared memory before the single vLLM call.
-                num_workers=0,
-                shuffle=False,
-                drop_last=False,
-                collate_fn=collate_fn,
-            )
-
         assert len(self.train_dataloader) >= 1, "Train dataloader is empty!"
         assert len(self.val_dataloader) >= 1, "Validation dataloader is empty!"
-        if self.train_eval_dataloader is not None:
-            assert len(self.train_eval_dataloader) == 1, "Train-eval dataloader must contain exactly one full batch!"
 
         print(
             f"Size of train dataloader: {len(self.train_dataloader)}, Size of val dataloader: "
             f"{len(self.val_dataloader)}"
         )
-        if self.train_eval_dataloader is not None:
-            print(f"Size of train-eval dataset: {len(self.train_dataset)} (one full batch)")
 
         total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
 
@@ -1599,83 +1553,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                     metric_dict[f"val-core/{data_source}/reward/{metric_name}"] = reward_metric2val[metric_name]
 
         return metric_dict
-
-    def _validate_train(self):
-        """Evaluate the current learned policy once on every effective training prompt."""
-        if self.train_eval_dataloader is None:
-            raise RuntimeError("Train-distribution evaluation is not enabled.")
-
-        acc_sum = 0.0
-        acc_count = 0
-
-        for train_data in self.train_eval_dataloader:
-            train_batch = DataProto.from_single_dict(train_data)
-
-            if self.config.reward_model.enable and train_batch[0].non_tensor_batch["reward_model"]["style"] == "model":
-                raise RuntimeError("Train-distribution evaluation only supports rule-based reward functions.")
-
-            if "uid" not in train_batch.non_tensor_batch:
-                train_batch.non_tensor_batch["uid"] = np.array(
-                    [str(uuid.uuid4()) for _ in range(len(train_batch.batch))], dtype=object
-                )
-            train_batch.non_tensor_batch["raw_prompt_len"] = (
-                train_batch.batch["attention_mask"].sum(dim=1).cpu().numpy()
-            )
-
-            train_gen_batch = self._get_gen_batch(train_batch)
-            train_gen_batch.meta_info = {
-                "eos_token_id": self.tokenizer.eos_token_id,
-                "pad_token_id": self.tokenizer.pad_token_id,
-                "recompute_log_prob": False,
-                "do_sample": True,
-                # False intentionally selects the same temperature/top-p and
-                # input-id generation path as a training rollout. With an original
-                # prompt and one call, this is a root rollout and never enters the
-                # trainer's OPTS selection/search loop.
-                "validate": False,
-                "global_steps": self.global_steps,
-            }
-
-            size_divisor = (
-                self.actor_rollout_wg.world_size
-                if not self.async_rollout_mode
-                else self.config.actor_rollout_ref.rollout.agent.num_workers
-            )
-            train_gen_batch_padded, pad_size = pad_dataproto_to_divisor(train_gen_batch, size_divisor)
-            if not self.async_rollout_mode:
-                train_output_padded = self.actor_rollout_wg.generate_sequences(train_gen_batch_padded)
-            else:
-                train_output_padded = self.async_rollout_manager.generate_sequences(train_gen_batch_padded)
-            train_output = unpad_dataproto(train_output_padded, pad_size=pad_size)
-
-            train_batch = train_batch.union(train_output)
-            train_batch.meta_info["validate"] = True
-            result = self._compute_or_extract_reward(
-                train_batch,
-                reward_fn=self.val_reward_fn,
-                return_dict=True,
-            )
-            acc_values = result.get("reward_extra_info", {}).get("acc")
-            if acc_values is None:
-                raise RuntimeError("Train-distribution evaluation requires reward_extra_info['acc'].")
-
-            acc_array = np.asarray(acc_values, dtype=np.float64).reshape(-1)
-            if len(acc_array) != len(train_batch.batch):
-                raise RuntimeError(
-                    "Train-distribution accuracy count does not match generated responses: "
-                    f"{len(acc_array)} != {len(train_batch.batch)}"
-                )
-            acc_sum += float(acc_array.sum())
-            acc_count += int(acc_array.size)
-
-        expected_count = len(self.train_dataset)
-        if acc_count != expected_count:
-            raise RuntimeError(
-                "Train-distribution evaluation did not cover the effective training dataset: "
-                f"{acc_count} != {expected_count}"
-            )
-
-        return {"train-eval/acc/avg@1": acc_sum / acc_count}
 
     def init_workers(self):
         """Initialize distributed training workers using Ray backend.
@@ -2257,17 +2134,9 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                 "algorithm.max_searched_tree_ratio must be in [0, 1], "
                 f"got {max_searched_tree_ratio}"
             )
-        otrc_baseline_mode = self.config.algorithm.get("otrc_baseline", "zero")
-        if otrc_baseline_mode not in ("zero", "mean"):
-            raise ValueError(f"algorithm.otrc_baseline must be 'zero' or 'mean', got {otrc_baseline_mode}")
-        ttpo_loss_denominator = str(
-            self.config.algorithm.get("ttpo_loss_denominator", "weights")
-        ).lower()
-        if ttpo_loss_denominator not in ("tokens", "weights"):
-            raise ValueError(
-                "algorithm.ttpo_loss_denominator must be 'tokens' or 'weights', "
-                f"got {ttpo_loss_denominator}"
-            )
+        perf_diff_baseline_mode = self.config.algorithm.get("perf_diff_baseline", "zero")
+        if perf_diff_baseline_mode not in ("zero", "mean"):
+            raise ValueError(f"algorithm.perf_diff_baseline must be 'zero' or 'mean', got {perf_diff_baseline_mode}")
 
         for epoch in range(current_epoch, self.config.trainer.total_epochs):
             for batch_idx in range(len(self.train_dataloader)):
@@ -2292,7 +2161,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                 global_batch = None
                 next_states = {}
                 search_count = {}  # {uid: count} per training iteration
-                max_otrc_scores = {}  # {uid: first qualified otrc_score baseline} per training iteration
+                max_perf_diffs = {}  # {uid: first qualified perf_diff baseline} per training iteration
                 tree_search_state_by_uid = {}
                 sorted_states = None
                 reward_extra_infos_dict = {}
@@ -2481,8 +2350,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                             batch_size, response_len = batch.batch["responses"].shape
                             batch.batch["state_branches"] = torch.ones(batch_size, response_len)
                             batch.batch["advantages"] = torch.zeros(batch_size, response_len)
-                            # max-backup advantages for tree search (dual-backup TreeGAE)
-                            batch.batch["advantages_search"] = torch.zeros(batch_size, response_len)
                             batch.batch["returns"] = torch.zeros(batch_size, response_len)
 
                             # Merge to global_batch
@@ -2514,18 +2381,18 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                     round_idx=round_idx,
                                 )
 
-                        # OTRC selection (not last round)
+                        # performance-difference selection (not last round)
                         if round_idx < n_rounds - 1:
                             with timed_block("select_next_states", step=self.global_steps, round_idx=round_idx):
                                 selected_states = select_next_states(
                                     batch=global_batch,
                                     search_count=search_count,
-                                    max_otrc_scores=max_otrc_scores,
+                                    max_perf_diffs=max_perf_diffs,
                                     max_search_per_tree=max_search_per_tree,
                                     tree_search_state_by_uid=tree_search_state_by_uid,
                                     max_searched_tree_ratio=max_searched_tree_ratio,
                                     search_batch_size=batch_size,
-                                    otrc_baseline_mode=otrc_baseline_mode,
+                                    perf_diff_baseline_mode=perf_diff_baseline_mode,
                                 )
                                 # Convert selected nodes to parent branch points
                                 # (also updates state_branches in-place)
@@ -2584,19 +2451,11 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                         batch.batch["branch_weight"] = branch_weight
                         # Monitoring keeps the original equal-branch weighting.
                         batch.batch["return_branch_weight"] = branch_weight
-                        # Pre-compute one global denominator so every micro-batch
-                        # and DP rank uses the same TTPO loss scale (no all_reduce).
-                        response_mask = batch.batch["response_mask"].float()
-                        weighted_mask = response_mask * branch_weight
-                        if ttpo_loss_denominator == "tokens":
-                            loss_denominator = response_mask.sum()
-                        else:
-                            loss_denominator = weighted_mask.sum()
-                        if loss_denominator.item() <= 0:
-                            raise ValueError("TTPO loss denominator must be positive")
-                        # The legacy meta-info key is consumed by actor and critic
-                        # workers as the global denominator for weighted losses.
-                        batch.meta_info["weighted_weight_sum"] = float(loss_denominator.item())
+                        # Global response-token count: the loss denominator shared by all micro-batches and DP ranks.
+                        batch_num_tokens = batch.batch["response_mask"].float().sum()
+                        if batch_num_tokens.item() <= 0:
+                            raise ValueError("TTPO batch has no response tokens")
+                        batch.meta_info["batch_num_tokens"] = float(batch_num_tokens.item())
                         batch.batch["advantages"] = weighted_masked_whiten(
                             advantages=batch.batch["advantages"],
                             response_mask=batch.batch["response_mask"],
@@ -2658,20 +2517,6 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                             if is_last_step:
                                 last_val_metrics = val_metrics
                     metrics.update(val_metrics)
-
-                # Evaluate the learned policy itself on the effective training
-                # distribution. Step 0 is intentionally excluded here.
-                if (
-                    self.val_reward_fn is not None
-                    and self.train_eval_dataloader is not None
-                    and (
-                        is_last_step
-                        or self.global_steps % self.train_eval_freq == 0
-                    )
-                ):
-                    with timed_block("train_distribution_validation", step=self.global_steps):
-                        train_eval_metrics = self._validate_train()
-                    metrics.update(train_eval_metrics)
 
                 # Check if the ESI (Elastic Server Instance)/training plan is close to expiration.
                 esi_close_to_expiration = should_save_ckpt_esi(
