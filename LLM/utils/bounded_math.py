@@ -68,7 +68,7 @@ class BoundedMathVerifier:
         self.counts["worker_starts"] += 1
         self.worker_requests = 0
         try:
-            if self._read(30) != {"ready": True}:
+            if self._read(180) != {"ready": True}:  # cold sympy import from NFS can exceed 30 s under load
                 raise RuntimeError("Invalid math worker startup response")
         except BaseException:
             self.close()

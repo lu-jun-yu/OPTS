@@ -1,4 +1,4 @@
-# Copyright 2025 Junyu Lu (Julian Lou). All rights reserved.
+# Copyright 2025 Anonymous authors. All rights reserved.
 
 """
 Note that we don't combine the main with ray_trainer as ray_trainer is used by other mpain.

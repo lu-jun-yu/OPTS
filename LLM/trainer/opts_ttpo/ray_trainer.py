@@ -1,4 +1,4 @@
-# Copyright 2025 Junyu Lu (Julian Lou). All rights reserved.
+# Copyright 2025 Anonymous authors. All rights reserved.
 
 """
 OPTS_TTPO Trainer with Ray-based single controller.
@@ -78,9 +78,11 @@ class TreeSearchState:
     raw_candidate_rid: str
     raw_candidate_pos: int
     raw_perf_diff: float
+    raw_selection_score: float
     candidate_rid: str
     candidate_pos: int
     candidate_perf_diff: float
+    candidate_selection_score: float
     updated_round: int
 
 
@@ -554,8 +556,11 @@ def refresh_tree_search_states(
     max_prompt_length: int,
     tokenizer=None,
     round_idx: int = -1,
+    xi: float = 0.0,
 ) -> Dict[Any, TreeSearchState]:
-    """Refresh cached greedy terminals and performance-difference candidates for selected trees."""
+    """Refresh cached greedy terminals and length-normalized search candidates."""
+    if xi < 0:
+        raise ValueError(f"xi must be nonnegative, got {xi}")
     affected_uid_set = set(affected_uids)
     if not affected_uid_set:
         return tree_search_state_by_uid
@@ -646,10 +651,17 @@ def refresh_tree_search_states(
         last_perf_diff = last_perf_diff_ * mask_u + (1 - mask_u) * last_perf_diff
         perf_diff[:, u] = last_perf_diff
 
-    perf_diff_for_argmax = torch.where(path_mask, perf_diff, neg_inf)
+    # Match the CleanRL selector: the same length-normalized quantity is used
+    # for within-tree position selection, baseline gating, and cross-tree
+    # ranking. The virtual terminal is part of the path length, as in CleanRL.
+    path_positions = torch.arange(path_len, device=device).unsqueeze(0)
+    remaining_path_length = (path_mask.sum(dim=1, keepdim=True) - path_positions).clamp_min(1).to(dtype)
+    selection_score = perf_diff / remaining_path_length.pow(xi)
+    perf_diff_for_argmax = torch.where(path_mask, selection_score, neg_inf)
     row_idx = torch.arange(num_trees, device=device)
     max_pos = perf_diff_for_argmax.argmax(dim=1)
-    max_perf_diff = perf_diff[row_idx, max_pos]
+    max_perf_diff = selection_score[row_idx, max_pos]
+    max_unpenalized_perf_diff = perf_diff[row_idx, max_pos]
 
     terminal_u = path_mask.to(torch.long).sum(dim=1) - 1
     terminal_traj = path_idx[row_idx, terminal_u]
@@ -673,7 +685,8 @@ def refresh_tree_search_states(
     raw_pos = path_t[row_idx, max_pos]
     clamped_traj = path_idx[row_idx, clamped_u]
     clamped_pos = path_t[row_idx, clamped_u]
-    clamped_perf_diff = perf_diff[row_idx, clamped_u]
+    clamped_perf_diff = selection_score[row_idx, clamped_u]
+    clamped_unpenalized_perf_diff = perf_diff[row_idx, clamped_u]
     terminal_pos = path_t[row_idx, terminal_u]
 
     for i, u in enumerate(active_uids):
@@ -682,10 +695,12 @@ def refresh_tree_search_states(
             terminal_pos=int(terminal_pos[i].item()),
             raw_candidate_rid=str(rid[int(raw_traj[i].item())]),
             raw_candidate_pos=int(raw_pos[i].item()),
-            raw_perf_diff=float(max_perf_diff[i].item()),
+            raw_perf_diff=float(max_unpenalized_perf_diff[i].item()),
+            raw_selection_score=float(max_perf_diff[i].item()),
             candidate_rid=str(rid[int(clamped_traj[i].item())]),
             candidate_pos=int(clamped_pos[i].item()),
-            candidate_perf_diff=float(clamped_perf_diff[i].item()),
+            candidate_perf_diff=float(clamped_unpenalized_perf_diff[i].item()),
+            candidate_selection_score=float(clamped_perf_diff[i].item()),
             updated_round=round_idx,
         )
 
@@ -711,8 +726,8 @@ def select_next_states(
     Args:
         batch: DataProto containing all required tensors and non-tensor data.
         search_count: {uid: count}, cumulative within training iteration.
-        max_perf_diffs: {uid: raw perf_diff at first qualification}, used for
-            the cross-tree mean baseline gate.
+        max_perf_diffs: {uid: feasible length-normalized score at first
+            qualification}, used for the cross-tree mean baseline gate.
         max_search_per_tree: Max searches per tree per iteration.
         tree_search_state_by_uid: Cached greedy terminal / performance-difference state keyed by uid.
         max_searched_tree_ratio: Maximum fraction of unique trees that may
@@ -747,7 +762,7 @@ def select_next_states(
 
     active_uids = [u for u in root_uids if search_count.get(u, 0) < max_search_per_tree]
     for u in active_uids:
-        max_perf_diffs.setdefault(u, tree_search_state_by_uid[u].raw_perf_diff)
+        max_perf_diffs.setdefault(u, tree_search_state_by_uid[u].candidate_selection_score)
 
     candidates = []
     if perf_diff_baseline_mode == "mean":
@@ -756,10 +771,10 @@ def select_next_states(
         baseline = 0.0
     for u in active_uids:
         state = tree_search_state_by_uid[u]
-        if state.raw_perf_diff <= baseline:
+        if state.candidate_selection_score <= baseline:
             continue
         traj_idx = rid2idx[state.candidate_rid]
-        candidates.append((state.candidate_perf_diff, u, traj_idx, state.candidate_pos))
+        candidates.append((state.candidate_selection_score, u, traj_idx, state.candidate_pos))
 
     candidates.sort(key=lambda x: x[0], reverse=True)
     selected = []
@@ -789,7 +804,7 @@ def select_next_states(
             f"selected_new={selected_new_tree_count}, selected_repeat={len(selected) - selected_new_tree_count}, "
             f"searched_trees={searched_tree_count_after}/{len(root_uids)}, "
             f"searched_tree_limit={max_searched_tree_count}, "
-            f"perf_diff_range=[{candidates[0][0]:.4f}, {candidates[-1][0]:.4f}]"
+            f"selection_score_range=[{candidates[0][0]:.4f}, {candidates[-1][0]:.4f}]"
         )
     else:
         logger_batch.info("[select_next_states] no candidates")
@@ -2137,6 +2152,9 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
         perf_diff_baseline_mode = self.config.algorithm.get("perf_diff_baseline", "zero")
         if perf_diff_baseline_mode not in ("zero", "mean"):
             raise ValueError(f"algorithm.perf_diff_baseline must be 'zero' or 'mean', got {perf_diff_baseline_mode}")
+        xi = float(self.config.algorithm.get("xi", 0.0))
+        if xi < 0:
+            raise ValueError(f"algorithm.xi must be nonnegative, got {xi}")
 
         for epoch in range(current_epoch, self.config.trainer.total_epochs):
             for batch_idx in range(len(self.train_dataloader)):
@@ -2379,6 +2397,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                                     max_prompt_length=self.config.data.max_prompt_length,
                                     tokenizer=self.tokenizer,
                                     round_idx=round_idx,
+                                    xi=xi,
                                 )
 
                         # performance-difference selection (not last round)

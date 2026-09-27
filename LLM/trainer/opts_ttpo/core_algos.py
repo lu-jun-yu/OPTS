@@ -1,4 +1,4 @@
-# Copyright 2025 Junyu Lu (Julian Lou). All rights reserved.
+# Copyright 2025 Anonymous authors. All rights reserved.
 
 """
 Core functions to implement OPTS_TTPO algorithms.

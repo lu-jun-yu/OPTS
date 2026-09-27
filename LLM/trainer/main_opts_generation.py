@@ -1,4 +1,4 @@
-# Copyright 2025 Junyu Lu (Julian Lou). All rights reserved.
+# Copyright 2025 Anonymous authors. All rights reserved.
 
 """
 Inference-time scaling/search experiment for OPTS.
@@ -152,6 +152,8 @@ def main_task(config):
     assert reward_mode in ("reward", "value"), f"reward_mode must be 'reward' or 'value', got {reward_mode}"
     perf_diff_baseline_mode = _select_first(config, "algorithm.perf_diff_baseline", default="zero")
     assert perf_diff_baseline_mode in ("zero", "mean"), f"perf_diff_baseline must be 'zero' or 'mean', got {perf_diff_baseline_mode}"
+    xi = float(_select_first(config, "algorithm.xi", default=0.0))
+    assert xi >= 0, f"algorithm.xi must be nonnegative, got {xi}"
 
     prompt_length = rollout_config.prompt_length
     response_length = rollout_config.response_length
@@ -299,6 +301,7 @@ def main_task(config):
           f"n_samples={n_samples}, batch_size={effective_batch_size}, "
           f"requested_batch_size={requested_batch_size}, "
           f"reward_mode={reward_mode}, max_search_per_tree={max_search_per_tree}, "
+          f"xi={xi}, "
           f"opts_snapshot_ks={opts_snapshot_ks}")
 
     global_batch = None
@@ -460,6 +463,7 @@ def main_task(config):
             max_prompt_length=prompt_length,
             tokenizer=tokenizer,
             round_idx=round_idx,
+            xi=xi,
         )
 
         snapshot_k = (round_idx + 1) * batch_ratio

@@ -1,4 +1,4 @@
-# Copyright 2026 Junyu Lu (Julian Lou). All rights reserved.
+# Copyright 2026 Anonymous authors. All rights reserved.
 
 """Evaluate every actor checkpoint in one initialized VERL/vLLM process.
 

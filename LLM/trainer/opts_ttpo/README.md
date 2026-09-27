@@ -1,4 +1,4 @@
-<!-- Copyright 2025 Junyu Lu (Julian Lou). All rights reserved. -->
+<!-- Copyright 2025 Anonymous authors. All rights reserved. -->
 
 # OPTS_TTPO 详细设计文档
 
@@ -6,7 +6,7 @@
 
 ## 1 算法概述
 
-OPTS_TTPO（On-policy Parallel Tree Search + Tree Trajectory Policy Optimization）是一种将树搜索与策略梯度优化相结合的强化学习新范式，由 Junyu Lu 设计。
+OPTS_TTPO（On-policy Parallel Tree Search + Tree Trajectory Policy Optimization）是一种将树搜索与策略梯度优化相结合的强化学习新范式。
 
 ### 1.1 核心思想
 
@@ -365,18 +365,23 @@ $$
 
 perf_diff 为正值表示原轨迹的实际回报低于策略期望，有改善空间。
 
-**注意**：与 Atari/MuJoCo 版本不同，LLM 版本不除以路径长度 $(n-k)$。
+LLM 与 Atari/MuJoCo 使用相同的长度归一化搜索分数：
+
+$$
+S_k = \frac{\operatorname{perf\_diff}_k}{(n-k)^\xi}.
+$$
+
+LLM 训练脚本默认使用 $\xi=0.1$；未显式设置 `algorithm.xi` 时取 0，以兼容旧实验配置。
 
 #### 5.2.3 选择
 
-perf_diff 即为节点的选择评分。选择流程：
+长度归一化后的 $S_k$ 是节点的选择评分。选择流程：
 1. 跳过 `search_count >= max_search_per_tree` 的树
-2. 对每棵树沿最优路径计算 perf_diff，取 argmax
-3. 记录 `max_perf_diffs[uid] = perf_diff[argmax]`（LLM 中使用原始 perf_diff，不做长度归一化）
-4. 用 `max_perf_diffs` 的跨树均值做门控（baseline），仅保留 `raw_perf_diff` 超过均值的候选
-5. 应用掩码：prompt 长度约束 + `</think>` 位置约束（确保分支在思考阶段内）
-6. 跨所有树全局排序，在 `max_searched_tree_ratio` 的新树预算约束下取 top batch_size 个候选（已搜索过的树不占用新树预算）
-7. 通过 `selected_to_branch_points` 将选中节点转换为其父节点作为分支点
+2. 对每棵树沿最优路径计算 $S_k$，按 $S_k$ 取 argmax
+3. 应用 prompt 长度和首个 `\\boxed` 边界约束，得到可生成候选及其 $S_k$
+4. 记录 `max_perf_diffs[uid] = S_k`；`mean` baseline 也由这些分数计算，并用同一 $S_k$ 门控
+5. 按同一 $S_k$ 跨所有树全局排序，在 `max_searched_tree_ratio` 的新树预算约束下取 top batch_size 个候选（已搜索过的树不占用新树预算）
+6. 通过 `selected_to_branch_points` 将选中节点转换为其父节点作为分支点
 
 **step_mean_return 更新机制**：
 - 每个 step 结束时，step_mean_return 更新为该 step 内所有 uid 的 aggregated_return 的均值
