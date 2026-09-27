@@ -1,0 +1,2930 @@
+[
+    {
+        "step": "2048",
+        "mean_return": "111.59167",
+        "max_return": "221.46507",
+        "min_return": "76.4394"
+    },
+    {
+        "step": "4096",
+        "mean_return": "118.45082",
+        "max_return": "211.9239",
+        "min_return": "76.389206"
+    },
+    {
+        "step": "6144",
+        "mean_return": "118.79457",
+        "max_return": "186.7792",
+        "min_return": "76.33678"
+    },
+    {
+        "step": "8192",
+        "mean_return": "138.05286",
+        "max_return": "225.07585",
+        "min_return": "76.683"
+    },
+    {
+        "step": "10240",
+        "mean_return": "159.97952",
+        "max_return": "381.29617",
+        "min_return": "92.20329"
+    },
+    {
+        "step": "12288",
+        "mean_return": "153.8468",
+        "max_return": "265.70544",
+        "min_return": "86.88645"
+    },
+    {
+        "step": "14336",
+        "mean_return": "178.31812",
+        "max_return": "273.1229",
+        "min_return": "88.30561"
+    },
+    {
+        "step": "16384",
+        "mean_return": "203.66675",
+        "max_return": "337.77344",
+        "min_return": "90.674835"
+    },
+    {
+        "step": "18432",
+        "mean_return": "212.8573",
+        "max_return": "356.55106",
+        "min_return": "99.9869"
+    },
+    {
+        "step": "20480",
+        "mean_return": "233.90431",
+        "max_return": "394.76822",
+        "min_return": "115.73864"
+    },
+    {
+        "step": "22528",
+        "mean_return": "249.11868",
+        "max_return": "350.6469",
+        "min_return": "154.43999"
+    },
+    {
+        "step": "24576",
+        "mean_return": "256.5938",
+        "max_return": "413.4249",
+        "min_return": "157.94858"
+    },
+    {
+        "step": "26624",
+        "mean_return": "286.62775",
+        "max_return": "387.5965",
+        "min_return": "134.01361"
+    },
+    {
+        "step": "28672",
+        "mean_return": "309.1911",
+        "max_return": "480.02148",
+        "min_return": "231.55435"
+    },
+    {
+        "step": "30720",
+        "mean_return": "295.1583",
+        "max_return": "446.61298",
+        "min_return": "161.77094"
+    },
+    {
+        "step": "32768",
+        "mean_return": "322.15897",
+        "max_return": "661.57996",
+        "min_return": "228.14796"
+    },
+    {
+        "step": "34816",
+        "mean_return": "340.34253",
+        "max_return": "566.5416",
+        "min_return": "140.8862"
+    },
+    {
+        "step": "36864",
+        "mean_return": "315.3268",
+        "max_return": "549.0056",
+        "min_return": "222.87944"
+    },
+    {
+        "step": "38912",
+        "mean_return": "331.57663",
+        "max_return": "568.9478",
+        "min_return": "125.81565"
+    },
+    {
+        "step": "40960",
+        "mean_return": "341.75906",
+        "max_return": "476.7538",
+        "min_return": "209.82771"
+    },
+    {
+        "step": "43008",
+        "mean_return": "347.8655",
+        "max_return": "562.43475",
+        "min_return": "134.71149"
+    },
+    {
+        "step": "45056",
+        "mean_return": "346.6007",
+        "max_return": "622.0677",
+        "min_return": "253.49327"
+    },
+    {
+        "step": "47104",
+        "mean_return": "367.1144",
+        "max_return": "535.3859",
+        "min_return": "203.41965"
+    },
+    {
+        "step": "49152",
+        "mean_return": "380.7242",
+        "max_return": "558.23016",
+        "min_return": "251.24165"
+    },
+    {
+        "step": "51200",
+        "mean_return": "385.44095",
+        "max_return": "555.9151",
+        "min_return": "255.71529"
+    },
+    {
+        "step": "53248",
+        "mean_return": "366.96396",
+        "max_return": "474.0971",
+        "min_return": "259.22937"
+    },
+    {
+        "step": "55296",
+        "mean_return": "397.7839",
+        "max_return": "667.3697",
+        "min_return": "164.88008"
+    },
+    {
+        "step": "57344",
+        "mean_return": "401.476",
+        "max_return": "662.7527",
+        "min_return": "280.87167"
+    },
+    {
+        "step": "59392",
+        "mean_return": "397.37976",
+        "max_return": "826.86835",
+        "min_return": "244.86977"
+    },
+    {
+        "step": "61440",
+        "mean_return": "390.57047",
+        "max_return": "767.3347",
+        "min_return": "210.30222"
+    },
+    {
+        "step": "63488",
+        "mean_return": "398.7152",
+        "max_return": "662.71124",
+        "min_return": "191.47638"
+    },
+    {
+        "step": "65536",
+        "mean_return": "369.89218",
+        "max_return": "550.6486",
+        "min_return": "221.01703"
+    },
+    {
+        "step": "67584",
+        "mean_return": "378.17316",
+        "max_return": "747.0162",
+        "min_return": "242.72054"
+    },
+    {
+        "step": "69632",
+        "mean_return": "419.6985",
+        "max_return": "898.4062",
+        "min_return": "287.85587"
+    },
+    {
+        "step": "71680",
+        "mean_return": "385.0078",
+        "max_return": "564.82245",
+        "min_return": "289.17636"
+    },
+    {
+        "step": "73728",
+        "mean_return": "396.17108",
+        "max_return": "643.1482",
+        "min_return": "217.82281"
+    },
+    {
+        "step": "75776",
+        "mean_return": "395.57446",
+        "max_return": "650.0298",
+        "min_return": "212.49245"
+    },
+    {
+        "step": "77824",
+        "mean_return": "402.4553",
+        "max_return": "832.0794",
+        "min_return": "233.04428"
+    },
+    {
+        "step": "79872",
+        "mean_return": "423.71423",
+        "max_return": "677.3171",
+        "min_return": "154.09619"
+    },
+    {
+        "step": "81920",
+        "mean_return": "428.52225",
+        "max_return": "750.4308",
+        "min_return": "273.26675"
+    },
+    {
+        "step": "83968",
+        "mean_return": "405.56512",
+        "max_return": "608.47943",
+        "min_return": "261.81686"
+    },
+    {
+        "step": "86016",
+        "mean_return": "381.5059",
+        "max_return": "498.91394",
+        "min_return": "195.9577"
+    },
+    {
+        "step": "88064",
+        "mean_return": "432.4382",
+        "max_return": "854.299",
+        "min_return": "211.80798"
+    },
+    {
+        "step": "90112",
+        "mean_return": "461.05264",
+        "max_return": "709.9104",
+        "min_return": "300.7576"
+    },
+    {
+        "step": "92160",
+        "mean_return": "442.3955",
+        "max_return": "673.96",
+        "min_return": "290.31265"
+    },
+    {
+        "step": "94208",
+        "mean_return": "422.39246",
+        "max_return": "582.8262",
+        "min_return": "159.56989"
+    },
+    {
+        "step": "96256",
+        "mean_return": "443.48465",
+        "max_return": "612.42957",
+        "min_return": "182.75763"
+    },
+    {
+        "step": "98304",
+        "mean_return": "444.28992",
+        "max_return": "691.92596",
+        "min_return": "330.00903"
+    },
+    {
+        "step": "100352",
+        "mean_return": "458.8992",
+        "max_return": "698.7384",
+        "min_return": "317.04993"
+    },
+    {
+        "step": "102400",
+        "mean_return": "458.8303",
+        "max_return": "767.34064",
+        "min_return": "340.24487"
+    },
+    {
+        "step": "104448",
+        "mean_return": "448.29886",
+        "max_return": "680.2362",
+        "min_return": "280.2693"
+    },
+    {
+        "step": "106496",
+        "mean_return": "397.9533",
+        "max_return": "544.73444",
+        "min_return": "222.00899"
+    },
+    {
+        "step": "108544",
+        "mean_return": "421.98956",
+        "max_return": "736.1525",
+        "min_return": "292.45148"
+    },
+    {
+        "step": "110592",
+        "mean_return": "434.34317",
+        "max_return": "1032.1293",
+        "min_return": "182.82603"
+    },
+    {
+        "step": "112640",
+        "mean_return": "434.89694",
+        "max_return": "888.93854",
+        "min_return": "291.07657"
+    },
+    {
+        "step": "114688",
+        "mean_return": "467.7469",
+        "max_return": "727.3502",
+        "min_return": "307.9903"
+    },
+    {
+        "step": "116736",
+        "mean_return": "440.362",
+        "max_return": "694.4234",
+        "min_return": "308.10535"
+    },
+    {
+        "step": "118784",
+        "mean_return": "464.51367",
+        "max_return": "802.6512",
+        "min_return": "364.86316"
+    },
+    {
+        "step": "120832",
+        "mean_return": "418.59097",
+        "max_return": "570.7606",
+        "min_return": "132.16656"
+    },
+    {
+        "step": "122880",
+        "mean_return": "461.65677",
+        "max_return": "706.2307",
+        "min_return": "323.77985"
+    },
+    {
+        "step": "124928",
+        "mean_return": "465.83505",
+        "max_return": "830.8977",
+        "min_return": "330.81482"
+    },
+    {
+        "step": "126976",
+        "mean_return": "408.37213",
+        "max_return": "785.3964",
+        "min_return": "158.5598"
+    },
+    {
+        "step": "129024",
+        "mean_return": "456.53854",
+        "max_return": "836.33795",
+        "min_return": "218.34651"
+    },
+    {
+        "step": "131072",
+        "mean_return": "463.46307",
+        "max_return": "638.3192",
+        "min_return": "258.57782"
+    },
+    {
+        "step": "133120",
+        "mean_return": "460.56418",
+        "max_return": "1435.022",
+        "min_return": "247.13417"
+    },
+    {
+        "step": "135168",
+        "mean_return": "472.88425",
+        "max_return": "858.49023",
+        "min_return": "195.20578"
+    },
+    {
+        "step": "137216",
+        "mean_return": "462.7842",
+        "max_return": "723.11676",
+        "min_return": "175.8268"
+    },
+    {
+        "step": "139264",
+        "mean_return": "477.70065",
+        "max_return": "770.96747",
+        "min_return": "294.48807"
+    },
+    {
+        "step": "141312",
+        "mean_return": "482.6136",
+        "max_return": "851.8305",
+        "min_return": "279.81726"
+    },
+    {
+        "step": "143360",
+        "mean_return": "509.43024",
+        "max_return": "752.0417",
+        "min_return": "223.39691"
+    },
+    {
+        "step": "145408",
+        "mean_return": "482.6972",
+        "max_return": "849.8219",
+        "min_return": "313.7554"
+    },
+    {
+        "step": "147456",
+        "mean_return": "454.9759",
+        "max_return": "632.44684",
+        "min_return": "276.8361"
+    },
+    {
+        "step": "149504",
+        "mean_return": "423.02753",
+        "max_return": "552.68085",
+        "min_return": "310.54874"
+    },
+    {
+        "step": "151552",
+        "mean_return": "447.7655",
+        "max_return": "828.76337",
+        "min_return": "262.22507"
+    },
+    {
+        "step": "153600",
+        "mean_return": "494.49634",
+        "max_return": "784.4472",
+        "min_return": "307.71994"
+    },
+    {
+        "step": "155648",
+        "mean_return": "426.27332",
+        "max_return": "689.6445",
+        "min_return": "169.32248"
+    },
+    {
+        "step": "157696",
+        "mean_return": "487.02997",
+        "max_return": "942.9684",
+        "min_return": "282.05222"
+    },
+    {
+        "step": "159744",
+        "mean_return": "544.3919",
+        "max_return": "951.2579",
+        "min_return": "308.29797"
+    },
+    {
+        "step": "161792",
+        "mean_return": "500.4519",
+        "max_return": "812.3449",
+        "min_return": "235.16159"
+    },
+    {
+        "step": "163840",
+        "mean_return": "500.0525",
+        "max_return": "823.25146",
+        "min_return": "231.98593"
+    },
+    {
+        "step": "165888",
+        "mean_return": "551.5432",
+        "max_return": "1167.1125",
+        "min_return": "267.74973"
+    },
+    {
+        "step": "167936",
+        "mean_return": "506.9201",
+        "max_return": "863.6042",
+        "min_return": "282.0964"
+    },
+    {
+        "step": "169984",
+        "mean_return": "490.45908",
+        "max_return": "703.85767",
+        "min_return": "291.3832"
+    },
+    {
+        "step": "172032",
+        "mean_return": "500.58823",
+        "max_return": "758.94653",
+        "min_return": "326.3217"
+    },
+    {
+        "step": "174080",
+        "mean_return": "462.61142",
+        "max_return": "627.67285",
+        "min_return": "301.06598"
+    },
+    {
+        "step": "176128",
+        "mean_return": "496.5584",
+        "max_return": "716.27563",
+        "min_return": "308.31305"
+    },
+    {
+        "step": "178176",
+        "mean_return": "487.96912",
+        "max_return": "889.08856",
+        "min_return": "224.52939"
+    },
+    {
+        "step": "180224",
+        "mean_return": "504.3653",
+        "max_return": "759.55505",
+        "min_return": "230.01772"
+    },
+    {
+        "step": "182272",
+        "mean_return": "575.0317",
+        "max_return": "851.2913",
+        "min_return": "277.1752"
+    },
+    {
+        "step": "184320",
+        "mean_return": "510.778",
+        "max_return": "764.74695",
+        "min_return": "239.14647"
+    },
+    {
+        "step": "186368",
+        "mean_return": "548.37726",
+        "max_return": "960.04895",
+        "min_return": "277.94553"
+    },
+    {
+        "step": "188416",
+        "mean_return": "453.5882",
+        "max_return": "627.5766",
+        "min_return": "284.5322"
+    },
+    {
+        "step": "190464",
+        "mean_return": "468.60645",
+        "max_return": "1069.3383",
+        "min_return": "325.92023"
+    },
+    {
+        "step": "192512",
+        "mean_return": "484.83398",
+        "max_return": "1059.6638",
+        "min_return": "308.0011"
+    },
+    {
+        "step": "194560",
+        "mean_return": "472.43042",
+        "max_return": "711.79584",
+        "min_return": "301.42685"
+    },
+    {
+        "step": "196608",
+        "mean_return": "454.939",
+        "max_return": "584.6231",
+        "min_return": "300.29388"
+    },
+    {
+        "step": "198656",
+        "mean_return": "434.1606",
+        "max_return": "676.09564",
+        "min_return": "238.6757"
+    },
+    {
+        "step": "200704",
+        "mean_return": "541.61316",
+        "max_return": "1042.9491",
+        "min_return": "347.00113"
+    },
+    {
+        "step": "202752",
+        "mean_return": "453.3707",
+        "max_return": "687.3973",
+        "min_return": "204.16974"
+    },
+    {
+        "step": "204800",
+        "mean_return": "466.66837",
+        "max_return": "759.417",
+        "min_return": "264.98468"
+    },
+    {
+        "step": "206848",
+        "mean_return": "472.3393",
+        "max_return": "840.2785",
+        "min_return": "314.4078"
+    },
+    {
+        "step": "208896",
+        "mean_return": "476.25198",
+        "max_return": "971.6018",
+        "min_return": "259.92282"
+    },
+    {
+        "step": "210944",
+        "mean_return": "508.59082",
+        "max_return": "684.8312",
+        "min_return": "271.3222"
+    },
+    {
+        "step": "212992",
+        "mean_return": "461.88223",
+        "max_return": "911.1818",
+        "min_return": "290.0587"
+    },
+    {
+        "step": "215040",
+        "mean_return": "476.12598",
+        "max_return": "634.5097",
+        "min_return": "322.1431"
+    },
+    {
+        "step": "217088",
+        "mean_return": "457.2195",
+        "max_return": "826.22614",
+        "min_return": "317.9045"
+    },
+    {
+        "step": "219136",
+        "mean_return": "472.4205",
+        "max_return": "844.41833",
+        "min_return": "306.84735"
+    },
+    {
+        "step": "221184",
+        "mean_return": "536.48083",
+        "max_return": "1230.279",
+        "min_return": "257.8678"
+    },
+    {
+        "step": "223232",
+        "mean_return": "595.90173",
+        "max_return": "802.28345",
+        "min_return": "396.11853"
+    },
+    {
+        "step": "225280",
+        "mean_return": "504.70398",
+        "max_return": "942.3565",
+        "min_return": "229.2762"
+    },
+    {
+        "step": "227328",
+        "mean_return": "496.03482",
+        "max_return": "730.63806",
+        "min_return": "271.55707"
+    },
+    {
+        "step": "229376",
+        "mean_return": "471.56738",
+        "max_return": "775.4351",
+        "min_return": "332.61203"
+    },
+    {
+        "step": "231424",
+        "mean_return": "462.26898",
+        "max_return": "689.2775",
+        "min_return": "259.85236"
+    },
+    {
+        "step": "233472",
+        "mean_return": "447.79233",
+        "max_return": "797.4817",
+        "min_return": "254.38815"
+    },
+    {
+        "step": "235520",
+        "mean_return": "516.88916",
+        "max_return": "924.9599",
+        "min_return": "307.64148"
+    },
+    {
+        "step": "237568",
+        "mean_return": "457.1746",
+        "max_return": "865.66583",
+        "min_return": "241.24225"
+    },
+    {
+        "step": "239616",
+        "mean_return": "531.3744",
+        "max_return": "949.0117",
+        "min_return": "320.4457"
+    },
+    {
+        "step": "241664",
+        "mean_return": "485.4479",
+        "max_return": "701.19946",
+        "min_return": "227.4376"
+    },
+    {
+        "step": "243712",
+        "mean_return": "491.02432",
+        "max_return": "927.0902",
+        "min_return": "232.28311"
+    },
+    {
+        "step": "245760",
+        "mean_return": "471.63464",
+        "max_return": "786.4671",
+        "min_return": "268.75342"
+    },
+    {
+        "step": "247808",
+        "mean_return": "507.3411",
+        "max_return": "794.04535",
+        "min_return": "311.42093"
+    },
+    {
+        "step": "249856",
+        "mean_return": "472.59238",
+        "max_return": "863.2152",
+        "min_return": "273.96188"
+    },
+    {
+        "step": "251904",
+        "mean_return": "525.4422",
+        "max_return": "964.3035",
+        "min_return": "288.5158"
+    },
+    {
+        "step": "253952",
+        "mean_return": "499.28217",
+        "max_return": "1507.7731",
+        "min_return": "318.4905"
+    },
+    {
+        "step": "256000",
+        "mean_return": "491.73596",
+        "max_return": "701.0877",
+        "min_return": "327.7425"
+    },
+    {
+        "step": "258048",
+        "mean_return": "536.067",
+        "max_return": "1029.2104",
+        "min_return": "314.9342"
+    },
+    {
+        "step": "260096",
+        "mean_return": "479.31406",
+        "max_return": "667.49805",
+        "min_return": "340.00183"
+    },
+    {
+        "step": "262144",
+        "mean_return": "417.23596",
+        "max_return": "683.4403",
+        "min_return": "276.36447"
+    },
+    {
+        "step": "264192",
+        "mean_return": "516.0101",
+        "max_return": "777.93695",
+        "min_return": "359.0235"
+    },
+    {
+        "step": "266240",
+        "mean_return": "522.89",
+        "max_return": "658.91486",
+        "min_return": "334.1622"
+    },
+    {
+        "step": "268288",
+        "mean_return": "536.2067",
+        "max_return": "885.3323",
+        "min_return": "338.4193"
+    },
+    {
+        "step": "270336",
+        "mean_return": "481.63235",
+        "max_return": "725.6913",
+        "min_return": "222.54451"
+    },
+    {
+        "step": "272384",
+        "mean_return": "520.43134",
+        "max_return": "893.3568",
+        "min_return": "262.35883"
+    },
+    {
+        "step": "274432",
+        "mean_return": "547.10614",
+        "max_return": "886.27216",
+        "min_return": "303.9657"
+    },
+    {
+        "step": "276480",
+        "mean_return": "482.48935",
+        "max_return": "775.4753",
+        "min_return": "287.9595"
+    },
+    {
+        "step": "278528",
+        "mean_return": "549.2565",
+        "max_return": "982.06604",
+        "min_return": "313.30087"
+    },
+    {
+        "step": "280576",
+        "mean_return": "441.61386",
+        "max_return": "732.93616",
+        "min_return": "269.74063"
+    },
+    {
+        "step": "282624",
+        "mean_return": "508.17",
+        "max_return": "905.88464",
+        "min_return": "346.08206"
+    },
+    {
+        "step": "284672",
+        "mean_return": "512.57025",
+        "max_return": "777.0443",
+        "min_return": "304.44067"
+    },
+    {
+        "step": "286720",
+        "mean_return": "471.72772",
+        "max_return": "785.63715",
+        "min_return": "260.96814"
+    },
+    {
+        "step": "288768",
+        "mean_return": "488.57617",
+        "max_return": "923.62866",
+        "min_return": "278.7584"
+    },
+    {
+        "step": "290816",
+        "mean_return": "491.0908",
+        "max_return": "728.9513",
+        "min_return": "281.94174"
+    },
+    {
+        "step": "292864",
+        "mean_return": "409.06073",
+        "max_return": "572.1402",
+        "min_return": "252.85242"
+    },
+    {
+        "step": "294912",
+        "mean_return": "482.7835",
+        "max_return": "787.47644",
+        "min_return": "247.47551"
+    },
+    {
+        "step": "296960",
+        "mean_return": "496.66647",
+        "max_return": "803.1635",
+        "min_return": "325.22064"
+    },
+    {
+        "step": "299008",
+        "mean_return": "508.90598",
+        "max_return": "711.1181",
+        "min_return": "236.62961"
+    },
+    {
+        "step": "301056",
+        "mean_return": "467.14777",
+        "max_return": "789.6285",
+        "min_return": "276.83502"
+    },
+    {
+        "step": "303104",
+        "mean_return": "521.16223",
+        "max_return": "732.10504",
+        "min_return": "294.0299"
+    },
+    {
+        "step": "305152",
+        "mean_return": "508.17404",
+        "max_return": "1017.3848",
+        "min_return": "308.16025"
+    },
+    {
+        "step": "307200",
+        "mean_return": "528.7264",
+        "max_return": "1015.6022",
+        "min_return": "276.41028"
+    },
+    {
+        "step": "309248",
+        "mean_return": "527.43713",
+        "max_return": "844.50183",
+        "min_return": "222.30766"
+    },
+    {
+        "step": "311296",
+        "mean_return": "512.38544",
+        "max_return": "725.8535",
+        "min_return": "372.46365"
+    },
+    {
+        "step": "313344",
+        "mean_return": "485.39157",
+        "max_return": "639.105",
+        "min_return": "348.87915"
+    },
+    {
+        "step": "315392",
+        "mean_return": "462.14014",
+        "max_return": "710.5216",
+        "min_return": "328.1708"
+    },
+    {
+        "step": "317440",
+        "mean_return": "451.72507",
+        "max_return": "756.54535",
+        "min_return": "283.88232"
+    },
+    {
+        "step": "319488",
+        "mean_return": "485.39886",
+        "max_return": "805.85394",
+        "min_return": "342.07623"
+    },
+    {
+        "step": "321536",
+        "mean_return": "536.8542",
+        "max_return": "1160.665",
+        "min_return": "362.26715"
+    },
+    {
+        "step": "323584",
+        "mean_return": "486.9552",
+        "max_return": "741.59717",
+        "min_return": "363.49258"
+    },
+    {
+        "step": "325632",
+        "mean_return": "509.34314",
+        "max_return": "687.83185",
+        "min_return": "319.03485"
+    },
+    {
+        "step": "327680",
+        "mean_return": "488.11658",
+        "max_return": "673.1251",
+        "min_return": "258.31458"
+    },
+    {
+        "step": "329728",
+        "mean_return": "496.39862",
+        "max_return": "853.2566",
+        "min_return": "248.30772"
+    },
+    {
+        "step": "331776",
+        "mean_return": "471.2211",
+        "max_return": "750.87537",
+        "min_return": "277.5144"
+    },
+    {
+        "step": "333824",
+        "mean_return": "470.6846",
+        "max_return": "795.1782",
+        "min_return": "292.71838"
+    },
+    {
+        "step": "335872",
+        "mean_return": "489.20853",
+        "max_return": "810.9544",
+        "min_return": "286.4917"
+    },
+    {
+        "step": "337920",
+        "mean_return": "512.1487",
+        "max_return": "739.4141",
+        "min_return": "386.24902"
+    },
+    {
+        "step": "339968",
+        "mean_return": "510.42365",
+        "max_return": "803.3661",
+        "min_return": "311.09982"
+    },
+    {
+        "step": "342016",
+        "mean_return": "511.79013",
+        "max_return": "670.5406",
+        "min_return": "262.13828"
+    },
+    {
+        "step": "344064",
+        "mean_return": "562.7562",
+        "max_return": "795.9492",
+        "min_return": "177.9095"
+    },
+    {
+        "step": "346112",
+        "mean_return": "519.3193",
+        "max_return": "993.0049",
+        "min_return": "238.27309"
+    },
+    {
+        "step": "348160",
+        "mean_return": "551.6662",
+        "max_return": "943.7297",
+        "min_return": "329.27908"
+    },
+    {
+        "step": "350208",
+        "mean_return": "496.08264",
+        "max_return": "772.04236",
+        "min_return": "217.75934"
+    },
+    {
+        "step": "352256",
+        "mean_return": "609.4778",
+        "max_return": "1266.5339",
+        "min_return": "228.92235"
+    },
+    {
+        "step": "354304",
+        "mean_return": "538.1073",
+        "max_return": "1088.4071",
+        "min_return": "255.526"
+    },
+    {
+        "step": "356352",
+        "mean_return": "517.91986",
+        "max_return": "722.50464",
+        "min_return": "279.05228"
+    },
+    {
+        "step": "358400",
+        "mean_return": "497.166",
+        "max_return": "776.4348",
+        "min_return": "342.65573"
+    },
+    {
+        "step": "360448",
+        "mean_return": "541.60724",
+        "max_return": "986.54913",
+        "min_return": "341.64838"
+    },
+    {
+        "step": "362496",
+        "mean_return": "594.63696",
+        "max_return": "1017.84515",
+        "min_return": "372.51364"
+    },
+    {
+        "step": "364544",
+        "mean_return": "504.18958",
+        "max_return": "951.9755",
+        "min_return": "230.94264"
+    },
+    {
+        "step": "366592",
+        "mean_return": "476.693",
+        "max_return": "738.31335",
+        "min_return": "275.22552"
+    },
+    {
+        "step": "368640",
+        "mean_return": "537.8748",
+        "max_return": "815.4529",
+        "min_return": "276.6061"
+    },
+    {
+        "step": "370688",
+        "mean_return": "568.85724",
+        "max_return": "818.24347",
+        "min_return": "356.59354"
+    },
+    {
+        "step": "372736",
+        "mean_return": "523.2593",
+        "max_return": "886.33575",
+        "min_return": "335.8311"
+    },
+    {
+        "step": "374784",
+        "mean_return": "533.0401",
+        "max_return": "924.55493",
+        "min_return": "282.4925"
+    },
+    {
+        "step": "376832",
+        "mean_return": "487.7598",
+        "max_return": "716.809",
+        "min_return": "280.6249"
+    },
+    {
+        "step": "378880",
+        "mean_return": "536.5173",
+        "max_return": "737.4091",
+        "min_return": "396.79956"
+    },
+    {
+        "step": "380928",
+        "mean_return": "557.2898",
+        "max_return": "914.36005",
+        "min_return": "364.47437"
+    },
+    {
+        "step": "382976",
+        "mean_return": "546.54047",
+        "max_return": "905.95953",
+        "min_return": "273.20267"
+    },
+    {
+        "step": "385024",
+        "mean_return": "531.90393",
+        "max_return": "776.5273",
+        "min_return": "270.50827"
+    },
+    {
+        "step": "387072",
+        "mean_return": "470.4102",
+        "max_return": "638.5129",
+        "min_return": "240.64032"
+    },
+    {
+        "step": "389120",
+        "mean_return": "582.8182",
+        "max_return": "972.8884",
+        "min_return": "359.30527"
+    },
+    {
+        "step": "391168",
+        "mean_return": "497.39142",
+        "max_return": "858.8972",
+        "min_return": "268.37177"
+    },
+    {
+        "step": "393216",
+        "mean_return": "571.12415",
+        "max_return": "979.54205",
+        "min_return": "305.48874"
+    },
+    {
+        "step": "395264",
+        "mean_return": "513.8685",
+        "max_return": "785.49335",
+        "min_return": "153.06502"
+    },
+    {
+        "step": "397312",
+        "mean_return": "512.78503",
+        "max_return": "982.25745",
+        "min_return": "301.33054"
+    },
+    {
+        "step": "399360",
+        "mean_return": "572.36725",
+        "max_return": "804.89124",
+        "min_return": "322.85645"
+    },
+    {
+        "step": "401408",
+        "mean_return": "479.12375",
+        "max_return": "940.82404",
+        "min_return": "334.782"
+    },
+    {
+        "step": "403456",
+        "mean_return": "538.97003",
+        "max_return": "818.6568",
+        "min_return": "363.7978"
+    },
+    {
+        "step": "405504",
+        "mean_return": "565.8762",
+        "max_return": "1574.2961",
+        "min_return": "359.6666"
+    },
+    {
+        "step": "407552",
+        "mean_return": "483.37714",
+        "max_return": "889.74",
+        "min_return": "224.65752"
+    },
+    {
+        "step": "409600",
+        "mean_return": "496.72318",
+        "max_return": "853.6352",
+        "min_return": "289.13425"
+    },
+    {
+        "step": "411648",
+        "mean_return": "532.85126",
+        "max_return": "703.087",
+        "min_return": "407.94995"
+    },
+    {
+        "step": "413696",
+        "mean_return": "513.14343",
+        "max_return": "903.1756",
+        "min_return": "289.91733"
+    },
+    {
+        "step": "415744",
+        "mean_return": "526.9339",
+        "max_return": "782.6771",
+        "min_return": "267.62924"
+    },
+    {
+        "step": "417792",
+        "mean_return": "571.56366",
+        "max_return": "834.17914",
+        "min_return": "345.0118"
+    },
+    {
+        "step": "419840",
+        "mean_return": "599.48364",
+        "max_return": "1358.8162",
+        "min_return": "292.64197"
+    },
+    {
+        "step": "421888",
+        "mean_return": "532.5858",
+        "max_return": "1084.8586",
+        "min_return": "294.28613"
+    },
+    {
+        "step": "423936",
+        "mean_return": "502.6445",
+        "max_return": "879.9179",
+        "min_return": "287.82028"
+    },
+    {
+        "step": "425984",
+        "mean_return": "509.4666",
+        "max_return": "974.4955",
+        "min_return": "256.88956"
+    },
+    {
+        "step": "428032",
+        "mean_return": "493.60544",
+        "max_return": "618.6839",
+        "min_return": "236.93788"
+    },
+    {
+        "step": "430080",
+        "mean_return": "513.42035",
+        "max_return": "702.59094",
+        "min_return": "322.1343"
+    },
+    {
+        "step": "432128",
+        "mean_return": "530.7952",
+        "max_return": "982.7995",
+        "min_return": "312.1347"
+    },
+    {
+        "step": "434176",
+        "mean_return": "500.74158",
+        "max_return": "1022.7048",
+        "min_return": "200.79938"
+    },
+    {
+        "step": "436224",
+        "mean_return": "480.51804",
+        "max_return": "764.5831",
+        "min_return": "263.46912"
+    },
+    {
+        "step": "438272",
+        "mean_return": "526.1118",
+        "max_return": "804.61554",
+        "min_return": "274.12958"
+    },
+    {
+        "step": "440320",
+        "mean_return": "532.1886",
+        "max_return": "846.0966",
+        "min_return": "223.93182"
+    },
+    {
+        "step": "442368",
+        "mean_return": "504.76712",
+        "max_return": "829.4966",
+        "min_return": "255.49016"
+    },
+    {
+        "step": "444416",
+        "mean_return": "512.0135",
+        "max_return": "833.5926",
+        "min_return": "222.03131"
+    },
+    {
+        "step": "446464",
+        "mean_return": "535.9077",
+        "max_return": "762.71106",
+        "min_return": "364.47247"
+    },
+    {
+        "step": "448512",
+        "mean_return": "516.9348",
+        "max_return": "1054.8086",
+        "min_return": "278.1139"
+    },
+    {
+        "step": "450560",
+        "mean_return": "538.93066",
+        "max_return": "954.9632",
+        "min_return": "236.41318"
+    },
+    {
+        "step": "452608",
+        "mean_return": "527.94305",
+        "max_return": "890.95215",
+        "min_return": "295.62567"
+    },
+    {
+        "step": "454656",
+        "mean_return": "584.7016",
+        "max_return": "808.55316",
+        "min_return": "342.27737"
+    },
+    {
+        "step": "456704",
+        "mean_return": "540.1799",
+        "max_return": "879.48474",
+        "min_return": "314.66983"
+    },
+    {
+        "step": "458752",
+        "mean_return": "506.79245",
+        "max_return": "862.21155",
+        "min_return": "274.1751"
+    },
+    {
+        "step": "460800",
+        "mean_return": "465.1096",
+        "max_return": "731.85693",
+        "min_return": "225.57678"
+    },
+    {
+        "step": "462848",
+        "mean_return": "528.69336",
+        "max_return": "920.58746",
+        "min_return": "303.74905"
+    },
+    {
+        "step": "464896",
+        "mean_return": "502.7969",
+        "max_return": "797.44794",
+        "min_return": "310.40732"
+    },
+    {
+        "step": "466944",
+        "mean_return": "537.7335",
+        "max_return": "1047.1205",
+        "min_return": "310.9184"
+    },
+    {
+        "step": "468992",
+        "mean_return": "550.76575",
+        "max_return": "827.8056",
+        "min_return": "360.9132"
+    },
+    {
+        "step": "471040",
+        "mean_return": "547.66064",
+        "max_return": "875.40106",
+        "min_return": "268.0987"
+    },
+    {
+        "step": "473088",
+        "mean_return": "536.4881",
+        "max_return": "896.52795",
+        "min_return": "347.47504"
+    },
+    {
+        "step": "475136",
+        "mean_return": "541.789",
+        "max_return": "978.4926",
+        "min_return": "413.79703"
+    },
+    {
+        "step": "477184",
+        "mean_return": "570.82947",
+        "max_return": "1084.6025",
+        "min_return": "316.5715"
+    },
+    {
+        "step": "479232",
+        "mean_return": "499.80133",
+        "max_return": "821.1065",
+        "min_return": "338.4863"
+    },
+    {
+        "step": "481280",
+        "mean_return": "565.88654",
+        "max_return": "1012.69763",
+        "min_return": "366.84546"
+    },
+    {
+        "step": "483328",
+        "mean_return": "500.33322",
+        "max_return": "809.10944",
+        "min_return": "288.92166"
+    },
+    {
+        "step": "485376",
+        "mean_return": "524.31226",
+        "max_return": "890.4333",
+        "min_return": "286.28134"
+    },
+    {
+        "step": "487424",
+        "mean_return": "543.25214",
+        "max_return": "949.6612",
+        "min_return": "279.44104"
+    },
+    {
+        "step": "489472",
+        "mean_return": "541.8015",
+        "max_return": "826.357",
+        "min_return": "313.54358"
+    },
+    {
+        "step": "491520",
+        "mean_return": "558.94244",
+        "max_return": "1000.22754",
+        "min_return": "418.96268"
+    },
+    {
+        "step": "493568",
+        "mean_return": "525.7056",
+        "max_return": "1001.8971",
+        "min_return": "327.69772"
+    },
+    {
+        "step": "495616",
+        "mean_return": "580.7375",
+        "max_return": "1054.0461",
+        "min_return": "270.5922"
+    },
+    {
+        "step": "497664",
+        "mean_return": "518.27155",
+        "max_return": "789.4055",
+        "min_return": "221.92911"
+    },
+    {
+        "step": "499712",
+        "mean_return": "589.5555",
+        "max_return": "774.89105",
+        "min_return": "346.04138"
+    },
+    {
+        "step": "501760",
+        "mean_return": "505.16922",
+        "max_return": "828.7534",
+        "min_return": "247.54709"
+    },
+    {
+        "step": "503808",
+        "mean_return": "562.1827",
+        "max_return": "1092.2075",
+        "min_return": "351.7955"
+    },
+    {
+        "step": "505856",
+        "mean_return": "537.48035",
+        "max_return": "763.57214",
+        "min_return": "363.28262"
+    },
+    {
+        "step": "507904",
+        "mean_return": "561.9909",
+        "max_return": "977.386",
+        "min_return": "401.01343"
+    },
+    {
+        "step": "509952",
+        "mean_return": "534.5404",
+        "max_return": "756.79236",
+        "min_return": "393.32254"
+    },
+    {
+        "step": "512000",
+        "mean_return": "519.5368",
+        "max_return": "846.2902",
+        "min_return": "325.79666"
+    },
+    {
+        "step": "514048",
+        "mean_return": "493.87238",
+        "max_return": "874.7541",
+        "min_return": "339.8625"
+    },
+    {
+        "step": "516096",
+        "mean_return": "527.3499",
+        "max_return": "768.039",
+        "min_return": "359.33392"
+    },
+    {
+        "step": "518144",
+        "mean_return": "529.56995",
+        "max_return": "877.9697",
+        "min_return": "241.93254"
+    },
+    {
+        "step": "520192",
+        "mean_return": "516.44196",
+        "max_return": "1079.1343",
+        "min_return": "219.65317"
+    },
+    {
+        "step": "522240",
+        "mean_return": "508.07608",
+        "max_return": "691.866",
+        "min_return": "312.0971"
+    },
+    {
+        "step": "524288",
+        "mean_return": "554.0421",
+        "max_return": "873.9867",
+        "min_return": "222.46248"
+    },
+    {
+        "step": "526336",
+        "mean_return": "495.91495",
+        "max_return": "959.5533",
+        "min_return": "242.92908"
+    },
+    {
+        "step": "528384",
+        "mean_return": "578.59235",
+        "max_return": "832.5088",
+        "min_return": "353.61203"
+    },
+    {
+        "step": "530432",
+        "mean_return": "499.08035",
+        "max_return": "827.0766",
+        "min_return": "257.52744"
+    },
+    {
+        "step": "532480",
+        "mean_return": "551.31915",
+        "max_return": "1271.362",
+        "min_return": "197.86226"
+    },
+    {
+        "step": "534528",
+        "mean_return": "541.5495",
+        "max_return": "1148.7694",
+        "min_return": "161.43494"
+    },
+    {
+        "step": "536576",
+        "mean_return": "536.11725",
+        "max_return": "831.5114",
+        "min_return": "347.85925"
+    },
+    {
+        "step": "538624",
+        "mean_return": "566.7287",
+        "max_return": "903.8418",
+        "min_return": "380.5207"
+    },
+    {
+        "step": "540672",
+        "mean_return": "515.8265",
+        "max_return": "1109.3748",
+        "min_return": "219.45155"
+    },
+    {
+        "step": "542720",
+        "mean_return": "549.97205",
+        "max_return": "1061.6921",
+        "min_return": "335.82977"
+    },
+    {
+        "step": "544768",
+        "mean_return": "492.905",
+        "max_return": "907.6102",
+        "min_return": "207.264"
+    },
+    {
+        "step": "546816",
+        "mean_return": "555.0582",
+        "max_return": "792.0179",
+        "min_return": "291.7598"
+    },
+    {
+        "step": "548864",
+        "mean_return": "567.7459",
+        "max_return": "884.426",
+        "min_return": "314.09576"
+    },
+    {
+        "step": "550912",
+        "mean_return": "571.37683",
+        "max_return": "1138.534",
+        "min_return": "271.7552"
+    },
+    {
+        "step": "552960",
+        "mean_return": "590.97174",
+        "max_return": "1192.7643",
+        "min_return": "327.16226"
+    },
+    {
+        "step": "555008",
+        "mean_return": "557.0094",
+        "max_return": "938.95044",
+        "min_return": "299.25583"
+    },
+    {
+        "step": "557056",
+        "mean_return": "541.912",
+        "max_return": "900.2521",
+        "min_return": "216.43999"
+    },
+    {
+        "step": "559104",
+        "mean_return": "560.43945",
+        "max_return": "862.69806",
+        "min_return": "206.70432"
+    },
+    {
+        "step": "561152",
+        "mean_return": "560.6754",
+        "max_return": "803.0482",
+        "min_return": "265.87198"
+    },
+    {
+        "step": "563200",
+        "mean_return": "583.7285",
+        "max_return": "944.95355",
+        "min_return": "364.59985"
+    },
+    {
+        "step": "565248",
+        "mean_return": "523.2331",
+        "max_return": "837.7842",
+        "min_return": "155.89934"
+    },
+    {
+        "step": "567296",
+        "mean_return": "527.37146",
+        "max_return": "1128.8683",
+        "min_return": "359.16177"
+    },
+    {
+        "step": "569344",
+        "mean_return": "544.1536",
+        "max_return": "946.30493",
+        "min_return": "315.67673"
+    },
+    {
+        "step": "571392",
+        "mean_return": "598.8926",
+        "max_return": "923.5984",
+        "min_return": "223.90309"
+    },
+    {
+        "step": "573440",
+        "mean_return": "556.1815",
+        "max_return": "692.3945",
+        "min_return": "427.1254"
+    },
+    {
+        "step": "575488",
+        "mean_return": "510.39658",
+        "max_return": "891.8195",
+        "min_return": "241.28996"
+    },
+    {
+        "step": "577536",
+        "mean_return": "542.76416",
+        "max_return": "924.4618",
+        "min_return": "192.40352"
+    },
+    {
+        "step": "579584",
+        "mean_return": "551.94104",
+        "max_return": "836.4979",
+        "min_return": "366.54373"
+    },
+    {
+        "step": "581632",
+        "mean_return": "572.1877",
+        "max_return": "906.48553",
+        "min_return": "255.7333"
+    },
+    {
+        "step": "583680",
+        "mean_return": "514.0217",
+        "max_return": "722.6853",
+        "min_return": "272.06232"
+    },
+    {
+        "step": "585728",
+        "mean_return": "497.4766",
+        "max_return": "730.5208",
+        "min_return": "278.66058"
+    },
+    {
+        "step": "587776",
+        "mean_return": "587.10583",
+        "max_return": "1053.127",
+        "min_return": "207.70071"
+    },
+    {
+        "step": "589824",
+        "mean_return": "554.72833",
+        "max_return": "910.9618",
+        "min_return": "351.99844"
+    },
+    {
+        "step": "591872",
+        "mean_return": "492.7338",
+        "max_return": "844.18774",
+        "min_return": "337.06973"
+    },
+    {
+        "step": "593920",
+        "mean_return": "534.3027",
+        "max_return": "942.24786",
+        "min_return": "325.55566"
+    },
+    {
+        "step": "595968",
+        "mean_return": "540.35425",
+        "max_return": "871.14594",
+        "min_return": "314.7997"
+    },
+    {
+        "step": "598016",
+        "mean_return": "544.0528",
+        "max_return": "797.7706",
+        "min_return": "273.6155"
+    },
+    {
+        "step": "600064",
+        "mean_return": "598.49695",
+        "max_return": "1027.047",
+        "min_return": "364.88507"
+    },
+    {
+        "step": "602112",
+        "mean_return": "544.53784",
+        "max_return": "869.2932",
+        "min_return": "230.23674"
+    },
+    {
+        "step": "604160",
+        "mean_return": "602.4836",
+        "max_return": "1201.678",
+        "min_return": "372.4898"
+    },
+    {
+        "step": "606208",
+        "mean_return": "594.85724",
+        "max_return": "902.2216",
+        "min_return": "347.95004"
+    },
+    {
+        "step": "608256",
+        "mean_return": "603.198",
+        "max_return": "1001.16516",
+        "min_return": "451.1224"
+    },
+    {
+        "step": "610304",
+        "mean_return": "502.8387",
+        "max_return": "801.11176",
+        "min_return": "215.84267"
+    },
+    {
+        "step": "612352",
+        "mean_return": "573.431",
+        "max_return": "966.542",
+        "min_return": "263.97397"
+    },
+    {
+        "step": "614400",
+        "mean_return": "572.2159",
+        "max_return": "1006.8366",
+        "min_return": "261.2754"
+    },
+    {
+        "step": "616448",
+        "mean_return": "533.8896",
+        "max_return": "727.8777",
+        "min_return": "349.49927"
+    },
+    {
+        "step": "618496",
+        "mean_return": "536.2755",
+        "max_return": "964.19885",
+        "min_return": "321.91022"
+    },
+    {
+        "step": "620544",
+        "mean_return": "594.8028",
+        "max_return": "900.29663",
+        "min_return": "365.22342"
+    },
+    {
+        "step": "622592",
+        "mean_return": "534.7169",
+        "max_return": "802.45514",
+        "min_return": "209.02483"
+    },
+    {
+        "step": "624640",
+        "mean_return": "580.8426",
+        "max_return": "963.994",
+        "min_return": "248.76413"
+    },
+    {
+        "step": "626688",
+        "mean_return": "564.987",
+        "max_return": "768.0678",
+        "min_return": "352.99045"
+    },
+    {
+        "step": "628736",
+        "mean_return": "571.2827",
+        "max_return": "927.91095",
+        "min_return": "366.13208"
+    },
+    {
+        "step": "630784",
+        "mean_return": "548.69464",
+        "max_return": "839.0902",
+        "min_return": "369.7595"
+    },
+    {
+        "step": "632832",
+        "mean_return": "511.19824",
+        "max_return": "748.60175",
+        "min_return": "376.48904"
+    },
+    {
+        "step": "634880",
+        "mean_return": "564.8808",
+        "max_return": "1005.7666",
+        "min_return": "364.53543"
+    },
+    {
+        "step": "636928",
+        "mean_return": "569.57654",
+        "max_return": "899.08997",
+        "min_return": "388.5209"
+    },
+    {
+        "step": "638976",
+        "mean_return": "539.2719",
+        "max_return": "851.4974",
+        "min_return": "385.24283"
+    },
+    {
+        "step": "641024",
+        "mean_return": "574.6668",
+        "max_return": "1191.236",
+        "min_return": "313.85648"
+    },
+    {
+        "step": "643072",
+        "mean_return": "533.039",
+        "max_return": "790.7457",
+        "min_return": "313.08057"
+    },
+    {
+        "step": "645120",
+        "mean_return": "599.68665",
+        "max_return": "986.608",
+        "min_return": "353.94333"
+    },
+    {
+        "step": "647168",
+        "mean_return": "711.2657",
+        "max_return": "1118.3754",
+        "min_return": "196.28282"
+    },
+    {
+        "step": "649216",
+        "mean_return": "562.16895",
+        "max_return": "1182.4775",
+        "min_return": "262.19083"
+    },
+    {
+        "step": "651264",
+        "mean_return": "562.1743",
+        "max_return": "844.11957",
+        "min_return": "272.27942"
+    },
+    {
+        "step": "653312",
+        "mean_return": "543.1365",
+        "max_return": "1019.8012",
+        "min_return": "263.86496"
+    },
+    {
+        "step": "655360",
+        "mean_return": "573.9968",
+        "max_return": "1082.3232",
+        "min_return": "396.49396"
+    },
+    {
+        "step": "657408",
+        "mean_return": "525.40985",
+        "max_return": "1216.3271",
+        "min_return": "266.0461"
+    },
+    {
+        "step": "659456",
+        "mean_return": "707.4668",
+        "max_return": "1299.164",
+        "min_return": "270.59756"
+    },
+    {
+        "step": "661504",
+        "mean_return": "606.8683",
+        "max_return": "1387.5546",
+        "min_return": "304.44012"
+    },
+    {
+        "step": "663552",
+        "mean_return": "553.56146",
+        "max_return": "1160.4634",
+        "min_return": "360.11752"
+    },
+    {
+        "step": "665600",
+        "mean_return": "535.6536",
+        "max_return": "960.70917",
+        "min_return": "286.60794"
+    },
+    {
+        "step": "667648",
+        "mean_return": "533.8064",
+        "max_return": "779.30237",
+        "min_return": "348.98175"
+    },
+    {
+        "step": "669696",
+        "mean_return": "589.1075",
+        "max_return": "1032.5532",
+        "min_return": "400.51834"
+    },
+    {
+        "step": "671744",
+        "mean_return": "552.30524",
+        "max_return": "1101.1082",
+        "min_return": "205.09946"
+    },
+    {
+        "step": "673792",
+        "mean_return": "545.55164",
+        "max_return": "866.52045",
+        "min_return": "217.16614"
+    },
+    {
+        "step": "675840",
+        "mean_return": "512.0407",
+        "max_return": "865.8941",
+        "min_return": "186.42368"
+    },
+    {
+        "step": "677888",
+        "mean_return": "585.9196",
+        "max_return": "1099.8196",
+        "min_return": "381.65088"
+    },
+    {
+        "step": "679936",
+        "mean_return": "639.5696",
+        "max_return": "1064.9985",
+        "min_return": "351.87613"
+    },
+    {
+        "step": "681984",
+        "mean_return": "516.1807",
+        "max_return": "887.9843",
+        "min_return": "348.54202"
+    },
+    {
+        "step": "684032",
+        "mean_return": "629.75885",
+        "max_return": "886.35376",
+        "min_return": "343.14478"
+    },
+    {
+        "step": "686080",
+        "mean_return": "523.8622",
+        "max_return": "898.9228",
+        "min_return": "382.62778"
+    },
+    {
+        "step": "688128",
+        "mean_return": "524.97784",
+        "max_return": "794.3838",
+        "min_return": "261.22894"
+    },
+    {
+        "step": "690176",
+        "mean_return": "560.867",
+        "max_return": "931.61505",
+        "min_return": "280.8933"
+    },
+    {
+        "step": "692224",
+        "mean_return": "601.64233",
+        "max_return": "1177.4956",
+        "min_return": "389.3602"
+    },
+    {
+        "step": "694272",
+        "mean_return": "527.859",
+        "max_return": "843.9429",
+        "min_return": "318.5906"
+    },
+    {
+        "step": "696320",
+        "mean_return": "637.10803",
+        "max_return": "1050.6063",
+        "min_return": "351.55637"
+    },
+    {
+        "step": "698368",
+        "mean_return": "537.846",
+        "max_return": "766.67755",
+        "min_return": "334.8742"
+    },
+    {
+        "step": "700416",
+        "mean_return": "646.61774",
+        "max_return": "979.1643",
+        "min_return": "386.9221"
+    },
+    {
+        "step": "702464",
+        "mean_return": "628.7151",
+        "max_return": "847.8064",
+        "min_return": "361.8839"
+    },
+    {
+        "step": "704512",
+        "mean_return": "602.48883",
+        "max_return": "1148.6963",
+        "min_return": "382.68384"
+    },
+    {
+        "step": "706560",
+        "mean_return": "537.62274",
+        "max_return": "730.0881",
+        "min_return": "316.29205"
+    },
+    {
+        "step": "708608",
+        "mean_return": "610.30304",
+        "max_return": "1584.0671",
+        "min_return": "374.66177"
+    },
+    {
+        "step": "710656",
+        "mean_return": "621.77997",
+        "max_return": "1068.6387",
+        "min_return": "229.47958"
+    },
+    {
+        "step": "712704",
+        "mean_return": "497.77493",
+        "max_return": "867.39667",
+        "min_return": "251.00258"
+    },
+    {
+        "step": "714752",
+        "mean_return": "591.20984",
+        "max_return": "913.2481",
+        "min_return": "415.05292"
+    },
+    {
+        "step": "716800",
+        "mean_return": "596.5864",
+        "max_return": "1087.4563",
+        "min_return": "300.3819"
+    },
+    {
+        "step": "718848",
+        "mean_return": "565.60126",
+        "max_return": "1228.4015",
+        "min_return": "343.7341"
+    },
+    {
+        "step": "720896",
+        "mean_return": "622.9153",
+        "max_return": "1102.6106",
+        "min_return": "407.6902"
+    },
+    {
+        "step": "722944",
+        "mean_return": "567.8281",
+        "max_return": "914.18536",
+        "min_return": "324.6098"
+    },
+    {
+        "step": "724992",
+        "mean_return": "551.42206",
+        "max_return": "893.6003",
+        "min_return": "346.14484"
+    },
+    {
+        "step": "727040",
+        "mean_return": "517.92053",
+        "max_return": "1098.7849",
+        "min_return": "217.42258"
+    },
+    {
+        "step": "729088",
+        "mean_return": "561.0236",
+        "max_return": "812.94257",
+        "min_return": "286.34488"
+    },
+    {
+        "step": "731136",
+        "mean_return": "592.7246",
+        "max_return": "793.9113",
+        "min_return": "413.4445"
+    },
+    {
+        "step": "733184",
+        "mean_return": "556.85516",
+        "max_return": "1166.6521",
+        "min_return": "384.1373"
+    },
+    {
+        "step": "735232",
+        "mean_return": "649.50934",
+        "max_return": "1275.1105",
+        "min_return": "377.1119"
+    },
+    {
+        "step": "737280",
+        "mean_return": "573.05707",
+        "max_return": "1274.7767",
+        "min_return": "366.31302"
+    },
+    {
+        "step": "739328",
+        "mean_return": "550.90326",
+        "max_return": "1220.4957",
+        "min_return": "254.59026"
+    },
+    {
+        "step": "741376",
+        "mean_return": "560.59937",
+        "max_return": "908.9411",
+        "min_return": "351.45428"
+    },
+    {
+        "step": "743424",
+        "mean_return": "561.9498",
+        "max_return": "860.6408",
+        "min_return": "329.22995"
+    },
+    {
+        "step": "745472",
+        "mean_return": "565.7777",
+        "max_return": "996.3302",
+        "min_return": "258.31708"
+    },
+    {
+        "step": "747520",
+        "mean_return": "561.34283",
+        "max_return": "793.73926",
+        "min_return": "305.32614"
+    },
+    {
+        "step": "749568",
+        "mean_return": "597.2193",
+        "max_return": "959.7901",
+        "min_return": "407.82455"
+    },
+    {
+        "step": "751616",
+        "mean_return": "613.14124",
+        "max_return": "934.65216",
+        "min_return": "309.06506"
+    },
+    {
+        "step": "753664",
+        "mean_return": "616.0561",
+        "max_return": "961.6709",
+        "min_return": "332.06442"
+    },
+    {
+        "step": "755712",
+        "mean_return": "656.8565",
+        "max_return": "907.8749",
+        "min_return": "492.65637"
+    },
+    {
+        "step": "757760",
+        "mean_return": "608.51263",
+        "max_return": "1046.3005",
+        "min_return": "359.89514"
+    },
+    {
+        "step": "759808",
+        "mean_return": "644.5268",
+        "max_return": "1117.8179",
+        "min_return": "343.56274"
+    },
+    {
+        "step": "761856",
+        "mean_return": "630.7223",
+        "max_return": "1000.55774",
+        "min_return": "420.676"
+    },
+    {
+        "step": "763904",
+        "mean_return": "625.0992",
+        "max_return": "1124.4417",
+        "min_return": "385.42358"
+    },
+    {
+        "step": "765952",
+        "mean_return": "557.4407",
+        "max_return": "861.0645",
+        "min_return": "238.80856"
+    },
+    {
+        "step": "768000",
+        "mean_return": "617.5712",
+        "max_return": "975.67444",
+        "min_return": "437.7731"
+    },
+    {
+        "step": "770048",
+        "mean_return": "653.2849",
+        "max_return": "1440.9955",
+        "min_return": "345.07053"
+    },
+    {
+        "step": "772096",
+        "mean_return": "656.1052",
+        "max_return": "1118.9982",
+        "min_return": "430.5602"
+    },
+    {
+        "step": "774144",
+        "mean_return": "656.79675",
+        "max_return": "1445.5068",
+        "min_return": "348.0558"
+    },
+    {
+        "step": "776192",
+        "mean_return": "690.26135",
+        "max_return": "1089.567",
+        "min_return": "470.69815"
+    },
+    {
+        "step": "778240",
+        "mean_return": "675.05475",
+        "max_return": "1063.9889",
+        "min_return": "379.09186"
+    },
+    {
+        "step": "780288",
+        "mean_return": "578.29584",
+        "max_return": "971.403",
+        "min_return": "425.772"
+    },
+    {
+        "step": "782336",
+        "mean_return": "576.3178",
+        "max_return": "1035.2426",
+        "min_return": "387.2862"
+    },
+    {
+        "step": "784384",
+        "mean_return": "609.55597",
+        "max_return": "950.74585",
+        "min_return": "389.3059"
+    },
+    {
+        "step": "786432",
+        "mean_return": "628.505",
+        "max_return": "985.1022",
+        "min_return": "314.978"
+    },
+    {
+        "step": "788480",
+        "mean_return": "611.3834",
+        "max_return": "986.72455",
+        "min_return": "413.57062"
+    },
+    {
+        "step": "790528",
+        "mean_return": "646.2317",
+        "max_return": "1142.9156",
+        "min_return": "377.0279"
+    },
+    {
+        "step": "792576",
+        "mean_return": "656.52734",
+        "max_return": "933.3469",
+        "min_return": "484.07812"
+    },
+    {
+        "step": "794624",
+        "mean_return": "613.7484",
+        "max_return": "967.4319",
+        "min_return": "252.34721"
+    },
+    {
+        "step": "796672",
+        "mean_return": "566.68695",
+        "max_return": "835.1587",
+        "min_return": "352.58243"
+    },
+    {
+        "step": "798720",
+        "mean_return": "680.40656",
+        "max_return": "1132.8711",
+        "min_return": "334.07425"
+    },
+    {
+        "step": "800768",
+        "mean_return": "672.2902",
+        "max_return": "1061.7336",
+        "min_return": "305.68353"
+    },
+    {
+        "step": "802816",
+        "mean_return": "698.8514",
+        "max_return": "971.4619",
+        "min_return": "417.97015"
+    },
+    {
+        "step": "804864",
+        "mean_return": "629.6874",
+        "max_return": "893.6884",
+        "min_return": "449.24695"
+    },
+    {
+        "step": "806912",
+        "mean_return": "759.234",
+        "max_return": "1387.8772",
+        "min_return": "329.40088"
+    },
+    {
+        "step": "808960",
+        "mean_return": "635.13763",
+        "max_return": "1060.9696",
+        "min_return": "345.1261"
+    },
+    {
+        "step": "811008",
+        "mean_return": "555.7179",
+        "max_return": "909.62164",
+        "min_return": "316.37073"
+    },
+    {
+        "step": "813056",
+        "mean_return": "674.76013",
+        "max_return": "986.867",
+        "min_return": "390.68613"
+    },
+    {
+        "step": "815104",
+        "mean_return": "619.9649",
+        "max_return": "955.4813",
+        "min_return": "422.9509"
+    },
+    {
+        "step": "817152",
+        "mean_return": "641.1523",
+        "max_return": "996.098",
+        "min_return": "432.41708"
+    },
+    {
+        "step": "819200",
+        "mean_return": "636.0002",
+        "max_return": "1404.796",
+        "min_return": "265.85355"
+    },
+    {
+        "step": "821248",
+        "mean_return": "608.8477",
+        "max_return": "999.2348",
+        "min_return": "384.36957"
+    },
+    {
+        "step": "823296",
+        "mean_return": "614.22455",
+        "max_return": "1076.921",
+        "min_return": "356.9203"
+    },
+    {
+        "step": "825344",
+        "mean_return": "619.18353",
+        "max_return": "975.4094",
+        "min_return": "449.90073"
+    },
+    {
+        "step": "827392",
+        "mean_return": "628.88983",
+        "max_return": "959.8313",
+        "min_return": "338.91644"
+    },
+    {
+        "step": "829440",
+        "mean_return": "687.2152",
+        "max_return": "1125.6204",
+        "min_return": "483.2731"
+    },
+    {
+        "step": "831488",
+        "mean_return": "635.23895",
+        "max_return": "972.4892",
+        "min_return": "275.58716"
+    },
+    {
+        "step": "833536",
+        "mean_return": "698.5999",
+        "max_return": "1158.2461",
+        "min_return": "345.3088"
+    },
+    {
+        "step": "835584",
+        "mean_return": "584.1097",
+        "max_return": "765.9568",
+        "min_return": "480.87695"
+    },
+    {
+        "step": "837632",
+        "mean_return": "673.36884",
+        "max_return": "1017.5049",
+        "min_return": "379.91595"
+    },
+    {
+        "step": "839680",
+        "mean_return": "733.09705",
+        "max_return": "1163.8053",
+        "min_return": "537.1486"
+    },
+    {
+        "step": "841728",
+        "mean_return": "574.2306",
+        "max_return": "964.0698",
+        "min_return": "307.83704"
+    },
+    {
+        "step": "843776",
+        "mean_return": "648.4298",
+        "max_return": "1046.7124",
+        "min_return": "351.50247"
+    },
+    {
+        "step": "845824",
+        "mean_return": "762.384",
+        "max_return": "1393.4131",
+        "min_return": "502.7924"
+    },
+    {
+        "step": "847872",
+        "mean_return": "670.69385",
+        "max_return": "1510.0616",
+        "min_return": "368.44293"
+    },
+    {
+        "step": "849920",
+        "mean_return": "608.38324",
+        "max_return": "1072.6608",
+        "min_return": "370.37607"
+    },
+    {
+        "step": "851968",
+        "mean_return": "641.9355",
+        "max_return": "869.5131",
+        "min_return": "462.30917"
+    },
+    {
+        "step": "854016",
+        "mean_return": "628.33203",
+        "max_return": "1177.4227",
+        "min_return": "342.23285"
+    },
+    {
+        "step": "856064",
+        "mean_return": "608.72046",
+        "max_return": "1092.4341",
+        "min_return": "350.3332"
+    },
+    {
+        "step": "858112",
+        "mean_return": "685.4592",
+        "max_return": "1297.6602",
+        "min_return": "377.66696"
+    },
+    {
+        "step": "860160",
+        "mean_return": "703.80145",
+        "max_return": "1054.8523",
+        "min_return": "335.93762"
+    },
+    {
+        "step": "862208",
+        "mean_return": "653.02014",
+        "max_return": "1080.6672",
+        "min_return": "273.66528"
+    },
+    {
+        "step": "864256",
+        "mean_return": "608.1406",
+        "max_return": "1122.0323",
+        "min_return": "239.74718"
+    },
+    {
+        "step": "866304",
+        "mean_return": "656.5901",
+        "max_return": "1281.4791",
+        "min_return": "202.73393"
+    },
+    {
+        "step": "868352",
+        "mean_return": "659.6721",
+        "max_return": "1224.0732",
+        "min_return": "193.41518"
+    },
+    {
+        "step": "870400",
+        "mean_return": "680.66095",
+        "max_return": "1195.3615",
+        "min_return": "416.25168"
+    },
+    {
+        "step": "872448",
+        "mean_return": "639.4384",
+        "max_return": "1445.109",
+        "min_return": "448.78656"
+    },
+    {
+        "step": "874496",
+        "mean_return": "616.6311",
+        "max_return": "952.54736",
+        "min_return": "322.0625"
+    },
+    {
+        "step": "876544",
+        "mean_return": "715.2884",
+        "max_return": "1214.6824",
+        "min_return": "428.02744"
+    },
+    {
+        "step": "878592",
+        "mean_return": "708.85504",
+        "max_return": "1002.5609",
+        "min_return": "388.7327"
+    },
+    {
+        "step": "880640",
+        "mean_return": "694.8054",
+        "max_return": "1306.7931",
+        "min_return": "347.2246"
+    },
+    {
+        "step": "882688",
+        "mean_return": "597.30396",
+        "max_return": "901.5082",
+        "min_return": "202.92853"
+    },
+    {
+        "step": "884736",
+        "mean_return": "709.8889",
+        "max_return": "1312.6547",
+        "min_return": "239.75896"
+    },
+    {
+        "step": "886784",
+        "mean_return": "646.2435",
+        "max_return": "1031.2737",
+        "min_return": "286.08142"
+    },
+    {
+        "step": "888832",
+        "mean_return": "614.4929",
+        "max_return": "1004.0481",
+        "min_return": "431.14697"
+    },
+    {
+        "step": "890880",
+        "mean_return": "668.1676",
+        "max_return": "1268.4589",
+        "min_return": "372.072"
+    },
+    {
+        "step": "892928",
+        "mean_return": "680.7375",
+        "max_return": "964.09143",
+        "min_return": "347.25754"
+    },
+    {
+        "step": "894976",
+        "mean_return": "629.01074",
+        "max_return": "1207.6052",
+        "min_return": "326.5116"
+    },
+    {
+        "step": "897024",
+        "mean_return": "586.1956",
+        "max_return": "992.0264",
+        "min_return": "334.3544"
+    },
+    {
+        "step": "899072",
+        "mean_return": "641.4525",
+        "max_return": "1069.0602",
+        "min_return": "432.61267"
+    },
+    {
+        "step": "901120",
+        "mean_return": "636.3179",
+        "max_return": "1224.7003",
+        "min_return": "211.80821"
+    },
+    {
+        "step": "903168",
+        "mean_return": "665.82385",
+        "max_return": "1071.0809",
+        "min_return": "409.79807"
+    },
+    {
+        "step": "905216",
+        "mean_return": "795.46454",
+        "max_return": "1350.0465",
+        "min_return": "465.35336"
+    },
+    {
+        "step": "907264",
+        "mean_return": "646.4962",
+        "max_return": "1127.6067",
+        "min_return": "381.54926"
+    },
+    {
+        "step": "909312",
+        "mean_return": "633.48865",
+        "max_return": "1110.0762",
+        "min_return": "433.94702"
+    },
+    {
+        "step": "911360",
+        "mean_return": "664.74713",
+        "max_return": "994.3792",
+        "min_return": "446.10434"
+    },
+    {
+        "step": "913408",
+        "mean_return": "643.7674",
+        "max_return": "1724.965",
+        "min_return": "337.7021"
+    },
+    {
+        "step": "915456",
+        "mean_return": "638.81836",
+        "max_return": "1074.8875",
+        "min_return": "364.3816"
+    },
+    {
+        "step": "917504",
+        "mean_return": "626.72797",
+        "max_return": "1403.8064",
+        "min_return": "399.82275"
+    },
+    {
+        "step": "919552",
+        "mean_return": "671.4405",
+        "max_return": "1291.502",
+        "min_return": "344.90543"
+    },
+    {
+        "step": "921600",
+        "mean_return": "754.5956",
+        "max_return": "1531.1096",
+        "min_return": "509.12134"
+    },
+    {
+        "step": "923648",
+        "mean_return": "641.8892",
+        "max_return": "1173.351",
+        "min_return": "362.92947"
+    },
+    {
+        "step": "925696",
+        "mean_return": "809.1103",
+        "max_return": "1264.2822",
+        "min_return": "482.0806"
+    },
+    {
+        "step": "927744",
+        "mean_return": "601.4481",
+        "max_return": "879.24225",
+        "min_return": "414.50903"
+    },
+    {
+        "step": "929792",
+        "mean_return": "761.1965",
+        "max_return": "1718.3151",
+        "min_return": "424.78647"
+    },
+    {
+        "step": "931840",
+        "mean_return": "638.58905",
+        "max_return": "978.6019",
+        "min_return": "443.95987"
+    },
+    {
+        "step": "933888",
+        "mean_return": "679.93774",
+        "max_return": "935.0697",
+        "min_return": "461.8457"
+    },
+    {
+        "step": "935936",
+        "mean_return": "770.42175",
+        "max_return": "1343.5402",
+        "min_return": "477.42657"
+    },
+    {
+        "step": "937984",
+        "mean_return": "683.06244",
+        "max_return": "995.53503",
+        "min_return": "363.3523"
+    },
+    {
+        "step": "940032",
+        "mean_return": "643.9493",
+        "max_return": "1203.1693",
+        "min_return": "300.11954"
+    },
+    {
+        "step": "942080",
+        "mean_return": "649.6874",
+        "max_return": "1223.4392",
+        "min_return": "335.66397"
+    },
+    {
+        "step": "944128",
+        "mean_return": "662.9839",
+        "max_return": "1481.3678",
+        "min_return": "220.34354"
+    },
+    {
+        "step": "946176",
+        "mean_return": "689.8643",
+        "max_return": "1138.7588",
+        "min_return": "200.986"
+    },
+    {
+        "step": "948224",
+        "mean_return": "729.6215",
+        "max_return": "1174.1934",
+        "min_return": "466.44333"
+    },
+    {
+        "step": "950272",
+        "mean_return": "708.0779",
+        "max_return": "1186.3754",
+        "min_return": "389.29294"
+    },
+    {
+        "step": "952320",
+        "mean_return": "690.5645",
+        "max_return": "1494.5007",
+        "min_return": "495.44836"
+    },
+    {
+        "step": "954368",
+        "mean_return": "723.24286",
+        "max_return": "1516.0729",
+        "min_return": "368.64587"
+    },
+    {
+        "step": "956416",
+        "mean_return": "676.7408",
+        "max_return": "1150.8843",
+        "min_return": "460.76343"
+    },
+    {
+        "step": "958464",
+        "mean_return": "671.65533",
+        "max_return": "1041.396",
+        "min_return": "243.19182"
+    },
+    {
+        "step": "960512",
+        "mean_return": "670.65204",
+        "max_return": "926.097",
+        "min_return": "506.91916"
+    },
+    {
+        "step": "962560",
+        "mean_return": "689.70056",
+        "max_return": "1068.1011",
+        "min_return": "384.16003"
+    },
+    {
+        "step": "964608",
+        "mean_return": "681.49713",
+        "max_return": "906.61224",
+        "min_return": "502.45883"
+    },
+    {
+        "step": "966656",
+        "mean_return": "597.6692",
+        "max_return": "1344.5847",
+        "min_return": "368.3637"
+    },
+    {
+        "step": "968704",
+        "mean_return": "686.31274",
+        "max_return": "1056.3855",
+        "min_return": "532.4265"
+    },
+    {
+        "step": "970752",
+        "mean_return": "733.4278",
+        "max_return": "1124.2114",
+        "min_return": "452.87558"
+    },
+    {
+        "step": "972800",
+        "mean_return": "647.9588",
+        "max_return": "1032.0201",
+        "min_return": "402.89624"
+    },
+    {
+        "step": "974848",
+        "mean_return": "587.6389",
+        "max_return": "979.6771",
+        "min_return": "350.47595"
+    },
+    {
+        "step": "976896",
+        "mean_return": "864.70776",
+        "max_return": "1453.1674",
+        "min_return": "503.6002"
+    },
+    {
+        "step": "978944",
+        "mean_return": "706.1349",
+        "max_return": "1058.4618",
+        "min_return": "501.0819"
+    },
+    {
+        "step": "980992",
+        "mean_return": "659.58575",
+        "max_return": "974.44135",
+        "min_return": "424.70688"
+    },
+    {
+        "step": "983040",
+        "mean_return": "657.66113",
+        "max_return": "897.2066",
+        "min_return": "458.1447"
+    },
+    {
+        "step": "985088",
+        "mean_return": "600.5137",
+        "max_return": "741.9564",
+        "min_return": "399.8739"
+    },
+    {
+        "step": "987136",
+        "mean_return": "732.87146",
+        "max_return": "1150.4309",
+        "min_return": "463.21875"
+    },
+    {
+        "step": "989184",
+        "mean_return": "722.54755",
+        "max_return": "940.3736",
+        "min_return": "488.85565"
+    },
+    {
+        "step": "991232",
+        "mean_return": "607.6104",
+        "max_return": "957.16815",
+        "min_return": "341.05048"
+    },
+    {
+        "step": "993280",
+        "mean_return": "702.676",
+        "max_return": "1683.2682",
+        "min_return": "368.57355"
+    },
+    {
+        "step": "995328",
+        "mean_return": "719.6258",
+        "max_return": "1207.0067",
+        "min_return": "432.98352"
+    },
+    {
+        "step": "997376",
+        "mean_return": "633.9252",
+        "max_return": "1114.174",
+        "min_return": "361.68567"
+    },
+    {
+        "step": "999424",
+        "mean_return": "578.09235",
+        "max_return": "928.56555",
+        "min_return": "229.86147"
+    }
+]

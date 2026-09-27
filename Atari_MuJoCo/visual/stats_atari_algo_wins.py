@@ -3,7 +3,7 @@
 
 用法（与 plot_atari.py 一致）：
     cd Atari_MuJoCo
-    python visual/stats_atari_algo_wins.py results/8_128 ppo_atari opts_ttpo_atari_tau0.4_s6
+    python visual/stats_atari_algo_wins.py results/8_128 ppo_atari opts_ttpo_atari_xi0.4_s6
 
 指标说明（由 cleanrl 写入的 JSON：每条为一次迭代的统计）：
 - 全训练平均：对该任务下所有日志点的 mean_return 取平均。
@@ -30,6 +30,9 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean
 from typing import Dict, List, Optional, Sequence, Tuple
+
+# Counts treat differences within this tolerance as ties.
+TIE_TOLERANCE = 1e-12
 
 # 与 visual/plot_atari.py 保持一致（避免依赖 matplotlib/numpy）
 TARGET_TASKS = [
@@ -269,6 +272,13 @@ def _aggregate_scores(pairs: List[float]) -> float:
     return float(mean(pairs))
 
 
+def _compare_scores(a: float, b: float, tolerance: float = TIE_TOLERANCE) -> int:
+    """Return 1 if a wins, -1 if b wins, and 0 for a tolerance tie."""
+    if abs(a - b) <= tolerance:
+        return 0
+    return 1 if a > b else -1
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
@@ -355,14 +365,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         tb = _aggregate_scores(scores_b_tail)
 
         n_compared += 1
-        if ma > mb:
+        full_cmp = _compare_scores(ma, mb)
+        if full_cmp > 0:
             wins_a_all += 1
-        elif mb > ma:
+        elif full_cmp < 0:
             wins_b_all += 1
 
-        if ta > tb:
+        tail_cmp = _compare_scores(ta, tb)
+        if tail_cmp > 0:
             wins_a_tail += 1
-        elif tb > ta:
+        elif tail_cmp < 0:
             wins_b_tail += 1
 
     total_with_data = n_compared

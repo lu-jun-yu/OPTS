@@ -465,7 +465,7 @@ def plot_all_tasks_convergence(results_dir="../cleanrl/results", output_dir=".",
             ax.text(
                 0.04,
                 0.93,
-                rf"Tail $\Delta$ {relative_gain:+.1f}\%",
+                rf"Tail $\Delta$ {relative_gain:+.1f}%",
                 transform=ax.transAxes,
                 ha="left",
                 va="top",

@@ -1,17 +1,17 @@
 """
-OPTS-TTPO 连续控制 MuJoCo 超参数消融：仅绘制不同 tau/s 配置的收敛曲线（1×5 子图）。
+OPTS-TTPO 连续控制 MuJoCo 超参数消融：仅绘制不同 xi/s 配置的收敛曲线（1×5 子图）。
 
 用法：
- python visual/plot_mujoco_ablation.py results/1_4096 20260410 → 绘制该日期下所有 opts_ttpo_continuous_action_tau*_s*_* 目录。
+ python visual/plot_mujoco_ablation.py results/1_4096 20260410 → 绘制该日期下所有 opts_ttpo_continuous_action_xi*_s*_* 目录。
 
-    python visual/plot_mujoco_ablation.py results/1_4096 20260410 tau0.0_s2,tau0.4_s6
-        → 仅绘制指定 tau/s 标签对应的目录。
+    python visual/plot_mujoco_ablation.py results/1_4096 20260410 xi0.0_s2,xi0.4_s6
+        → 仅绘制指定 xi/s 标签对应的目录。
 
-目录名需匹配：opts_ttpo_continuous_action_{tau0.x_sN}_{YYYYMMDD}
+目录名需匹配：opts_ttpo_continuous_action_{xi0.x_sN}_{YYYYMMDD}
 
-分层消融（固定 τ 下对所有搜索次数 s 的曲线做逐点平均，再比 τ；再在最优 τ 下比 s）：
+分层消融（固定 ξ 下对所有搜索次数 s 的曲线做逐点平均，再比 ξ；再在最优 ξ 下比 s）：
  python visual/plot_mujoco_ablation.py results/1_4096 20260410 --hierarchical
-输出：all_tasks_mujoco_ablation_{date}_mean_over_s.png、 all_tasks_mujoco_ablation_{date}_best_tau_s.png，并在终端打印推荐 τ 与 s。
+输出：all_tasks_mujoco_ablation_{date}_mean_over_s.png、 all_tasks_mujoco_ablation_{date}_best_xi_s.png，并在终端打印推荐 ξ 与 s。
 """
 from __future__ import annotations
 
@@ -47,10 +47,10 @@ ABLATION_LINE_COLORS = [
 DEFAULT_ABLATION_SMOOTH_WINDOW = 21
 
 ABLATION_DIR_RE = re.compile(
-    r"^opts_ttpo_continuous_action_(tau[\d.]+_s\d+)_(\d{8})$"
+    r"^opts_ttpo_continuous_action_(xi[\d.]+_s\d+)_(\d{8})$"
 )
-# 与目录标签一致：tau0.4_s6
-TAU_S_FROM_TAG_RE = re.compile(r"^tau([\d.]+)_s(\d+)$")
+# 与目录标签一致：xi0.4_s6
+XI_S_FROM_TAG_RE = re.compile(r"^xi([\d.]+)_s(\d+)$")
 
 
 def discover_ablation_run_dirs(
@@ -142,7 +142,7 @@ def collect_aggregated_per_task(
 
 
 def _display_name_for_ablation(algo_name: str) -> str:
-    """从 opts_ttpo_continuous_action_tauX_sY 得到图例标签。"""
+    """从 opts_ttpo_continuous_action_xiX_sY 得到图例标签。"""
     prefix = "opts_ttpo_continuous_action_"
     if algo_name.startswith(prefix):
         rest = algo_name[len(prefix) :]
@@ -152,19 +152,19 @@ def _display_name_for_ablation(algo_name: str) -> str:
     return algo_name
 
 
-def parse_tau_s_from_algo_name(algo_name: str) -> tuple[float, int] | None:
-    """opts_ttpo_continuous_action_tau0.4_s6 -> (0.4, 6)；跨 s 平均曲线 -> (0.4, -1)。"""
+def parse_xi_s_from_algo_name(algo_name: str) -> tuple[float, int] | None:
+    """opts_ttpo_continuous_action_xi0.4_s6 -> (0.4, 6)；跨 s 平均曲线 -> (0.4, -1)。"""
     prefix = "opts_ttpo_continuous_action_"
     if not algo_name.startswith(prefix):
         return None
     rest = algo_name[len(prefix) :]
     if rest.endswith("_mean_over_s"):
         inner = rest[: -len("_mean_over_s")]
-        m_only_tau = re.match(r"^tau([\d.]+)$", inner)
-        if not m_only_tau:
+        m_only_xi = re.match(r"^xi([\d.]+)$", inner)
+        if not m_only_xi:
             return None
-        return float(m_only_tau.group(1)), -1
-    m = TAU_S_FROM_TAG_RE.match(rest)
+        return float(m_only_xi.group(1)), -1
+    m = XI_S_FROM_TAG_RE.match(rest)
     if not m:
         return None
     return float(m.group(1)), int(m.group(2))
@@ -187,34 +187,34 @@ def _align_mean_curves(
     return steps, cross_mean, cross_std
 
 
-def build_cross_s_average_by_tau(
+def build_cross_s_average_by_xi(
     all_tasks_data: dict[str, dict[tuple[str, str], dict]],
     date: str,
 ) -> dict[str, dict[tuple[str, str], dict]]:
     """
-    每个任务、每个 τ：对该 τ 下所有 s 的（已跨 seed 聚合的）mean 曲线逐点对齐后取平均。
+    每个任务、每个 ξ：对该 ξ 下所有 s 的（已跨 seed 聚合的）mean 曲线逐点对齐后取平均。
     阴影为跨 s 的 std（不同搜索次数之间的离散程度）。
     """
     out: dict[str, dict[tuple[str, str], dict]] = {t: {} for t in TARGET_TASKS}
 
     for task_name in TARGET_TASKS:
-        by_tau: dict[float, list[dict]] = defaultdict(list)
+        by_xi: dict[float, list[dict]] = defaultdict(list)
         for algo_key, data in all_tasks_data[task_name].items():
             _algo, d = algo_key
             if d != date:
                 continue
-            ts = parse_tau_s_from_algo_name(_algo)
+            ts = parse_xi_s_from_algo_name(_algo)
             if ts is None:
                 continue
-            tau, _s = ts
-            by_tau[tau].append(data)
+            xi, _s = ts
+            by_xi[xi].append(data)
 
-        for tau in sorted(by_tau.keys()):
-            steps, cross_mean, cross_std = _align_mean_curves(by_tau[tau])
+        for xi in sorted(by_xi.keys()):
+            steps, cross_mean, cross_std = _align_mean_curves(by_xi[xi])
             if len(cross_mean) == 0:
                 continue
-            # 与 parse_tau_s_from_algo_name 中 _mean_over_s 分支一致
-            tag = f"tau{tau:g}_mean_over_s"
+            # 与 parse_xi_s_from_algo_name 中 _mean_over_s 分支一致
+            tag = f"xi{xi:g}_mean_over_s"
             synth_algo = f"opts_ttpo_continuous_action_{tag}"
             out[task_name][(synth_algo, date)] = {
                 "steps": list(steps),
@@ -257,71 +257,71 @@ def mean_score_across_tasks(
     return float(np.mean(scores))
 
 
-def pick_best_tau(
-    tau_avg_data: dict[str, dict[tuple[str, str], dict]],
+def pick_best_xi(
+    xi_avg_data: dict[str, dict[tuple[str, str], dict]],
     date: str,
     smooth_window: int,
 ) -> tuple[float, dict[float, float]]:
-    """返回最优 τ 及各 τ 的跨任务平均尾部得分。"""
-    per_tau_task_payload: dict[float, dict[str, dict]] = defaultdict(dict)
+    """返回最优 ξ 及各 ξ 的跨任务平均尾部得分。"""
+    per_xi_task_payload: dict[float, dict[str, dict]] = defaultdict(dict)
     for task_name in TARGET_TASKS:
-        for algo_key, data in tau_avg_data[task_name].items():
+        for algo_key, data in xi_avg_data[task_name].items():
             _algo, d = algo_key
             if d != date:
                 continue
-            ts = parse_tau_s_from_algo_name(_algo)
+            ts = parse_xi_s_from_algo_name(_algo)
             if ts is None or ts[1] != -1:
                 continue
-            tau, _s = ts
-            per_tau_task_payload[tau][task_name] = data
+            xi, _s = ts
+            per_xi_task_payload[xi][task_name] = data
 
-    tau_scores: dict[float, float] = {}
-    for tau, tasks_map in per_tau_task_payload.items():
-        tau_scores[tau] = mean_score_across_tasks(tasks_map, smooth_window)
+    xi_scores: dict[float, float] = {}
+    for xi, tasks_map in per_xi_task_payload.items():
+        xi_scores[xi] = mean_score_across_tasks(tasks_map, smooth_window)
 
-    if not tau_scores:
+    if not xi_scores:
         return float("nan"), {}
-    best_tau = max(tau_scores.keys(), key=lambda t: tau_scores[t])
-    return best_tau, tau_scores
+    best_xi = max(xi_scores.keys(), key=lambda t: xi_scores[t])
+    return best_xi, xi_scores
 
 
-def filter_by_tau(
+def filter_by_xi(
     all_tasks_data: dict[str, dict[tuple[str, str], dict]],
     date: str,
-    tau: float,
+    xi: float,
 ) -> dict[str, dict[tuple[str, str], dict]]:
-    """只保留指定 τ 下的 (tau,s) 运行（用于第二步画 s 消融）。"""
+    """只保留指定 ξ 下的 (xi,s) 运行（用于第二步画 s 消融）。"""
     out: dict[str, dict[tuple[str, str], dict]] = {t: {} for t in TARGET_TASKS}
     for task_name in TARGET_TASKS:
         for algo_key, data in all_tasks_data[task_name].items():
             _algo, d = algo_key
             if d != date:
                 continue
-            ts = parse_tau_s_from_algo_name(_algo)
+            ts = parse_xi_s_from_algo_name(_algo)
             if ts is None:
                 continue
-            t_val, _s = ts
-            if abs(t_val - tau) > 1e-9:
+            xi_val, _s = ts
+            if abs(xi_val - xi) > 1e-9:
                 continue
             out[task_name][algo_key] = data
     return out
 
 
-def pick_best_s_at_tau(
+def pick_best_s_at_xi(
     filtered: dict[str, dict[tuple[str, str], dict]],
     smooth_window: int,
 ) -> tuple[int, dict[int, float]]:
-    """在已按 τ 过滤的数据上，按跨任务平均尾部得分选最优 s。"""
+    """在已按 ξ 过滤的数据上，按跨任务平均尾部得分选最优 s。"""
     s_scores: dict[int, float] = {}
     per_s_tasks: dict[int, dict[str, dict]] = defaultdict(dict)
 
     for task_name in TARGET_TASKS:
         for algo_key, data in filtered[task_name].items():
             _algo, _d = algo_key
-            ts = parse_tau_s_from_algo_name(_algo)
+            ts = parse_xi_s_from_algo_name(_algo)
             if ts is None:
                 continue
-            _tau, s_val = ts
+            _xi, s_val = ts
             per_s_tasks[s_val][task_name] = data
 
     for s_val, tasks_map in per_s_tasks.items():
@@ -458,8 +458,8 @@ def main() -> None:
     if len(rest) < 2:
         print(
             "用法: python visual/plot_mujoco_ablation.py <results_subdir> <YYYYMMDD> "
-            "[tau0.0_s2,tau0.4_s6] [--hierarchical] [--seeds 1,2,3]\n"
-            "  --hierarchical先对每个 τ 跨所有 s 逐点平均再比 τ；打印推荐 τ/s，并另存两张图。"
+            "[xi0.0_s2,xi0.4_s6] [--hierarchical] [--seeds 1,2,3]\n"
+            "  --hierarchical先对每个 ξ 跨所有 s 逐点平均再比 ξ；打印推荐 ξ/s，并另存两张图。"
         )
         sys.exit(1)
 
@@ -478,7 +478,7 @@ def main() -> None:
         tag_msg = f"（标签过滤: {hyper_tags}）" if hyper_tags else ""
         print(
             f"未找到匹配的运行目录: {results_subdir}，日期 {date}{tag_msg}\n"
-            f"期望目录名形如: opts_ttpo_continuous_action_tau0.4_s6_{date}"
+            f"期望目录名形如: opts_ttpo_continuous_action_xi0.4_s6_{date}"
         )
         sys.exit(1)
 
@@ -493,33 +493,33 @@ def main() -> None:
     sw = DEFAULT_ABLATION_SMOOTH_WINDOW
 
     if hierarchical:
-        tau_avg_data = build_cross_s_average_by_tau(all_tasks_data, date)
-        if not any(tau_avg_data[t] for t in TARGET_TASKS):
-            print("分层模式：无法构造跨 s 平均曲线（请检查各 τ 下是否至少有一条运行）。")
+        xi_avg_data = build_cross_s_average_by_xi(all_tasks_data, date)
+        if not any(xi_avg_data[t] for t in TARGET_TASKS):
+            print("分层模式：无法构造跨 s 平均曲线（请检查各 ξ 下是否至少有一条运行）。")
             sys.exit(1)
 
         path_mean_s = script_dir / f"all_tasks_mujoco_ablation_{date}_mean_over_s.png"
-        plot_ablation_all_tasks(tau_avg_data, path_mean_s, smooth_window=sw)
+        plot_ablation_all_tasks(xi_avg_data, path_mean_s, smooth_window=sw)
 
-        best_tau, tau_scores = pick_best_tau(tau_avg_data, date, sw)
-        print("\n=== 按 τ：对每个 τ 跨所有 s 逐点平均后的曲线 ===")
-        print("各 τ 得分（各任务上平滑后最后 20% 时间步均值，再对任务取平均）：")
-        for t in sorted(tau_scores.keys()):
-            print(f"  tau={t:g}  score={tau_scores[t]:.4f}")
-        print(f"\n推荐 τ* = {best_tau:g}")
+        best_xi, xi_scores = pick_best_xi(xi_avg_data, date, sw)
+        print("\n=== 按 ξ：对每个 ξ 跨所有 s 逐点平均后的曲线 ===")
+        print("各 ξ 得分（各任务上平滑后最后 20% 时间步均值，再对任务取平均）：")
+        for x in sorted(xi_scores.keys()):
+            print(f"  xi={x:g}  score={xi_scores[x]:.4f}")
+        print(f"\n推荐 ξ* = {best_xi:g}")
 
-        filtered = filter_by_tau(all_tasks_data, date, best_tau)
+        filtered = filter_by_xi(all_tasks_data, date, best_xi)
         if not any(filtered[t] for t in TARGET_TASKS):
-            print(f"在 τ={best_tau:g} 下未找到任何 (tau,s) 运行目录。")
+            print(f"在 ξ={best_xi:g} 下未找到任何 (xi,s) 运行目录。")
             sys.exit(1)
 
-        best_s, s_scores = pick_best_s_at_tau(filtered, sw)
-        print(f"\n=== 在 τ*={best_tau:g} 下按 s 比较（同上得分）===")
+        best_s, s_scores = pick_best_s_at_xi(filtered, sw)
+        print(f"\n=== 在 ξ*={best_xi:g} 下按 s 比较（同上得分）===")
         for s in sorted(s_scores.keys()):
             print(f"  s={s}  score={s_scores[s]:.4f}")
         print(f"\n推荐 s* = {best_s}（在 τ* 下）")
 
-        path_s = script_dir / f"all_tasks_mujoco_ablation_{date}_best_tau_s.png"
+        path_s = script_dir / f"all_tasks_mujoco_ablation_{date}_best_xi_s.png"
         plot_ablation_all_tasks(
             filtered, path_s, smooth_window=sw, show_std=False
         )
