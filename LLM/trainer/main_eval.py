@@ -13,7 +13,7 @@ Two modes:
      `opts@k` requires a main_opts_generation parquet. reward-mode opts@k keeps
      the chronological any-correct prefix; value-mode opts@k majority-votes the
      online value-greedy tree responses saved at each budget. `opts-avg@k`
-     requires an rq2_opts_scaling parquet: each of the first k trees contributes
+     requires an RQ2 search parquet: each of the first k trees contributes
      its greedy max-advantage terminal response, averaged per prompt. With
      --opts_avg_slices, s0 truncates to root trajectories (exact) and sN uses
      the online snapshot column opts_avg_responses_s{N}.
@@ -336,7 +336,7 @@ def evaluate_pregenerated_parquet(
         if missing:
             raise ValueError(
                 f"opts-avg@k requires tree-structure columns {missing}, not found in "
-                f"{parquet_path}. Regenerate with the updated experiments/rq2_opts_scaling.py."
+                f"{parquet_path}. Regenerate with the updated experiments/RQ2/search.py."
             )
         # s0 truncates to roots offline (exact); sN>=1 needs the online snapshot column.
         for n in opts_avg_slices or []:

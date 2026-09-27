@@ -100,6 +100,7 @@ wandb/
 outputs/
 LLM/results/
 checkpoints/
+LLM/rq1_ppo_archive/
 ckpts/
 hf_cache/
 model_cache/
@@ -148,7 +149,6 @@ core.[0-9]*
 /LLM/scripts/resume_rq3_s3_step160_copy.sh
 /LLM/scripts/finalize_opts_ttpo_s3_base_step400_eval.py
 /LLM/scripts/finalize_ppo_base_step400_retest.py
-/LLM/scripts/finalize_rq3_checkpoint_eval.sh
 /LLM/experiments/run_step160_native_diagnostic.sh
 /LLM/test/inspect_stuck_reward.py
 
@@ -170,3 +170,5 @@ core.[0-9]*
 *.run.xml
 *.synctex.gz
 *.toc
+
+/LLM/experiments/E1E2/

@@ -22,23 +22,23 @@ GEN_DIR = REPO_ROOT / "LLM/results/step400/gen"
 METHOD_TAG = "opts_ttpo_exp8_3_0810_n8"
 
 DEFAULT_REWARD_IID = (
-    EVAL_DIR / f"{METHOD_TAG}_iid_n128__task2_iid_pass_k8-16-32-64-128.json"
+    EVAL_DIR / f"{METHOD_TAG}_iid_topk-1_n128__task2_iid_pass_k8-16-32-64-128.json"
 )
 DEFAULT_REWARD_OPTS = (
     EVAL_DIR
-    / f"{METHOD_TAG}_opts_reward_s3_n128__task2_reward_opts_k8-16-32-64-128.json"
+    / f"{METHOD_TAG}_opts_reward_s3_topk-1_n128__task2_reward_opts_k8-16-32-64-128.json"
 )
 DEFAULT_VALUE_IID = (
-    EVAL_DIR / f"{METHOD_TAG}_iid_n128__task3_iid_cons_k8-16-32-64-128.json"
+    EVAL_DIR / f"{METHOD_TAG}_iid_topk-1_n128__task3_iid_cons_k8-16-32-64-128.json"
 )
 DEFAULT_VALUE_OPTS = (
     EVAL_DIR
-    / f"{METHOD_TAG}_opts_value_s3_n128__task3_value_opts_k8-16-32-64-128.json"
+    / f"{METHOD_TAG}_opts_value_s3_topk-1_n128__task3_value_opts_k8-16-32-64-128.json"
 )
 
-DEFAULT_IID_PARQUET = GEN_DIR / f"{METHOD_TAG}_iid_n128.parquet"
-DEFAULT_REWARD_PARQUET = GEN_DIR / f"{METHOD_TAG}_opts_reward_s3_n128.parquet"
-DEFAULT_VALUE_PARQUET = GEN_DIR / f"{METHOD_TAG}_opts_value_s3_n128.parquet"
+DEFAULT_IID_PARQUET = GEN_DIR / f"{METHOD_TAG}_iid_topk-1_n128.parquet"
+DEFAULT_REWARD_PARQUET = GEN_DIR / f"{METHOD_TAG}_opts_reward_s3_topk-1_n128.parquet"
+DEFAULT_VALUE_PARQUET = GEN_DIR / f"{METHOD_TAG}_opts_value_s3_topk-1_n128.parquet"
 DEFAULT_TOKENIZER = REPO_ROOT / "LLM/models/Qwen3-1.7B"
 
 DEFAULT_PERFORMANCE_OUTPUT = (
@@ -70,7 +70,11 @@ DATASETS = (
 EXPECTED_DATASETS = {dataset for dataset, _ in DATASETS} | {"_all"}
 
 IID_COLOR = "#7A8791"
-OPTS_COLOR = "#B5475D"
+OPTS_COLORS = {
+    "3": "#D18A00",  # orange
+}
+OPTS_COLOR = OPTS_COLORS["3"]
+OPTS_LABELS = {s: rf"OPTS ($S_{{\max}}={s}$)" for s in OPTS_COLORS}
 TEXT_COLOR = "#263238"
 MUTED_TEXT_COLOR = "#59636B"
 
@@ -462,6 +466,18 @@ def count_strict_wins(opts_values, iid_values, tolerance=1e-12):
     )
 
 
+def normalize_opts_series(opts_values):
+    """Return a consistently ordered mapping of search-round label to values.
+
+    The token-cost figure still passes one legacy array (the S_max=3 curve),
+    while the performance figures pass the single S_max=3 curve. Keeping this
+    compatibility here avoids changing the token-cost code path.
+    """
+    if isinstance(opts_values, dict):
+        return {str(key): values for key, values in sorted(opts_values.items(), key=lambda item: int(item[0]))}
+    return {"3": opts_values}
+
+
 def style_axis(axis, ylim, ylabel, token_axis=False):
     axis.set_xlim(-0.18, len(K_VALUES) - 0.82)
     axis.set_ylim(*ylim)
@@ -517,21 +533,24 @@ def plot_method_pair(axis, iid_values, opts_values):
         label="IID baseline",
         zorder=3,
     )
-    opts_line, = axis.plot(
-        x_values,
-        opts_values,
-        color=OPTS_COLOR,
-        linewidth=2.35,
-        marker="D",
-        markersize=5.3,
-        markerfacecolor=OPTS_COLOR,
-        markeredgecolor="white",
-        markeredgewidth=0.75,
-        solid_capstyle="round",
-        label=r"OPTS ($S_{\max}=3$)",
-        zorder=4,
-    )
-    return iid_line, opts_line
+    opts_lines = []
+    for search_round, values in normalize_opts_series(opts_values).items():
+        opts_line, = axis.plot(
+            x_values,
+            values,
+            color=OPTS_COLORS.get(search_round, OPTS_COLOR),
+            linewidth=2.15,
+            marker="D",
+            markersize=5.0,
+            markerfacecolor=OPTS_COLORS.get(search_round, OPTS_COLOR),
+            markeredgecolor="white",
+            markeredgewidth=0.7,
+            solid_capstyle="round",
+            label=OPTS_LABELS.get(search_round, rf"OPTS ($S_{{\max}}={search_round}$)"),
+            zorder=4,
+        )
+        opts_lines.append(opts_line)
+    return (iid_line, *opts_lines)
 
 
 def add_badge(axis, text):
@@ -557,9 +576,10 @@ def add_badge(axis, text):
 
 def plot_performance_panel(axis, iid_values, opts_values, title, ylabel):
     handles = plot_method_pair(axis, iid_values, opts_values)
+    opts_series = normalize_opts_series(opts_values)
     style_axis(
         axis,
-        dynamic_performance_ylim(iid_values, opts_values),
+        dynamic_performance_ylim(iid_values, *opts_series.values()),
         ylabel,
     )
     axis.set_title(
@@ -570,7 +590,10 @@ def plot_performance_panel(axis, iid_values, opts_values, title, ylabel):
         linespacing=0.92,
         pad=8.0,
     )
-    wins = count_strict_wins(opts_values, iid_values)
+    wins = {
+        search_round: count_strict_wins(values, iid_values)
+        for search_round, values in opts_series.items()
+    }
     return handles, wins
 
 
@@ -630,7 +653,7 @@ def plot_performance_figure(reward_iid, reward_opts, value_iid, value_opts):
 
     figure.legend(
         handles,
-        ["IID baseline", r"OPTS ($S_{\max}=3$)"],
+        [handle.get_label() for handle in handles],
         loc="lower center",
         bbox_to_anchor=(0.5, 0.005),
         ncol=2,
@@ -692,21 +715,25 @@ def plot_dataset_method_pair(axis, iid_values, opts_values):
         label="IID baseline",
         zorder=3,
     )
-    opts_line, = axis.plot(
-        x_values,
-        opts_values,
-        color=OPTS_COLOR,
-        linewidth=1.75,
-        marker="D",
-        markersize=3.8,
-        markerfacecolor=OPTS_COLOR,
-        markeredgecolor="white",
-        markeredgewidth=0.55,
-        solid_capstyle="round",
-        label=r"OPTS ($S_{\max}=3$)",
-        zorder=4,
-    )
-    return iid_line, opts_line
+    opts_lines = []
+    for search_round, values in normalize_opts_series(opts_values).items():
+        color = OPTS_COLORS.get(search_round, OPTS_COLOR)
+        opts_line, = axis.plot(
+            x_values,
+            values,
+            color=color,
+            linewidth=1.65,
+            marker="D",
+            markersize=3.7,
+            markerfacecolor=color,
+            markeredgecolor="white",
+            markeredgewidth=0.55,
+            solid_capstyle="round",
+            label=OPTS_LABELS.get(search_round, rf"OPTS ($S_{{\max}}={search_round}$)"),
+            zorder=4,
+        )
+        opts_lines.append(opts_line)
+    return (iid_line, *opts_lines)
 
 
 def plot_dataset_figure(
@@ -739,18 +766,26 @@ def plot_dataset_figure(
     handles = None
     for column, (dataset, display_name) in enumerate(DATASETS):
         reward_iid = reward_iid_series[dataset]
-        reward_opts = reward_opts_series[dataset]
+        reward_opts = {
+            search_round: series[dataset]
+            for search_round, series in reward_opts_series.items()
+        }
         value_iid = value_iid_series[dataset]
-        value_opts = value_opts_series[dataset]
+        value_opts = {
+            search_round: series[dataset]
+            for search_round, series in value_opts_series.items()
+        }
         handles = plot_dataset_method_pair(
             axes[0, column], reward_iid, reward_opts
         )
         plot_dataset_method_pair(axes[1, column], value_iid, value_opts)
         style_dataset_axis(
-            axes[0, column], dynamic_performance_ylim(reward_iid, reward_opts)
+            axes[0, column],
+            dynamic_performance_ylim(reward_iid, *reward_opts.values()),
         )
         style_dataset_axis(
-            axes[1, column], dynamic_performance_ylim(value_iid, value_opts)
+            axes[1, column],
+            dynamic_performance_ylim(value_iid, *value_opts.values()),
         )
         axes[0, column].set_title(
             display_name,
@@ -768,7 +803,7 @@ def plot_dataset_figure(
         "Reward-Guided OPTS",
         ha="center",
         va="center",
-        color=OPTS_COLOR,
+        color=TEXT_COLOR,
         fontsize=11.2,
         fontweight="semibold",
     )
@@ -778,7 +813,7 @@ def plot_dataset_figure(
         "Value-Guided OPTS",
         ha="center",
         va="center",
-        color=OPTS_COLOR,
+        color=TEXT_COLOR,
         fontsize=11.2,
         fontweight="semibold",
     )
@@ -793,7 +828,7 @@ def plot_dataset_figure(
     )
     figure.legend(
         handles,
-        ["IID baseline", r"OPTS ($S_{\max}=3$)"],
+        [handle.get_label() for handle in handles],
         loc="lower center",
         bbox_to_anchor=(0.535, 0.006),
         ncol=2,
@@ -900,13 +935,19 @@ def plot_figure(
 def main():
     args = parse_args()
     reward_iid_series = load_evaluation_series(args.reward_iid, "pass")
-    reward_opts_series = load_evaluation_series(args.reward_opts, "opts")
+    reward_opts_series = {"3": load_evaluation_series(args.reward_opts, "opts")}
     value_iid_series = load_evaluation_series(args.value_iid, "cons")
-    value_opts_series = load_evaluation_series(args.value_opts, "opts")
+    value_opts_series = {"3": load_evaluation_series(args.value_opts, "opts")}
     reward_iid = reward_iid_series["_all"]
-    reward_opts = reward_opts_series["_all"]
+    reward_opts = {
+        search_round: series["_all"]
+        for search_round, series in reward_opts_series.items()
+    }
     value_iid = value_iid_series["_all"]
-    value_opts = value_opts_series["_all"]
+    value_opts = {
+        search_round: series["_all"]
+        for search_round, series in value_opts_series.items()
+    }
 
     if not args.with_token_panels:
         figure, reward_wins, value_wins = plot_performance_figure(
@@ -952,8 +993,20 @@ def main():
             pad_inches=0.035,
         )
         plt.close(dataset_figure)
-        print(f"Reward-guided pooled wins: {reward_wins}/{len(K_VALUES)}")
-        print(f"Value-guided pooled wins: {value_wins}/{len(K_VALUES)}")
+        print(
+            "Reward-guided pooled wins: "
+            + ", ".join(
+                f"S_max={search_round} {wins}/{len(K_VALUES)}"
+                for search_round, wins in reward_wins.items()
+            )
+        )
+        print(
+            "Value-guided pooled wins: "
+            + ", ".join(
+                f"S_max={search_round} {wins}/{len(K_VALUES)}"
+                for search_round, wins in value_wins.items()
+            )
+        )
         print(f"Wrote {args.output}")
         print(f"Wrote {args.png_output}")
         print(f"Wrote {args.dataset_output}")

@@ -2,7 +2,7 @@ export NCCL_DEBUG=ERROR
 export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
-MODEL_SIZE=1.7B
+MODEL_SIZE=1.7B-Base
 Experiment_Name=dapo_0703_n8_${MODEL_SIZE}
 RAY_TEMP_DIR="/tmp/ray/${Experiment_Name}"
 
@@ -20,7 +20,7 @@ trap cleanup_ray_temp EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-CUDA_VISIBLE_DEVICES=0 python3 -m verl.trainer.main_ppo \
+CUDA_VISIBLE_DEVICES=5 python3 -m verl.trainer.main_ppo \
  algorithm.adv_estimator=grpo \
  data.train_files=data/train.parquet \
  data.val_files=data/test.parquet \
@@ -41,7 +41,10 @@ CUDA_VISIBLE_DEVICES=0 python3 -m verl.trainer.main_ppo \
  actor_rollout_ref.actor.clip_ratio_c=10.0 \
  actor_rollout_ref.actor.loss_agg_mode=token-mean \
  actor_rollout_ref.rollout.name=vllm \
- actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=64 \
+ actor_rollout_ref.rollout.temperature=1.0 \
+ actor_rollout_ref.rollout.top_p=1.0 \
+ actor_rollout_ref.rollout.top_k=-1 \
+ actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=128 \
  actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
  actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
  actor_rollout_ref.rollout.n=8 \
@@ -49,6 +52,7 @@ CUDA_VISIBLE_DEVICES=0 python3 -m verl.trainer.main_ppo \
  actor_rollout_ref.rollout.val_kwargs.do_sample=True \
  actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
  actor_rollout_ref.rollout.val_kwargs.top_p=0.95 \
+ actor_rollout_ref.rollout.val_kwargs.top_k=-1 \
  custom_reward_function.path=utils/reward_fn.py \
  custom_reward_function.name=compute_score \
  algorithm.use_kl_in_reward=False \
@@ -65,7 +69,7 @@ CUDA_VISIBLE_DEVICES=0 python3 -m verl.trainer.main_ppo \
  trainer.nnodes=1 \
  trainer.project_name=opts_ttpo_${MODEL_SIZE} \
  trainer.experiment_name=${Experiment_Name} \
- trainer.default_local_dir=/share/lujunyu/ckpts/opts_ckpts/opts_ttpo_${MODEL_SIZE}/${Experiment_Name} \
+ trainer.default_local_dir="${OPTS_CHECKPOINT_ROOT:-checkpoints}/opts_ttpo_${MODEL_SIZE}/${Experiment_Name}" \
  trainer.save_freq=20 \
  trainer.test_freq=20 \
  trainer.total_epochs=400 \

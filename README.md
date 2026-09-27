@@ -208,7 +208,6 @@ hf download Qwen/Qwen3-1.7B-Base --local-dir models/Qwen3-1.7B-Base
 cd LLM
 bash scripts/run_ppo.sh
 bash scripts/run_dapo.sh
-bash scripts/run_gpg.sh
 bash scripts/run_reinforce_pp_baseline.sh
 ```
 
@@ -225,7 +224,7 @@ bash scripts/run_opts_ttpo.sh
 
 ```bash
 cd LLM
-bash scripts/run_opts_generation.sh
+bash experiments/RQ2/run_generate.sh
 ```
 
 > Entry point: `LLM/trainer/main_opts_generation.py`

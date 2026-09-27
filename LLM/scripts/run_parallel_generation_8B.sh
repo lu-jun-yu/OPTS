@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Generate N_SAMPLES i.i.d. responses per prompt for DAPO / PPO /
+# Generate N_SAMPLES i.i.d. responses per prompt for the 8B DAPO / PPO /
 # REINFORCE++ / OPTS-TTPO checkpoints (single node).
 # Merges each method's FSDP actor to HF, then runs verl.trainer.main_generation.
 # Idempotent: merge is skipped if the HF dir has weights, generation is
 # skipped if the parquet already exists.
 #
-# Run from anywhere:  bash scripts/run_parallel_generation.sh
+# Run from anywhere:  bash scripts/run_parallel_generation_8B.sh
 # To change settings (checkpoints, budget, methods), edit the variables below.
 set -euo pipefail
 
@@ -22,21 +22,21 @@ IFS=',' read -ra _gpu_arr <<< "${CUDA_VISIBLE_DEVICES}"
 N_GPUS=${#_gpu_arr[@]}
 unset _gpu_arr
 
-# Checkpoint selection is centralized in scripts/run_eval.sh, which exports
+# Checkpoint selection is centralized in scripts/run_eval_8B.sh, which exports
 # MODEL_SIZE / STEP / METHODS; the defaults below match it so this script
 # also works standalone.
-MODEL_SIZE=${MODEL_SIZE:-1.7B}
+MODEL_SIZE=${MODEL_SIZE:-8B}
 STEP=${STEP:-400}
 CKPT_ROOT="${OPTS_CHECKPOINT_ROOT:-checkpoints}/opts_ttpo_${MODEL_SIZE}"
 DATA_PATH=data/test.parquet
 N_SAMPLES=128
 TOP_K=${TOP_K:--1}
-METHODS=${METHODS:-"dapo_0703_n8 ppo_0704_n8 reinforce_pp_baseline_0703_n8 opts_ttpo_exp8_3_0810_n8"}
+METHODS=${METHODS:-"dapo_0805_n8 ppo_0805_n8 reinforce_pp_baseline_0805_n8 opts_ttpo_exp8_3_0810_n8"}
 
-OUT_ROOT="results/step${STEP}"
+OUT_ROOT="results/${MODEL_SIZE}/step${STEP}"
 MERGED_ROOT="${OUT_ROOT}/merged"
 GEN_ROOT="${OUT_ROOT}/gen"
-LOG_ROOT="logs/step${STEP}"
+LOG_ROOT="logs/${MODEL_SIZE}/step${STEP}"
 mkdir -p "${MERGED_ROOT}" "${GEN_ROOT}" "${LOG_ROOT}"
 
 for method in ${METHODS}; do
@@ -75,7 +75,7 @@ for method in ${METHODS}; do
      rollout.tensor_model_parallel_size=1 \
      +rollout.pipeline_model_parallel_size=1 \
      rollout.mode=sync \
-     rollout.gpu_memory_utilization=0.85 \
+     rollout.gpu_memory_utilization=0.7 \
      rollout.max_num_batched_tokens=262144 \
      2>&1 | tee "${LOG_ROOT}/${method}_iid.log"
     e=$(date +%s.%N)

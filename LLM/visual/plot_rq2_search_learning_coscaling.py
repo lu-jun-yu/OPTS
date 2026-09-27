@@ -29,7 +29,7 @@ DATASET_ORDER = [
 ]
 
 DATASET_NAMES = {
-    "hiyouga/math12k": "Math12K",
+    "hiyouga/math12k": "MATH500",
     "math-ai/aime24": "AIME24",
     "math-ai/aime25": "AIME25",
     "math-ai/aime26": "AIME26",
@@ -55,6 +55,14 @@ def parse_args():
             "Plot separate 1x6 figures for search-budget scaling and "
             "base-policy scaling from evaluation JSON files."
         )
+    )
+    parser.add_argument(
+        "--rounds", default=None,
+        help="Comma-separated search rounds to plot (default 0,1,3,7,15); e.g. 0,1,3,7 for the s=7 rerun.",
+    )
+    parser.add_argument(
+        "--no-learning", action="store_true",
+        help="Only produce the search-budget figure (base-policy scaling dropped).",
     )
     parser.add_argument(
         "--search-json",
@@ -113,9 +121,11 @@ def require_exact_sequence(data, field, expected, path):
 
 
 def validate_common_schema(data, path, expected_slices):
-    require_exact_sequence(data, "metrics", [METRIC], path)
+    if METRIC not in (data.get("metrics") or []):
+        raise ValueError(f"Expected metric {METRIC} in {path}, found {data.get('metrics')}")
     require_exact_sequence(data, "k", [K], path)
-    require_exact_sequence(data, "opts_avg_slices", expected_slices, path)
+    if not set(expected_slices) <= set(data.get("opts_avg_slices") or []):
+        raise ValueError(f"Expected slices {expected_slices} in {path}, found {data.get('opts_avg_slices')}")
 
     results = data.get("results")
     if not isinstance(results, dict):
@@ -310,12 +320,12 @@ def plot_row(series, x_values, color, title, xlabel, ylims):
         }
     )
 
-    figure, axes = plt.subplots(1, 6, figsize=(12.2, 2.85), squeeze=False)
+    figure, axes = plt.subplots(1, 6, figsize=(12.2, 2.45), squeeze=False)
     figure.subplots_adjust(
         left=0.065,
         right=0.992,
-        bottom=0.235,
-        top=0.735,
+        bottom=0.27,
+        top=0.86 if title is None else 0.735,
         wspace=0.34,
     )
 
@@ -325,16 +335,17 @@ def plot_row(series, x_values, color, title, xlabel, ylims):
         plot_series(axis, series[dataset], color)
         axis.set_title(DATASET_NAMES[dataset], color=TEXT_COLOR, pad=8.0)
 
-    figure.text(
-        0.5,
-        0.90,
-        title,
-        ha="center",
-        va="center",
-        color=color,
-        fontsize=15.0,
-        fontweight="bold",
-    )
+    if title is not None:
+        figure.text(
+            0.5,
+            0.90,
+            title,
+            ha="center",
+            va="center",
+            color=color,
+            fontsize=15.0,
+            fontweight="bold",
+        )
     figure.text(
         0.5,
         0.075,
@@ -361,30 +372,37 @@ def plot_row(series, x_values, color, title, xlabel, ylims):
 
 def main():
     args = parse_args()
+    global SEARCH_ROUNDS
+    if args.rounds:
+        SEARCH_ROUNDS = [int(r) for r in args.rounds.split(",")]
     search_path = discover_search_json(args.search_json)
     search_series = load_search_scaling(search_path)
-    learning_series = load_learning_scaling(args.learning_dir)
+    learning_series = None if args.no_learning else load_learning_scaling(args.learning_dir)
 
     ylims = {
-        dataset: shared_column_ylim(search_series[dataset], learning_series[dataset])
+        dataset: shared_column_ylim(
+            search_series[dataset],
+            learning_series[dataset] if learning_series else search_series[dataset])
         for dataset in DATASET_ORDER
     }
     search_figure = plot_row(
         search_series,
         SEARCH_ROUNDS,
         SEARCH_COLOR,
-        r"More Search $\rightarrow$ Stronger Search Policy",
+        None,
         r"Maximum OPTS search rounds $S_{\max}$",
         ylims,
     )
-    learning_figure = plot_row(
-        learning_series,
-        TRAINING_STEPS,
-        LEARNING_COLOR,
-        r"Stronger Policy $\rightarrow$ Stronger Search",
-        r"Training step (fixed search budget: $S_{\max}=3$)",
-        ylims,
-    )
+    learning_figure = None
+    if learning_series:
+        learning_figure = plot_row(
+            learning_series,
+            TRAINING_STEPS,
+            LEARNING_COLOR,
+            r"Stronger Policy $\rightarrow$ Stronger Search",
+            r"Training step (fixed search budget: $S_{\max}=3$)",
+            ylims,
+        )
     monotonic_count = sum(
         is_monotonic(search_series[dataset]) for dataset in DATASET_ORDER
     )
@@ -405,34 +423,32 @@ def main():
             pad_inches=0.035,
         )
 
-    args.learning_output.parent.mkdir(parents=True, exist_ok=True)
-    learning_figure.savefig(
-        args.learning_output,
-        bbox_inches="tight",
-        pad_inches=0.035,
-        metadata={"Title": "Base-Policy Scaling of OPTS"},
-    )
-
-    if args.learning_png_output:
-        args.learning_png_output.parent.mkdir(parents=True, exist_ok=True)
+    if learning_figure is not None:
+        args.learning_output.parent.mkdir(parents=True, exist_ok=True)
         learning_figure.savefig(
-            args.learning_png_output,
-            dpi=300,
+            args.learning_output,
             bbox_inches="tight",
             pad_inches=0.035,
+            metadata={"Title": "Base-Policy Scaling of OPTS"},
         )
+        if args.learning_png_output:
+            args.learning_png_output.parent.mkdir(parents=True, exist_ok=True)
+            learning_figure.savefig(
+                args.learning_png_output,
+                dpi=300,
+                bbox_inches="tight",
+                pad_inches=0.035,
+            )
+        plt.close(learning_figure)
+        print(f"Learning scaling: {args.learning_dir}")
+        print(f"Wrote {args.learning_output}")
 
     plt.close(search_figure)
-    plt.close(learning_figure)
     print(f"Search scaling: {search_path}")
-    print(f"Learning scaling: {args.learning_dir}")
     print(f"Top-row monotonic datasets: {monotonic_count}/{len(DATASET_ORDER)}")
     print(f"Wrote {args.output}")
     if args.png_output:
         print(f"Wrote {args.png_output}")
-    print(f"Wrote {args.learning_output}")
-    if args.learning_png_output:
-        print(f"Wrote {args.learning_png_output}")
 
 
 if __name__ == "__main__":

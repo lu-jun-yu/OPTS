@@ -1,33 +1,24 @@
 #!/usr/bin/env bash
-# Full step-400 evaluation pipeline.
+# Full step-400 evaluation pipeline for the 8B checkpoints.
 #
-#   1) Call scripts/run_parallel_generation.sh — merge FSDP actors + generate
+#   1) Call scripts/run_parallel_generation_8B.sh — merge FSDP actors + generate
 #      N_SAMPLES (128) i.i.d. responses per prompt for DAPO, PPO,
 #      REINFORCE++, OPTS-TTPO.
-#   2) Call experiments/RQ2/run_generate.sh — merge OPTS-TTPO actor+critic and
-#      run trainer.main_opts_generation (OPTS tree search). The reward mode is
-#      set inside that script; Task 3 below needs a separate REWARD_MODE=value
-#      run of it.
+#   2) OPTS tree-search generation remains disabled below; this script evaluates
+#      the i.i.d. generations needed for the 8B training-method comparison.
 #   3) Score every parquet with trainer.main_eval --pregenerated_parquet:
 #        - Task 1: avg@PASSCONS_K, pass@PASSCONS_K, cons@PASSCONS_K over the
 #          first PASSCONS_K of N_SAMPLES responses (default K=32).
-#        - Task 2: opts@k (from reward-guided OPTS parquet) and pass@k (from
-#          OPTS-TTPO's i.i.d. parquet) for each k in OPTS_KS
-#          (default 8 16 32 64 128).
-#        - Task 3: value-guided opts@k from online greedy-path snapshots and
-#          cons@k (from OPTS-TTPO's i.i.d. parquet) for each k in OPTS_KS.
-#   4) Summarize generation wall-clock times so pass@k-style i.i.d. sampling
-#      and OPTS tree-search can be compared directly.
+#        - Task 2: pass@k for OPTS-TTPO's i.i.d. parquet for each k in OPTS_KS
+#          (default 8 16 32 64 128); reward-guided OPTS is evaluated only when
+#          a matching parquet already exists in the isolated 8B directory.
+#        - Task 3: cons@k for OPTS-TTPO's i.i.d. parquet for each k in OPTS_KS;
+#          value-guided OPTS is evaluated only when a matching parquet exists.
+#   4) Summarize generation wall-clock times.
 #
-# Generation knobs (budget, reward mode) are set inside the two generation
-# scripts; eval knobs are the variables directly below.
-# Checkpoint selection is centralized HERE: STEP / MODEL_SIZE / METHODS /
-# OPTS_METHOD are exported and picked up by both generation scripts, so
-# switching experiments only means editing this block.
 # CUDA_VISIBLE_DEVICES set on this script (e.g. `CUDA_VISIBLE_DEVICES=6 bash
-# scripts/run_eval.sh`) propagates to both generation scripts, which derive
+# scripts/run_eval_8B.sh`) propagates to the generation script, which derives
 # n_gpus_per_node from it automatically.
-# Set SKIP_GEN=1 to bypass steps 1 and 2 (evaluate-only on existing parquets).
 
 set -euo pipefail
 
@@ -36,12 +27,9 @@ LLM_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${LLM_DIR}"
 
 # ---- checkpoint selection (the single place to edit) ----
-# METHODS: i.i.d. checkpoints; OPTS_METHOD: the OPTS-TTPO checkpoint. Both
-# must exist as ${CKPT_ROOT}/${name}_${MODEL_SIZE}/global_step_${STEP}/actor
-# where CKPT_ROOT=${OPTS_CHECKPOINT_ROOT:-checkpoints}/opts_ttpo_${MODEL_SIZE}.
 STEP=400
-MODEL_SIZE=1.7B
-METHODS="dapo_0703_n8 ppo_0704_n8 reinforce_pp_baseline_0703_n8 opts_ttpo_exp8_3_0810_n8"
+MODEL_SIZE=8B
+METHODS=${METHODS:-"dapo_0805_n8 ppo_0805_n8 reinforce_pp_baseline_0805_n8 opts_ttpo_exp8_3_0810_n8"}
 OPTS_METHOD="opts_ttpo_exp8_3_0810_n8"
 export STEP MODEL_SIZE METHODS OPTS_METHOD
 # ---------------------------------------------------------
@@ -52,43 +40,39 @@ PASSCONS_K=32
 OPTS_KS="8 16 32 64 128"
 OPTS_KS_TAG="${OPTS_KS// /-}"
 SKIP_GEN=0
-# max_search_per_tree values to generate/evaluate; results are saved with a
-# "_s${s}" filename tag so different search depths can be compared.
 OPTS_MAX_SEARCHES=${OPTS_MAX_SEARCHES:-"3"}
 
-OUT_ROOT="results/step${STEP}"
+OUT_ROOT="results/${MODEL_SIZE}/step${STEP}"
 GEN_ROOT="${OUT_ROOT}/gen"
 EVAL_ROOT="${OUT_ROOT}/eval"
-LOG_ROOT="logs/step${STEP}"
+LOG_ROOT="logs/${MODEL_SIZE}/step${STEP}"
 mkdir -p "${EVAL_ROOT}"
 
 if [[ "${SKIP_GEN}" != "1" ]]; then
     echo "========== Stage 1: i.i.d. generation for ${METHODS} =========="
-    bash "${SCRIPT_DIR}/run_parallel_generation.sh"
+    bash "${SCRIPT_DIR}/run_parallel_generation_8B.sh"
 
-    echo "========== Stage 2: OPTS tree-search generation for opts_ttpo =========="
-    for s in ${OPTS_MAX_SEARCHES}; do
-        REWARD_MODE=reward MAX_SEARCH_PER_TREE=${s} bash "${SCRIPT_DIR}/../experiments/RQ2/run_generate.sh"
-        REWARD_MODE=value MAX_SEARCH_PER_TREE=${s} bash "${SCRIPT_DIR}/../experiments/RQ2/run_generate.sh"
-    done
+    # OPTS tree-search generation is intentionally disabled for this 8B
+    # training-method evaluation. Do not point the 1.7B generation script at
+    # these checkpoints because its merged/output directories are different.
 fi
 
-# echo "========== Stage 3: Task 1 — avg@${PASSCONS_K}, pass@${PASSCONS_K}, cons@${PASSCONS_K} =========="
-# for method in ${METHODS}; do
-#     parquet="${GEN_ROOT}/${method}_iid_topk${TOP_K}_n${N_SAMPLES}.parquet"
-#     if [[ ! -f "${parquet}" ]]; then
-#         echo "[missing] ${parquet} — re-run without SKIP_GEN=1" >&2
-#         continue
-#     fi
-#     echo "--- ${method} ---"
-#     python3 -m trainer.main_eval \
-#         --pregenerated_parquet "${parquet}" \
-#         --metrics avg pass cons --k ${PASSCONS_K} \
-#         --output_tag "task1_avg-pass-cons_k${PASSCONS_K}" \
-#         --output_dir "${EVAL_ROOT}"
-# done
+echo "========== Stage 2: Task 1 — avg@${PASSCONS_K}, pass@${PASSCONS_K}, cons@${PASSCONS_K} =========="
+for method in ${METHODS}; do
+    parquet="${GEN_ROOT}/${method}_iid_topk${TOP_K}_n${N_SAMPLES}.parquet"
+    if [[ ! -f "${parquet}" ]]; then
+        echo "[missing] ${parquet}" >&2
+        continue
+    fi
+    echo "--- ${method} ---"
+    python3 -m trainer.main_eval \
+        --pregenerated_parquet "${parquet}" \
+        --metrics avg pass cons --k ${PASSCONS_K} \
+        --output_tag "task1_avg-pass-cons_k${PASSCONS_K}" \
+        --output_dir "${EVAL_ROOT}"
+done
 
-echo "========== Stage 3: Task 2 — opts@k (reward) + pass@k (i.i.d.) for opts_ttpo =========="
+echo "========== Stage 2: Task 2 — opts@k (reward) + pass@k (i.i.d.) for opts_ttpo =========="
 iid_parquet="${GEN_ROOT}/${OPTS_METHOD}_iid_topk${TOP_K}_n${N_SAMPLES}.parquet"
 for s in ${OPTS_MAX_SEARCHES}; do
     reward_opts_parquet="${GEN_ROOT}/${OPTS_METHOD}_opts_reward_s${s}_topk${TOP_K}_n${N_SAMPLES}.parquet"
@@ -114,7 +98,7 @@ else
     echo "[missing] ${iid_parquet}" >&2
 fi
 
-echo "========== Stage 3: Task 3 — opts@k (value) + cons@k (i.i.d.) for opts_ttpo =========="
+echo "========== Stage 2: Task 3 — opts@k (value) + cons@k (i.i.d.) for opts_ttpo =========="
 for s in ${OPTS_MAX_SEARCHES}; do
     value_opts_parquet="${GEN_ROOT}/${OPTS_METHOD}_opts_value_s${s}_topk${TOP_K}_n${N_SAMPLES}.parquet"
     if [[ -f "${value_opts_parquet}" ]]; then

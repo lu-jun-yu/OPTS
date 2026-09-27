@@ -43,7 +43,7 @@ SUMMARY_METRICS = ["acc/avg@32", "acc/pass@32"]
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Build reward-curve figures and step-460 summaries for LLM training-time search."
+        description="Build reward-curve figures and step-400 summaries for LLM training-time search."
     )
     parser.add_argument(
         "--results-dir",
@@ -53,12 +53,12 @@ def parse_args():
     parser.add_argument(
         "--summary-step",
         type=int,
-        default=460,
+        default=400,
         help="Checkpoint step used for the final-result summary.",
     )
     parser.add_argument(
         "--summary-csv",
-        default="LLM/visual/step460_summary.csv",
+        default="LLM/visual/step400_summary.csv",
         help="Output CSV path for the final-step summary.",
     )
     parser.add_argument(
