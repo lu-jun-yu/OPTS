@@ -33,21 +33,39 @@ An on-policy tree trajectory contains suffixes that share previously sampled pre
 
 For a parent `p` with children `c ∈ C(p)`, TTPO uses normalized local weights `α[p,c]` and propagates them through the tree:
 
-<p align="center">
-  <img src="assets/equations/branch-weights.png" width="520" alt="W(root) = 1; W(c) = W(p) alpha(p,c); the child weights sum to one">
-</p>
+```math
+W(\mathrm{root})=1,
+\qquad
+W(c)=W(p)\alpha_{p,c},
+\qquad
+\sum_{c\in\mathcal C(p)}\alpha_{p,c}=1.
+```
 
 The **Branch Aggregation Lemma** states that, when branching decisions and weights are fixed from prefix information before outgoing transitions are sampled, branch-weighted tree statistics recover their on-policy chain expectations. Applying the lemma to the policy gradient gives the **Tree Trajectory Policy Gradient (TTPG)**:
 
-<p align="center">
-  <img src="assets/equations/ttpg.png" width="760" alt="Tree Trajectory Policy Gradient">
-</p>
+```math
+\nabla_\theta J(\theta)
+=
+\mathbb E_{\mathcal T}
+\left[
+\sum_{x\in\mathcal T}
+W(x)\gamma^{d(x)}
+A^{\pi_\theta}(s_x,a_x)
+\nabla_\theta\log\pi_\theta(a_x\mid s_x)
+\right].
+```
 
 The weights prevent expanded suffixes from receiving extra influence solely because they appear more often in the tree. The recursive counterpart is **Tree-based Generalized Advantage Estimation (TreeGAE)**:
 
-<p align="center">
-  <img src="assets/equations/treegae.png" width="400" alt="TreeGAE recursion">
-</p>
+```math
+\widehat A_x
+=
+\delta_x^V
++
+\gamma\lambda
+\sum_{c\in\mathcal C(x)}
+\alpha_{x,c}\widehat A_c.
+```
 
 Under the lemma's conditions, TreeGAE has the same conditional suffix expectation as chain GAE. TTPO applies `W(x)` to the clipped PPO actor and value objectives, giving a practical PPO-style optimization method for tree trajectories.
 
@@ -55,9 +73,11 @@ Under the lemma's conditions, TreeGAE has the same conditional suffix expectatio
 
 OPTS selects rebranching states with a policy-relative **performance-difference estimate**:
 
-<p align="center">
-  <img src="assets/equations/performance-difference.png" width="380" alt="TreeGAE-estimated performance difference">
-</p>
+```math
+\widehat\Delta(s_t;\tau)
+=
+-\sum_{k=t}^{n-1}\gamma^{k-t}\widehat A_{x_k}.
+```
 
 In deterministic environments with exact values, this is the difference between the current-policy value at `s_t` and the observed suffix return. Atari and MuJoCo use the length-adjusted score `Δ̂^(ξ)(s_t;τ) = Δ̂(s_t;τ)/(n−t)^ξ`, while the LLM setting uses the unpenalized rollout-level score.
 
@@ -74,9 +94,10 @@ Under deterministic dynamics, exact current-policy values, and the conditions st
 
 The complete training loop alternates
 
-<p align="center">
-  <img src="assets/equations/training-loop.png" width="360" alt="The OPTS-TTPO training loop alternates search and policy updates">
-</p>
+```math
+\pi_u \xrightarrow{\mathrm{OPTS}} \mathcal T_u
+\xrightarrow{\mathrm{TTPO}} \pi_{u+1}.
+```
 
 Because OPTS chooses expansion states after observing sampled outcomes, uniform branch weights correct multiplicity but do not remove adaptive selection bias. The paper decomposes this effect into posterior trajectory reweighting and, under max backup, an additional **prefix-credit** term.
 
