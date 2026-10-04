@@ -31,7 +31,7 @@ An on-policy tree trajectory contains suffixes that share previously sampled pre
 
 ### TTPO (Tree Trajectory Policy Optimization)
 
-For a parent `p` with children `c ∈ C(p)`, TTPO uses normalized local weights `α[p,c]` and propagates them through the tree:
+For a parent $`p`$ with children $`c\in\mathcal C(p)`$, TTPO uses normalized local weights $`\alpha_{p,c}`$ and propagates them through the tree:
 
 ```math
 W(\mathrm{root})=1,
@@ -67,7 +67,7 @@ The weights prevent expanded suffixes from receiving extra influence solely beca
 \alpha_{x,c}\widehat A_c.
 ```
 
-Under the lemma's conditions, TreeGAE has the same conditional suffix expectation as chain GAE. TTPO applies `W(x)` to the clipped PPO actor and value objectives, giving a practical PPO-style optimization method for tree trajectories.
+Under the lemma's conditions, TreeGAE has the same conditional suffix expectation as chain GAE. TTPO applies $`W(x)`$ to the clipped PPO actor and value objectives, giving a practical PPO-style optimization method for tree trajectories.
 
 ### OPTS (On-Policy Parallel Tree Search)
 
@@ -79,7 +79,7 @@ OPTS selects rebranching states with a policy-relative **performance-difference 
 -\sum_{k=t}^{n-1}\gamma^{k-t}\widehat A_{x_k}.
 ```
 
-In deterministic environments with exact values, this is the difference between the current-policy value at `s_t` and the observed suffix return. Atari and MuJoCo use the length-adjusted score `Δ̂^(ξ)(s_t;τ) = Δ̂(s_t;τ)/(n−t)^ξ`, while the LLM setting uses the unpenalized rollout-level score.
+In deterministic environments with exact values, this is the difference between the current-policy value at $`s_t`$ and the observed suffix return. Atari and MuJoCo use the length-adjusted score $`\widehat\Delta^{(\xi)}(s_t;\tau)=\widehat\Delta(s_t;\tau)/(n-t)^\xi`$, while the LLM setting uses the unpenalized rollout-level score.
 
 Each search round:
 
