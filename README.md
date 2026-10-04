@@ -1,4 +1,4 @@
-# OPTS: On-policy Parallel Tree Search for Enhanced Policy Optimization
+# OPTS-TTPO: Enhancing Finite-Sample Policy-Gradient Learning with Tree Search
 
 <p align="center">
   <a href="#"><b>Paper</b></a> &nbsp;|&nbsp;
@@ -7,8 +7,13 @@
   <a href="#citation"><b>Citation</b></a>
 </p>
 
-<!-- TODO: Add framework diagram -->
-<!-- <p align="center"><img src="assets/framework.png" width="90%"></p> -->
+<p align="center">
+  <a href="assets/opts-ttpo-overview.pdf">
+    <img src="assets/opts-ttpo-overview.png" width="100%" alt="Overview of the OPTS-TTPO framework">
+  </a>
+</p>
+
+<p align="center"><em>OPTS selects where to expand on-policy tree trajectories; TTPO learns from them using TreeGAE and branch-weighted policy updates.</em></p>
 
 ## News
 
@@ -16,24 +21,87 @@
 
 ## Introduction
 
-This repository provides the official implementation of **OPTS** (On-policy Parallel Tree Search) and **TTPO** (Tree Trajectory Policy Optimization), covering both classical RL (Atari & MuJoCo) and LLM post-training scenarios.
+This repository provides the official implementation of **OPTS-TTPO** for Atari, MuJoCo, and LLM post-training. Policy-gradient updates rely on finitely many trajectories and can miss rare, high-return continuations. Tree search can improve their coverage by reusing an observed prefix and spending additional rollout budget on fresh suffixes from selected states.
 
-### OPTS (On-policy Parallel Tree Search)
+OPTS-TTPO connects **On-Policy Parallel Tree Search (OPTS)**, which allocates the rollout budget, with **Tree Trajectory Policy Optimization (TTPO)**, which learns from the resulting trees. The method must correct the multiplicity introduced by shared prefixes and account for the bias introduced when expansion states are selected from observed outcomes.
 
-OPTS builds search trees by iteratively sampling trajectory batches under the current policy and allocating additional rollout budget to selected prefixes.
+### On-Policy Tree Trajectories
 
-Key features of OPTS:
-
-- **Sampling-based expansion**: Each round samples new suffixes from selected states in parallel, sharing their existing prefixes.
-- **Performance-difference estimate**: A length-penalized estimate scores candidate states to choose where to branch next.
-- **Backtracking to earlier states**: Rebranching positions are selected along the observed greedy path in each tree, allowing earlier prefixes to be revisited.
+An on-policy tree trajectory contains suffixes that share previously sampled prefixes. Every new action is sampled from the current policy, so attaching a suffix requires no action-distribution importance correction. However, selecting previously visited states for rebranching changes their sampling frequency relative to an ordinary policy chain.
 
 ### TTPO (Tree Trajectory Policy Optimization)
 
-TTPO applies PPO to the tree-structured trajectories collected by OPTS:
+For a parent $p$ with children $c\in\mathcal C(p)$, TTPO uses normalized local weights $\alpha_{p,c}$ and propagates them through the tree:
 
-- **TreeGAE**: Extends GAE to trees with mean or max backup over child advantages. The main LLM and MuJoCo configurations use max backup; sticky-action Atari uses mean backup.
-- **Branch weighting**: Starting from root weight $1$, each branch splits its parent's weight equally among its children. These weights multiply the clipped PPO surrogate to account for branching multiplicities.
+$$
+W(\text{root})=1,
+\qquad
+W(c)=W(p)\alpha_{p,c},
+\qquad
+\sum_{c\in\mathcal C(p)}\alpha_{p,c}=1.
+$$
+
+The **Branch Aggregation Lemma** states that, when branching decisions and weights are fixed from prefix information before outgoing transitions are sampled, branch-weighted tree statistics recover their on-policy chain expectations. Applying the lemma to the policy gradient gives the **Tree Trajectory Policy Gradient (TTPG)**:
+
+$$
+\nabla_\theta J(\theta)
+=
+\mathbb E_{\mathcal T}
+\left[
+\sum_{x\in\mathcal T}
+W(x)\gamma^{d(x)}
+A^{\pi_\theta}(s_x,a_x)
+\nabla_\theta\log\pi_\theta(a_x\mid s_x)
+\right].
+$$
+
+The weights prevent expanded suffixes from receiving extra influence solely because they appear more often in the tree. The recursive counterpart is **Tree-based Generalized Advantage Estimation (TreeGAE)**:
+
+$$
+\widehat A_x
+=
+\delta_x^V
++
+\gamma\lambda
+\sum_{c\in\mathcal C(x)}
+\alpha_{x,c}\widehat A_c.
+$$
+
+Under the lemma's conditions, TreeGAE has the same conditional suffix expectation as chain GAE. TTPO applies $W(x)$ to the clipped PPO actor and value objectives, giving a practical PPO-style optimization method for tree trajectories.
+
+### OPTS (On-Policy Parallel Tree Search)
+
+OPTS selects rebranching states with a policy-relative **performance-difference estimate**:
+
+$$
+\widehat\Delta(s_t;\tau)
+=
+-\sum_{k=t}^{n-1}\gamma^{k-t}\widehat A_{x_k}.
+$$
+
+In deterministic environments with exact values, this is the difference between the current-policy value at $s_t$ and the observed suffix return. Atari and MuJoCo use the length-adjusted score $\widehat\Delta^{(\xi)}=\widehat\Delta/(n-t)^\xi$, while the LLM setting uses the unpenalized rollout-level score.
+
+Each search round:
+
+1. backs up TreeGAE from the new leaves to the roots;
+2. follows the highest-advantage children to form a greedy path;
+3. selects the state with the largest performance-difference score; and
+4. samples and attaches new on-policy suffixes in parallel.
+
+Under deterministic dynamics, exact current-policy values, and the conditions stated in the paper, max-backup OPTS improves the induced search policy monotonically as the search budget grows.
+
+### Combining Search and Learning
+
+The complete training loop alternates
+
+$$
+\pi_u \xrightarrow{\mathrm{OPTS}} \mathcal T_u
+\xrightarrow{\mathrm{TTPO}} \pi_{u+1}.
+$$
+
+Because OPTS chooses expansion states after observing sampled outcomes, uniform branch weights correct multiplicity but do not remove adaptive selection bias. The paper decomposes this effect into posterior trajectory reweighting and, under max backup, an additional **prefix-credit** term.
+
+In deterministic environments, max-backup TreeGAE propagates the best-minus-average suffix gap to preceding actions, allowing a discovered suffix to influence upstream learning before it is reliably reproduced. In stochastic environments, mean backup reduces selection of favorable environmental noise. The analysis bounds the resulting bias using the searched-tree fraction, expansion budget, branch weights, and suffix gaps.
 
 ## Installation
 
