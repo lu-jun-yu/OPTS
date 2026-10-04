@@ -158,6 +158,7 @@ core.[0-9]*
 /Atari_MuJoCo/cleanrl/
 /TreeRL/
 /paper/
+/paper-arxiv/
 
 # LaTeX scratch output outside the separate manuscript checkout
 *.aux
