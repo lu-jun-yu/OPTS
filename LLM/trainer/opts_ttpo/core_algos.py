@@ -21,6 +21,7 @@ logger_batch = logging.getLogger("opts_ttpo.batch_tracker")
 
 import verl.utils.torch_functional as verl_F
 from verl.trainer.config import AlgoConfig
+from verl.trainer.ppo.core_algos import compute_bce_value_loss_terms
 from verl.utils import as_torch_index, group_mean_std
 from verl.utils.import_utils import deprecated
 from verl.workers.config import ActorConfig
@@ -1660,9 +1661,11 @@ def compute_value_loss(
     branch_weight: torch.Tensor | None = None,
     batch_num_tokens: float | None = None,
     dp_size: int = 1,
+    value_loss_type: str = "mse",
+    logits: torch.Tensor | None = None,
 ):
     """
-    Compute the clipped value-function loss for PPO.
+    Compute clipped MSE or BCE value loss for PPO, including TTPO branch weights.
 
     Copied from https://github.com/huggingface/trl/blob/main/trl/trainer/ppo_trainer.py#L1151
 
@@ -1686,6 +1689,10 @@ def compute_value_loss(
             Number of valid response tokens in the global batch, pre-computed on the driver.
         dp_size (int, optional):
             Data-parallel world size for TTPO weighted aggregation.
+        value_loss_type (str):
+            "mse" or "bce"; the critic worker selects the head-dependent default.
+        logits (torch.Tensor, optional):
+            Raw sigmoid-head logits required for BCE with the original soft return targets.
 
     Returns:
         vf_loss (torch.FloatTensor):
@@ -1693,12 +1700,25 @@ def compute_value_loss(
         vf_clipfrac (float):
             Fraction of elements where the clipped loss was used.
     """
-    vpredclipped = verl_F.clip_by_value(vpreds, values - cliprange_value, values + cliprange_value)
-    vf_losses1 = (vpreds - returns) ** 2
-    vf_losses2 = (vpredclipped - returns) ** 2
+    if value_loss_type == "bce":
+        vf_losses1, vf_losses2 = compute_bce_value_loss_terms(
+            logits=logits,
+            returns=returns,
+            values=values,
+            response_mask=response_mask,
+            cliprange_value=cliprange_value,
+        )
+        loss_scale = 1.0
+    elif value_loss_type == "mse":
+        vpredclipped = verl_F.clip_by_value(vpreds, values - cliprange_value, values + cliprange_value)
+        vf_losses1 = (vpreds - returns) ** 2
+        vf_losses2 = (vpredclipped - returns) ** 2
+        loss_scale = 0.5
+    else:
+        raise ValueError(f"Unsupported critic value_loss_type: {value_loss_type}")
     clipped_vf_losses = torch.max(vf_losses1, vf_losses2)
     if branch_weight is not None:
-        vf_loss = 0.5 * agg_loss(
+        vf_loss = loss_scale * agg_loss(
             loss_mat=clipped_vf_losses,
             loss_mask=response_mask,
             loss_agg_mode="weighted-token-mean",
@@ -1707,7 +1727,7 @@ def compute_value_loss(
             dp_size=dp_size,
         )
     else:
-        vf_loss = 0.5 * agg_loss(loss_mat=clipped_vf_losses, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
+        vf_loss = loss_scale * agg_loss(loss_mat=clipped_vf_losses, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
     vf_clipfrac = verl_F.masked_mean(torch.gt(vf_losses2, vf_losses1).float(), response_mask)
     return vf_loss, vf_clipfrac
 
