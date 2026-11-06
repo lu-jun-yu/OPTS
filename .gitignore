@@ -159,6 +159,7 @@ core.[0-9]*
 /TreeRL/
 /paper/
 /paper-arxiv/
+/Rebuttal/
 
 # LaTeX scratch output outside the separate manuscript checkout
 *.aux
