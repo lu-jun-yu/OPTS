@@ -651,9 +651,9 @@ def refresh_tree_search_states(
         last_perf_diff = last_perf_diff_ * mask_u + (1 - mask_u) * last_perf_diff
         perf_diff[:, u] = last_perf_diff
 
-    # Match the CleanRL selector: the same length-normalized quantity is used
-    # for within-tree position selection, baseline gating, and cross-tree
-    # ranking. The virtual terminal is part of the path length, as in CleanRL.
+    # Use length-normalized scores for selection and ranking. The baseline
+    # retains the pre-clamp maximum, including the zero-score virtual terminal.
+    # The virtual terminal is part of the path length, as in CleanRL.
     path_positions = torch.arange(path_len, device=device).unsqueeze(0)
     remaining_path_length = (path_mask.sum(dim=1, keepdim=True) - path_positions).clamp_min(1).to(dtype)
     selection_score = perf_diff / remaining_path_length.pow(xi)
@@ -726,7 +726,7 @@ def select_next_states(
     Args:
         batch: DataProto containing all required tensors and non-tensor data.
         search_count: {uid: count}, cumulative within training iteration.
-        max_perf_diffs: {uid: feasible length-normalized score at first
+        max_perf_diffs: {uid: pre-clamp maximum length-normalized score at first
             qualification}, used for the cross-tree mean baseline gate.
         max_search_per_tree: Max searches per tree per iteration.
         tree_search_state_by_uid: Cached greedy terminal / performance-difference state keyed by uid.
@@ -762,7 +762,7 @@ def select_next_states(
 
     active_uids = [u for u in root_uids if search_count.get(u, 0) < max_search_per_tree]
     for u in active_uids:
-        max_perf_diffs.setdefault(u, tree_search_state_by_uid[u].candidate_selection_score)
+        max_perf_diffs.setdefault(u, tree_search_state_by_uid[u].raw_selection_score)
 
     candidates = []
     if perf_diff_baseline_mode == "mean":
@@ -2179,7 +2179,7 @@ class RayOPTSTTPOTrainer(RayPPOTrainer):
                 global_batch = None
                 next_states = {}
                 search_count = {}  # {uid: count} per training iteration
-                max_perf_diffs = {}  # {uid: first qualified perf_diff baseline} per training iteration
+                max_perf_diffs = {}  # {uid: first pre-clamp maximum score} per training iteration
                 tree_search_state_by_uid = {}
                 sorted_states = None
                 reward_extra_infos_dict = {}
