@@ -3,7 +3,7 @@ export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=1.7B
-Experiment_Name=ppo_paper_n1_${MODEL_SIZE}
+Experiment_Name=ppo_n8_${MODEL_SIZE}
 RAY_TEMP_DIR="/tmp/ray/${Experiment_Name}"
 
 cleanup_ray_temp() {

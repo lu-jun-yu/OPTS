@@ -2,9 +2,8 @@ export NCCL_DEBUG=ERROR
 export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
-MODEL_SIZE=1.7B-Base
-Max_Search=3
-Experiment_Name=opts_ttpo_paper_s3_n8_${MODEL_SIZE}
+MODEL_SIZE=1.7B
+Experiment_Name=opts_ttpo_s3_n8_${MODEL_SIZE}
 RAY_TEMP_DIR="/tmp/ray/s${Max_Search}_${MODEL_SIZE}/"
 
 cleanup_ray_temp() {
@@ -50,7 +49,7 @@ CUDA_VISIBLE_DEVICES=2,3,4,5 python3 -m trainer.main_opts_ttpo \
  actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
  actor_rollout_ref.rollout.val_kwargs.top_p=0.95 \
  actor_rollout_ref.rollout.val_kwargs.top_k=-1 \
- +actor_rollout_ref.rollout.max_search_per_tree=${Max_Search} \
+ +actor_rollout_ref.rollout.max_search_per_tree=3 \
  critic.enable=True \
  critic.optim.lr=1e-5 \
  critic.optim.weight_decay=0.1 \
@@ -64,9 +63,6 @@ CUDA_VISIBLE_DEVICES=2,3,4,5 python3 -m trainer.main_opts_ttpo \
  algorithm.use_kl_in_reward=False \
  algorithm.kl_ctrl.kl_coef=0.0 \
  algorithm.lam=0.999 \
- +algorithm.xi=0.1 \
- +algorithm.reward_min=0.01 \
- +algorithm.reward_max=0.99 \
  +algorithm.max_searched_tree_ratio=0.3 \
  +algorithm.perf_diff_baseline=zero \
  trainer.logger='["console","wandb"]' \

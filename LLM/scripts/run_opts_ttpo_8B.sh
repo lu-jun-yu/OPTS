@@ -3,7 +3,7 @@ export TRANSFORMERS_VERBOSITY=error
 export VLLM_LOGGING_LEVEL=WARN
 
 MODEL_SIZE=8B
-Experiment_Name=opts_ttpo_paper_s3_n8_${MODEL_SIZE}
+Experiment_Name=opts_ttpo_s3_n8_${MODEL_SIZE}
 RAY_TEMP_DIR="/tmp/ray/${Experiment_Name}"
 
 cleanup_ray_temp() {
@@ -64,9 +64,6 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python3 -m trainer.main_opts_ttpo \
  algorithm.use_kl_in_reward=False \
  algorithm.kl_ctrl.kl_coef=0.0 \
  algorithm.lam=0.999 \
- +algorithm.xi=0.1 \
- +algorithm.reward_min=0.01 \
- +algorithm.reward_max=0.99 \
  +algorithm.max_searched_tree_ratio=0.3 \
  +algorithm.perf_diff_baseline=zero \
  trainer.logger='["console","wandb"]' \
