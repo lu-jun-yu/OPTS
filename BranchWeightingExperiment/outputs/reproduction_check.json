@@ -1,0 +1,27 @@
+{
+  "status": "passed",
+  "standalone_copy": true,
+  "invocation": "python3 run.py",
+  "isolation": "Copied only this folder into a separate temporary directory; PYTHONPATH unset; fresh private venv; no parent repository imports",
+  "baseline_environment": {
+    "python": "3.10.0 | packaged by conda-forge | (default, Nov 20 2021, 02:24:10) [GCC 9.4.0]",
+    "numpy": "2.2.6",
+    "matplotlib": "3.10.9"
+  },
+  "clean_environment": {
+    "python": "3.14.6 | packaged by Anaconda, Inc. | (main, Jun 18 2026, 21:28:09) [GCC 14.3.0]",
+    "numpy": "2.5.5",
+    "matplotlib": "3.11.2",
+    "elapsed_seconds": 8.260937070474029
+  },
+  "maximum_curve_difference": 0.0,
+  "verified_curve_count": 30,
+  "checks": {
+    "treerl_kernel": "local inverse-square-root factor check",
+    "max_treerl_inverse_sqrt_kernel_error": 0.0,
+    "reused_oracle": "exact_oracle.ExactBinaryTreeMDP",
+    "exact_rational_forest_checks": 27,
+    "max_weighted_vs_true_gradient_error": 2.7755575615628914e-17,
+    "max_finite_difference_error": 3.2031460817094626e-12
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "treerl_kernel": "local inverse-square-root factor check",
+  "max_treerl_inverse_sqrt_kernel_error": 0.0,
+  "reused_oracle": "exact_oracle.ExactBinaryTreeMDP",
+  "exact_rational_forest_checks": 27,
+  "max_weighted_vs_true_gradient_error": 2.7755575615628914e-17,
+  "max_finite_difference_error": 3.2031460817094626e-12
+}

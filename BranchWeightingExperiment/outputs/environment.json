@@ -1,0 +1,13 @@
+{
+  "python": "3.10.0 | packaged by conda-forge | (default, Nov 20 2021, 02:24:10) [GCC 9.4.0]",
+  "platform": "Linux-6.8.0-142-generic-x86_64-with-glibc2.39",
+  "numpy": "2.2.6",
+  "matplotlib": "3.10.9",
+  "elapsed_seconds": 11.346346504986286,
+  "code_sha256": {
+    "experiment.py": "14efaf43658edbdc1432731c8ceeca54c88f0c42de662019e53a2f41af92b7bd",
+    "exact_oracle.py": "9e14d706d2fa4168c96b4ab0aa353c6a0decd64ec505915d684cf858f8850c4c",
+    "plot_results.py": "feec87a20be97e81a931e025c0367dd73425bc0741688058f98d2108cd602e24",
+    "run_experiment.py": "64abffc95f5338136a45187ff60ae2e23de95c5e5ffe07b2c075c78c497bf786"
+  }
+}
