@@ -1,0 +1,11 @@
+Branch-weighting exact-gradient mechanism experiment
+Licensed under Apache-2.0; see LICENSE.
+
+Numerical routines are adapted from the accompanying project's exact finite-MDP
+oracle and exact branch-weighting experiment. The needed arithmetic oracle is
+included in exact_oracle.py, so the parent repository is not a runtime dependency.
+
+The inverse-square-root heuristic is motivated by TreeRL's descendant-count
+scaling. Only this aggregation factor is compared here. No TreeRL training
+framework, empirical GA/LA target, entropy-based sampler, or pretrained model
+is imported or evaluated by this package.
